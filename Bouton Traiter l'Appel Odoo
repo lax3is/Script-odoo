@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -426,11 +426,11 @@
         const container = document.createElement('div');
         container.id = 'texte-clignotant-container';
         container.style.cssText = `
-            display: flex;
+            display: inline-flex;
             align-items: center;
             gap: 10px;
-            margin-bottom: 10px;
-            padding: 5px 0;
+            margin-right: 10px;
+            padding: 5px;
         `;
 
         // Ajouter l'image de chargement
@@ -444,27 +444,34 @@
         const textElement = document.createElement('span');
         textElement.innerText = 'Traitement de l\'appel en cours ...';
         textElement.style.cssText = `
-            margin-left: 5px;
             color: #ff0000;
             font-weight: bold;
             white-space: nowrap;
+            display: inline;
         `;
 
         // Assembler le tout
         container.appendChild(loadingImg);
         container.appendChild(textElement);
 
-        // Ajouter au début de la zone de réponse sans supprimer le contenu existant
+        // Créer un span pour wrapper le conteneur
+        const wrapper = document.createElement('span');
+        wrapper.style.cssText = `
+            display: inline-block;
+            margin-right: 5px;
+        `;
+        wrapper.appendChild(container);
+
+        // Insérer au début de la zone de réponse
         if (reponseField.firstChild) {
-            reponseField.insertBefore(container, reponseField.firstChild);
-            // Ajouter un saut de ligne après le conteneur
-            const br = document.createElement('br');
-            reponseField.insertBefore(br, container.nextSibling);
+            reponseField.insertBefore(wrapper, reponseField.firstChild);
         } else {
-            reponseField.appendChild(container);
-            // Ajouter un saut de ligne après le conteneur
-            reponseField.appendChild(document.createElement('br'));
+            reponseField.appendChild(wrapper);
         }
+
+        // Ajouter un espace après le wrapper
+        const space = document.createTextNode(' ');
+        wrapper.after(space);
     }
 
     // Fonction pour vérifier l'état du traitement
