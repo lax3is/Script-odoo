@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-@version      1.2
+// @version      0.1
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
-// @author       Sair Alexis
+// @author       Your name
 // @match        https://winprovence.odoo.com/*
 // @match        http://winprovence.odoo.com/*
+// @updateURL    https://github.com/lax3is/Script-odoo/raw/main/Bouton%20Traiter%20l'Appel%20Odoo
+// @downloadURL  https://github.com/lax3is/Script-odoo/raw/main/Bouton%20Traiter%20l'Appel%20Odoo
 // @grant        none
 // ==/UserScript==
 
@@ -611,7 +613,7 @@
         lignesTickets.forEach(ligne => {
             // Récupérer tout le texte de la ligne
             const contenuLigne = ligne.textContent.toLowerCase();
-
+            
             // Vérifier si le texte "traitement de l'appel en cours" est présent
             if (contenuLigne.includes("traitement de l'appel en cours")) {
                 console.log("Ticket en traitement trouvé !");
@@ -630,15 +632,15 @@
         const style = document.createElement('style');
         style.textContent = `
             @keyframes ticketEnTraitement {
-                0% {
+                0% { 
                     box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.7);
                     background-color: rgba(0, 123, 255, 0.15);
                 }
-                50% {
+                50% { 
                     box-shadow: 0 0 15px 0 rgba(0, 123, 255, 0.9);
                     background-color: rgba(0, 123, 255, 0.05);
                 }
-                100% {
+                100% { 
                     box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.7);
                     background-color: rgba(0, 123, 255, 0.15);
                 }
@@ -659,8 +661,8 @@
     const observerTickets = new MutationObserver((mutations) => {
         if (window.location.href.includes('model=helpdesk.ticket&view_type=list')) {
             for (const mutation of mutations) {
-                if (mutation.addedNodes.length ||
-                    mutation.type === 'characterData' ||
+                if (mutation.addedNodes.length || 
+                    mutation.type === 'characterData' || 
                     mutation.type === 'childList') {
                     setTimeout(() => {
                         mettreAJourAnimationTickets();
@@ -678,7 +680,7 @@
             subtree: true,
             characterData: true
         });
-
+        
         // Mettre à jour l'animation toutes les 2 secondes
         setInterval(mettreAJourAnimationTickets, 2000);
     }
