@@ -6,8 +6,8 @@
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
 // @match        http://winprovence.odoo.com/*
-// @updateURL    https://raw.githubusercontent.com/lax3is/Script-odoo/00efb80f8a0ce0ee703c342ba06f813f87f224dd/Bouton%20Traiter%20l'Appel%20Odoo.js
-// @downloadURL  https://raw.githubusercontent.com/lax3is/Script-odoo/00efb80f8a0ce0ee703c342ba06f813f87f224dd/Bouton%20Traiter%20l'Appel%20Odoo.js
+// @updateURL    https://raw.githubusercontent.com/lax3is/Script-odoo/refs/heads/main/Bouton%20Traiter%20l'Appel%20Odoo.js
+// @downloadURL  https://raw.githubusercontent.com/lax3is/Script-odoo/refs/heads/main/Bouton%20Traiter%20l'Appel%20Odoo.js
 // @grant        none
 // ==/UserScript==
 
