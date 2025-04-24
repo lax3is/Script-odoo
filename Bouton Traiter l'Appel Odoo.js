@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.0.0
+// @version      2.0.1
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -584,12 +584,79 @@
         }
     }
 
-    // Modifier la fonction d'initialisation pour inclure le masquage des boutons
+    // Fonction pour créer le bouton "Créer un ticket"
+    function ajouterBoutonCreerTicket() {
+        console.log("Tentative d'ajout du bouton Créer un ticket");
+        const statusbar = document.querySelector('.o_statusbar_buttons, .o_form_statusbar .o_statusbar_buttons');
+        if (statusbar && !document.getElementById('btn-creer-ticket')) {
+            console.log("Barre de statut trouvée, ajout du bouton Créer un ticket");
+            const btn = document.createElement('button');
+            btn.id = 'btn-creer-ticket';
+            btn.innerText = 'Créer un ticket';
+            btn.className = 'btn btn-success';
+            btn.style.marginRight = '5px';
+            btn.style.marginLeft = 'auto';
+            btn.style.order = '9999';
+            
+            // Ajouter l'événement click
+            btn.addEventListener('click', function() {
+                console.log("Bouton Créer un ticket cliqué");
+                
+                // Récupérer le nom de la pharmacie
+                const clientElement = document.querySelector('.o_field_widget[name="partner_id"] input');
+                if (clientElement) {
+                    const nomPharmacie = clientElement.value;
+                    console.log("Nom de la pharmacie récupéré:", nomPharmacie);
+                    
+                    // Stocker temporairement le nom dans le localStorage
+                    localStorage.setItem('pharmacie_a_copier', nomPharmacie);
+                }
+                
+                // Rediriger vers la page de création de ticket
+                window.location.href = 'https://winprovence.odoo.com/web?debug=#menu_id=250&cids=1&action=368&model=helpdesk.ticket&view_type=form';
+            });
+
+            // Ajouter le bouton à la fin de la barre de statut
+            statusbar.appendChild(btn);
+
+            // S'assurer que la barre de statut est en flexbox
+            statusbar.style.display = 'flex';
+            statusbar.style.flexWrap = 'wrap';
+            statusbar.style.alignItems = 'center';
+        }
+
+        // Vérifier si on est sur la page de création de ticket et s'il y a un nom à coller
+        const nomPharmacie = localStorage.getItem('pharmacie_a_copier');
+        if (window.location.href.includes('model=helpdesk.ticket&view_type=form') && nomPharmacie) {
+            // Attendre que le champ soit disponible
+            const interval = setInterval(() => {
+                const champClient = document.querySelector('.o_field_widget[name="partner_id"] input');
+                if (champClient) {
+                    clearInterval(interval);
+                    // Coller le nom et déclencher les événements nécessaires
+                    champClient.value = nomPharmacie;
+                    champClient.dispatchEvent(new Event('input', { bubbles: true }));
+                    champClient.dispatchEvent(new KeyboardEvent('keydown', {
+                        key: 'Enter',
+                        code: 'Enter',
+                        keyCode: 13,
+                        which: 13,
+                        bubbles: true
+                    }));
+                    // Nettoyer le localStorage
+                    localStorage.removeItem('pharmacie_a_copier');
+                }
+            }, 500);
+        }
+    }
+
+    // Modifier la fonction d'initialisation pour inclure le nouveau bouton
     function initialiserScript() {
         console.log("Tentative d'initialisation du script");
         if (document.readyState === 'complete') {
             setTimeout(() => {
                 ajouterBoutonTraiter();
+                ajouterBoutonCreerTicket(); // Ajouter le nouveau bouton
                 gererClotureTicket();
                 modifierBoutonCloture();
                 masquerBoutonsTimer(); // Ajouter l'appel à la nouvelle fonction
@@ -608,13 +675,14 @@
         }
     }
 
-    // Modifier l'observer pour inclure la modification du bouton de clôture
+    // Modifier l'observer pour inclure le nouveau bouton
     const observer = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
             if (mutation.addedNodes.length) {
                 setTimeout(() => {
                     ajouterBoutonTraiter();
-                    modifierBoutonCloture(); // Ajouter l'appel à la nouvelle fonction
+                    ajouterBoutonCreerTicket(); // Ajouter le nouveau bouton
+                    modifierBoutonCloture();
                 }, 500);
             }
         }
