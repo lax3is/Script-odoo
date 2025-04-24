@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -133,6 +133,22 @@
             };
             checkButton();
         });
+    }
+
+    // Fonction pour masquer les boutons du timer
+    function masquerBoutonsTimer() {
+        const style = document.createElement('style');
+        style.textContent = `
+            button[name="action_timer_start"],
+            button[name="action_timer_pause"],
+            button[name="action_timer_resume"],
+            button[name="action_timer_stop"] {
+                visibility: hidden !important;
+                position: absolute !important;
+                left: -9999px !important;
+            }
+        `;
+        document.head.appendChild(style);
     }
 
     // Fonction pour simuler le raccourci clavier Alt+Z
@@ -320,19 +336,27 @@
                         // Séquence d'actions
                         const executerActions = async () => {
                             try {
-                                // Vérifier l'état du timer
-                                const etatTimer = verifierEtatTimer();
-                                console.log("État du timer détecté:", etatTimer);
+                                // Vérifier si l'appel est assigné
+                                const estAssigné = document.querySelector('button[name="assign_ticket_to_self"]') === null;
+                                console.log("Appel assigné:", estAssigné);
 
-                                // Cliquer sur ME L'ASSIGNER si nécessaire
-                                if (!etatTimer) {
+                                // Si l'appel n'est pas assigné, cliquer sur ME L'ASSIGNER
+                                if (!estAssigné) {
                                     const btnAssigner = trouverBoutonAssigner();
                                     if (btnAssigner) {
                                         console.log("Clic sur ME L'ASSIGNER");
                                         btnAssigner.click();
-                                        await new Promise(resolve => setTimeout(resolve, 1000));
+                                        // Augmenter le délai d'attente après la réassignation
+                                        await new Promise(resolve => setTimeout(resolve, 2000));
                                     }
                                 }
+
+                                // Attendre que la page soit complètement mise à jour
+                                await new Promise(resolve => setTimeout(resolve, 1000));
+
+                                // Vérifier l'état du timer
+                                const etatTimer = verifierEtatTimer();
+                                console.log("État du timer détecté:", etatTimer);
 
                                 // Gérer le timer selon son état
                                 switch (etatTimer) {
@@ -353,7 +377,7 @@
                                 }
 
                                 // Attendre avant d'enregistrer
-                                await new Promise(resolve => setTimeout(resolve, 500));
+                                await new Promise(resolve => setTimeout(resolve, 1000));
 
                                 const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
                                 if (btnEnregistrer) {
@@ -560,14 +584,15 @@
         }
     }
 
-    // Modifier la fonction d'initialisation pour inclure la modification du bouton de clôture
+    // Modifier la fonction d'initialisation pour inclure le masquage des boutons
     function initialiserScript() {
         console.log("Tentative d'initialisation du script");
         if (document.readyState === 'complete') {
             setTimeout(() => {
                 ajouterBoutonTraiter();
                 gererClotureTicket();
-                modifierBoutonCloture(); // Ajouter l'appel à la nouvelle fonction
+                modifierBoutonCloture();
+                masquerBoutonsTimer(); // Ajouter l'appel à la nouvelle fonction
 
                 // Vérification initiale au cas où le ticket est déjà résolu
                 if (estTicketResolu()) {
