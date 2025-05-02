@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.0.1
+// @version      2.0.2
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -336,19 +336,13 @@
                         // Séquence d'actions
                         const executerActions = async () => {
                             try {
-                                // Vérifier si l'appel est assigné
-                                const estAssigné = document.querySelector('button[name="assign_ticket_to_self"]') === null;
-                                console.log("Appel assigné:", estAssigné);
-
-                                // Si l'appel n'est pas assigné, cliquer sur ME L'ASSIGNER
-                                if (!estAssigné) {
-                                    const btnAssigner = trouverBoutonAssigner();
-                                    if (btnAssigner) {
-                                        console.log("Clic sur ME L'ASSIGNER");
-                                        btnAssigner.click();
-                                        // Augmenter le délai d'attente après la réassignation
-                                        await new Promise(resolve => setTimeout(resolve, 2000));
-                                    }
+                                // Vérifier si le bouton ME L'ASSIGNER est disponible
+                                const btnAssigner = trouverBoutonAssigner();
+                                if (btnAssigner) {
+                                    console.log("Bouton ME L'ASSIGNER trouvé, clic automatique");
+                                    btnAssigner.click();
+                                    // Augmenter le délai d'attente après la réassignation
+                                    await new Promise(resolve => setTimeout(resolve, 2000));
                                 }
 
                                 // Attendre que la page soit complètement mise à jour
@@ -379,9 +373,15 @@
                                 // Attendre avant d'enregistrer
                                 await new Promise(resolve => setTimeout(resolve, 1000));
 
+                                // Cliquer sur le bouton de sauvegarde (petit nuage)
                                 const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
                                 if (btnEnregistrer) {
-                                    console.log("Enregistrement des modifications");
+                                    console.log("Enregistrement des modifications (premier clic)");
+                                    btnEnregistrer.click();
+                                    
+                                    // Attendre un peu et cliquer une deuxième fois pour s'assurer que tout est bien enregistré
+                                    await new Promise(resolve => setTimeout(resolve, 1000));
+                                    console.log("Enregistrement des modifications (deuxième clic)");
                                     btnEnregistrer.click();
                                 }
                             } catch (error) {
@@ -407,9 +407,15 @@
                         // Attendre avant d'enregistrer
                         await new Promise(resolve => setTimeout(resolve, 500));
 
+                        // Cliquer sur le bouton de sauvegarde (petit nuage)
                         const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
                         if (btnEnregistrer) {
-                            console.log("Enregistrement des modifications");
+                            console.log("Enregistrement des modifications (premier clic)");
+                            btnEnregistrer.click();
+                            
+                            // Attendre un peu et cliquer une deuxième fois pour s'assurer que tout est bien enregistré
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                            console.log("Enregistrement des modifications (deuxième clic)");
                             btnEnregistrer.click();
                         }
                     }
@@ -508,12 +514,17 @@
             return true;
         } else if (etatStocke) {
             // Si l'état stocké indique un traitement en cours mais le bouton n'est pas trouvé,
-            // on force la création du bouton
+            // on force la création du bouton et on restaure l'état
             ajouterBoutonTraiter();
             // On vérifie à nouveau après un court délai
             return new Promise(resolve => {
                 setTimeout(() => {
                     const boutonTraiter = document.getElementById('btn-traiter-appel');
+                    if (boutonTraiter) {
+                        boutonTraiter.innerText = 'Mettre en Attente';
+                        boutonTraiter.className = 'btn btn-warning';
+                        ajouterTexteCligonotant();
+                    }
                     resolve(boutonTraiter && boutonTraiter.innerText === 'Mettre en Attente');
                 }, 300);
             });
@@ -532,9 +543,11 @@
         setInterval(async () => {
             if (estTicketResolu()) {
                 console.log("Ticket résolu détecté");
-                const boutonTraiter = document.getElementById('btn-traiter-appel');
-                if (boutonTraiter && boutonTraiter.innerText === 'Mettre en Attente') {
-                    console.log("Traitement en cours détecté, arrêt complet du timer");
+                
+                // Vérifier si le timer est en cours
+                const etatTimer = verifierEtatTimer();
+                if (etatTimer === 'pause' || etatTimer === 'relancer') {
+                    console.log("Timer en cours détecté, arrêt complet du timer");
 
                     // Forcer la fin de traitement
                     const ticketId = obtenirTicketId();
@@ -554,8 +567,11 @@
                     await new Promise(resolve => setTimeout(resolve, 500));
 
                     // Mettre à jour le bouton
-                    boutonTraiter.innerText = 'Traiter l\'appel';
-                    boutonTraiter.className = 'btn btn-primary';
+                    const boutonTraiter = document.getElementById('btn-traiter-appel');
+                    if (boutonTraiter) {
+                        boutonTraiter.innerText = 'Traiter l\'appel';
+                        boutonTraiter.className = 'btn btn-primary';
+                    }
 
                     // Supprimer le texte clignotant
                     supprimerTexteCligonotant();
@@ -563,10 +579,15 @@
                     // Attendre un peu pour s'assurer que le texte est bien supprimé
                     await new Promise(resolve => setTimeout(resolve, 500));
 
-                    // Faire un deuxième clic sur le bouton de sauvegarde
+                    // Faire un double clic sur le bouton de sauvegarde
                     const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
                     if (btnEnregistrer) {
-                        console.log("Deuxième enregistrement des modifications après suppression du texte");
+                        console.log("Enregistrement des modifications après clôture (premier clic)");
+                        btnEnregistrer.click();
+                        
+                        // Attendre un peu et cliquer une deuxième fois
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        console.log("Enregistrement des modifications après clôture (deuxième clic)");
                         btnEnregistrer.click();
                     }
                 }
@@ -656,10 +677,21 @@
         if (document.readyState === 'complete') {
             setTimeout(() => {
                 ajouterBoutonTraiter();
-                ajouterBoutonCreerTicket(); // Ajouter le nouveau bouton
+                ajouterBoutonCreerTicket();
                 gererClotureTicket();
                 modifierBoutonCloture();
-                masquerBoutonsTimer(); // Ajouter l'appel à la nouvelle fonction
+                masquerBoutonsTimer();
+
+                // Vérifier et restaurer l'état du traitement
+                const ticketId = obtenirTicketId();
+                if (ticketId && recupererEtat(ticketId)) {
+                    const boutonTraiter = document.getElementById('btn-traiter-appel');
+                    if (boutonTraiter) {
+                        boutonTraiter.innerText = 'Mettre en Attente';
+                        boutonTraiter.className = 'btn btn-warning';
+                        ajouterTexteCligonotant();
+                    }
+                }
 
                 // Vérification initiale au cas où le ticket est déjà résolu
                 if (estTicketResolu()) {
