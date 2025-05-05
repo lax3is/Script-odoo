@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.0.2
+// @version      2.0.3
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -819,4 +819,116 @@
 
     // Appeler l'initialisation de l'animation au démarrage
     setTimeout(initialiserAnimation, 1000);
+
+    console.log("Script de désassignation démarré");
+
+    function createClearButton() {
+        // Rechercher le champ "Assigné à" avec plusieurs sélecteurs possibles
+        const input = document.querySelector('input[name="user_id"], input#user_id.o-autocomplete--input, .o_field_many2one[name="user_id"] input');
+        
+        if (!input) {
+            console.log("Champ 'Assigné à' non trouvé");
+            return;
+        }
+
+        // Vérifier si le bouton existe déjà
+        const existingButton = input.parentNode.querySelector('.clear-assign-button');
+        if (existingButton) {
+            console.log("Bouton de désassignation déjà présent");
+            // Si le champ est vide, retirer le bouton
+            if (!input.value) {
+                existingButton.remove();
+            }
+            return;
+        }
+
+        // N'afficher la croix que si un utilisateur est assigné
+        if (!input.value) {
+            console.log("Champ 'Assigné à' vide, pas de croix");
+            return;
+        }
+
+        // Créer le bouton
+        const button = document.createElement('button');
+        button.className = 'clear-assign-button';
+        button.innerHTML = '❌';
+        button.style.cssText = `
+            margin-left: 5px;
+            background: none;
+            border: none;
+            color: #dc3545;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 0;
+            line-height: 1;
+            position: absolute;
+            right: -44px;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 2;
+        `;
+
+        // Ajouter l'événement de clic
+        button.addEventListener('click', async function(e) {
+            e.preventDefault();
+            console.log("Clic sur le bouton de désassignation");
+
+            try {
+                // Vider le champ
+                input.value = '';
+                
+                // Déclencher les événements nécessaires
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                
+                // Attendre un court délai pour s'assurer que les événements sont traités
+                await new Promise(resolve => setTimeout(resolve, 300));
+
+                // Trouver et cliquer sur le bouton de sauvegarde
+                const saveButton = document.querySelector('.o_form_button_save, button[data-hotkey="s"]');
+                if (saveButton) {
+                    console.log("Sauvegarde des modifications");
+                    saveButton.click();
+                } else {
+                    console.log("Bouton de sauvegarde non trouvé");
+                }
+            } catch (error) {
+                console.error("Erreur lors de la désassignation:", error);
+            }
+        });
+
+        // Ajouter le bouton au conteneur parent
+        const container = input.parentNode;
+        container.style.position = 'relative';
+        container.appendChild(button);
+        console.log("Bouton de désassignation ajouté");
+    }
+
+    // Observer pour détecter les changements dans le DOM
+    const observerClearButton = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+            if (mutation.addedNodes && mutation.addedNodes.length > 0) {
+                setTimeout(createClearButton, 500);
+            }
+        });
+    });
+
+    // Configuration de l'observer
+    observerClearButton.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+
+    // Initialisation au chargement
+    window.addEventListener('load', function() {
+        setTimeout(createClearButton, 2000);
+    });
+
+    // Réinitialisation lors des changements de route
+    window.addEventListener('hashchange', function() {
+        setTimeout(createClearButton, 1000);
+    });
+
+    // Vérification périodique
+    setInterval(createClearButton, 5000);
 })();
