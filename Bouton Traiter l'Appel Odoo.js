@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.0.3
+// @version      2.0.4
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -632,6 +632,17 @@
                     // Stocker temporairement le nom dans le localStorage
                     localStorage.setItem('pharmacie_a_copier', nomPharmacie);
                 }
+
+                // Nettoyer tous les états de traitement existants
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key && key.startsWith('etatTraitement_')) {
+                        localStorage.removeItem(key);
+                    }
+                    if (key && key.startsWith('dernierChangement_')) {
+                        localStorage.removeItem(key);
+                    }
+                }
                 
                 // Rediriger vers la page de création de ticket
                 window.location.href = 'https://winprovence.odoo.com/web?debug=#menu_id=250&cids=1&action=368&model=helpdesk.ticket&view_type=form';
@@ -671,9 +682,25 @@
         }
     }
 
-    // Modifier la fonction d'initialisation pour inclure le nouveau bouton
+    // Fonction pour initialiser le script
     function initialiserScript() {
         console.log("Tentative d'initialisation du script");
+
+        // Vérifier si nous sommes sur la page de création de ticket
+        if (window.location.href.includes('model=helpdesk.ticket&view_type=form')) {
+            console.log("Page de création de ticket détectée, nettoyage des états de traitement");
+            // Nettoyer tous les états de traitement existants
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('etatTraitement_')) {
+                    localStorage.removeItem(key);
+                }
+                if (key && key.startsWith('dernierChangement_')) {
+                    localStorage.removeItem(key);
+                }
+            }
+        }
+
         if (document.readyState === 'complete') {
             setTimeout(() => {
                 ajouterBoutonTraiter();
