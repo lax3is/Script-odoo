@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.0.5
+// @version      2.0.6
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -1001,7 +1001,57 @@
         return `${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} ${pad(now.getHours())}h${pad(now.getMinutes())}`;
     }
 
-    // Fonction pour ajouter le bouton et l'action en dehors de la zone de réponse
+    // Ajout du style CSS fourni pour le bouton
+    if (!document.getElementById('style-btn-ajouter-initiales')) {
+        const style = document.createElement('style');
+        style.id = 'style-btn-ajouter-initiales';
+        style.textContent = `
+            .button {
+              background-color: #ffffff00;
+              color: #fff;
+              width: 140px;
+              height: 32px;
+              border: #3cc 2px solid;
+              border-radius: 7px;
+              text-align: center;
+              transition: all 0.3s ease;
+              position: relative;
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              overflow: hidden;
+              padding: 0 10px;
+              font-size: 13px;
+              font-weight: 500;
+            }
+            .button:hover {
+              background-color: #3cc;
+              cursor: pointer;
+            }
+            .button svg {
+              width: 16px;
+              height: 16px;
+              margin-right: 6px;
+              position: static;
+              display: inline-block;
+              vertical-align: middle;
+              transition: all 0.3s ease;
+            }
+            .button:hover svg {
+              transform: translateX(5px);
+            }
+            .button .text {
+              margin: 0;
+              flex: none;
+              text-align: left;
+              font-size: 13px;
+              font-weight: 500;
+              vertical-align: middle;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
     function ajouterBoutonInitiales() {
         const reponseField = document.querySelector('div#request_answer.note-editable');
         if (!reponseField) return;
@@ -1009,8 +1059,14 @@
         const parent = reponseField.parentNode;
         const btn = document.createElement('button');
         btn.id = 'btn-ajouter-initiales';
-        btn.innerText = 'Ajouter initiales';
-        btn.className = 'btn btn-secondary';
+        btn.className = 'button';
+        btn.type = 'button';
+        btn.innerHTML = `
+          <svg class="w-6 h-6" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4.5 12h15m0 0l-6.75-6.75M19.5 12l-6.75 6.75" stroke-linejoin="round" stroke-linecap="round"></path>
+          </svg>
+          <div class="text">Ajouter initiales</div>
+        `;
         btn.style.marginBottom = '8px';
         btn.onclick = function() {
             const nom = getNomAssigne();
@@ -1021,18 +1077,15 @@
                 return;
             }
             const texte = `${initiales} ${dateHeure} :`;
-            // Cherche le dernier nœud texte réel
-            let last = reponseField.lastChild;
-            while (last && (last.nodeType === 1 && last.tagName === 'BR' || (last.nodeType === 3 && last.textContent.trim() === ''))) {
-                last = last.previousSibling;
-            }
-            if (last && last.nodeType === 3) {
-                // Ajoute directement à la fin du dernier nœud texte
-                last.textContent += texte;
-            } else {
-                // Sinon, ajoute un nœud texte à la fin
-                reponseField.appendChild(document.createTextNode(texte));
-            }
+            reponseField.focus();
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(reponseField);
+            range.collapse(false);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            document.execCommand('insertText', false, texte);
+            document.execCommand('insertText', false, ' ');
         };
         parent.insertBefore(btn, reponseField);
     }
@@ -1043,25 +1096,4 @@
     });
     observerInitiales.observe(document.body, {childList: true, subtree: true});
     setTimeout(ajouterBoutonInitiales, 2000);
-
-    // Ajout du style personnalisé pour le bouton si pas déjà présent
-    if (!document.getElementById('style-btn-ajouter-initiales')) {
-        const style = document.createElement('style');
-        style.id = 'style-btn-ajouter-initiales';
-        style.textContent = `
-            #btn-ajouter-initiales {
-                background-color: #c9a6f8 !important;
-                border: 1px solid #bfa6e0 !important;
-                color: #222 !important;
-                border-radius: 6px;
-                font-weight: normal;
-                box-shadow: none !important;
-                transition: background 0.2s;
-            }
-            #btn-ajouter-initiales:hover {
-                background-color: #b48be6 !important;
-            }
-        `;
-        document.head.appendChild(style);
-    }
 })();
