@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.0.6
+// @version      2.0.7
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -1007,8 +1007,8 @@
         style.id = 'style-btn-ajouter-initiales';
         style.textContent = `
             .button {
-              background-color: #ffffff00;
-              color: #fff;
+              background-color: transparent;
+              color: #13b6b1;
               width: 140px;
               height: 32px;
               border: #3cc 2px solid;
@@ -1026,6 +1026,7 @@
             }
             .button:hover {
               background-color: #3cc;
+              color: #fff;
               cursor: pointer;
             }
             .button svg {
@@ -1036,9 +1037,11 @@
               display: inline-block;
               vertical-align: middle;
               transition: all 0.3s ease;
+              stroke: #13b6b1;
             }
             .button:hover svg {
               transform: translateX(5px);
+              stroke: #fff;
             }
             .button .text {
               margin: 0;
