@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.0.4
+// @version      2.0.5
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -958,4 +958,110 @@
 
     // Vérification périodique
     setInterval(createClearButton, 5000);
+
+    // Fonction pour obtenir les initiales à partir d'un nom complet
+    function getInitialesFromNom(nomComplet) {
+        if (!nomComplet) return '';
+        const parties = nomComplet.trim().split(/\s+/);
+        if (parties.length === 1) {
+            return parties[0][0].toUpperCase() + '.';
+        }
+        // Prend la première lettre du prénom et du nom
+        return (parties[1][0] + '.' + parties[0][0] + '.').toUpperCase();
+    }
+
+    // Fonction pour obtenir le nom de l'assigné
+    function getNomAssigne() {
+        // Essaye de trouver le nom affiché à côté de "Assigné à"
+        const label = Array.from(document.querySelectorAll('label, span')).find(e => e.textContent.trim().toLowerCase() === 'assigné à');
+        if (label) {
+            // Cherche le nom dans le parent ou le voisin
+            let nomNode = label.parentNode.querySelector('span, div, a');
+            if (nomNode && nomNode.textContent.trim()) {
+                return nomNode.textContent.trim();
+            }
+        }
+        // Fallback : essaye de trouver l'input comme dans createClearButton
+        const input = document.querySelector('input[name="user_id"], input#user_id.o-autocomplete--input, .o_field_many2one[name="user_id"] input');
+        if (input && input.value) {
+            return input.value.trim();
+        }
+        // Fallback : essaye de trouver un avatar avec nom à côté
+        const avatar = document.querySelector('.o_field_many2one[name="user_id"] img + span, .o_field_many2one[name="user_id"] span');
+        if (avatar && avatar.textContent.trim()) {
+            return avatar.textContent.trim();
+        }
+        return '';
+    }
+
+    // Fonction pour formater la date/heure
+    function getDateHeureFormat() {
+        const now = new Date();
+        const pad = n => n < 10 ? '0' + n : n;
+        return `${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} ${pad(now.getHours())}h${pad(now.getMinutes())}`;
+    }
+
+    // Fonction pour ajouter le bouton et l'action en dehors de la zone de réponse
+    function ajouterBoutonInitiales() {
+        const reponseField = document.querySelector('div#request_answer.note-editable');
+        if (!reponseField) return;
+        if (document.getElementById('btn-ajouter-initiales')) return;
+        const parent = reponseField.parentNode;
+        const btn = document.createElement('button');
+        btn.id = 'btn-ajouter-initiales';
+        btn.innerText = 'Ajouter initiales';
+        btn.className = 'btn btn-secondary';
+        btn.style.marginBottom = '8px';
+        btn.onclick = function() {
+            const nom = getNomAssigne();
+            const initiales = getInitialesFromNom(nom);
+            const dateHeure = getDateHeureFormat();
+            if (!initiales) {
+                alert("Impossible de trouver le nom de l'assigné.");
+                return;
+            }
+            const texte = `${initiales} ${dateHeure} :`;
+            // Cherche le dernier nœud texte réel
+            let last = reponseField.lastChild;
+            while (last && (last.nodeType === 1 && last.tagName === 'BR' || (last.nodeType === 3 && last.textContent.trim() === ''))) {
+                last = last.previousSibling;
+            }
+            if (last && last.nodeType === 3) {
+                // Ajoute directement à la fin du dernier nœud texte
+                last.textContent += texte;
+            } else {
+                // Sinon, ajoute un nœud texte à la fin
+                reponseField.appendChild(document.createTextNode(texte));
+            }
+        };
+        parent.insertBefore(btn, reponseField);
+    }
+
+    // Ajoute le bouton à chaque fois qu'on affiche la zone de réponse
+    const observerInitiales = new MutationObserver(() => {
+        ajouterBoutonInitiales();
+    });
+    observerInitiales.observe(document.body, {childList: true, subtree: true});
+    setTimeout(ajouterBoutonInitiales, 2000);
+
+    // Ajout du style personnalisé pour le bouton si pas déjà présent
+    if (!document.getElementById('style-btn-ajouter-initiales')) {
+        const style = document.createElement('style');
+        style.id = 'style-btn-ajouter-initiales';
+        style.textContent = `
+            #btn-ajouter-initiales {
+                background-color: #c9a6f8 !important;
+                border: 1px solid #bfa6e0 !important;
+                color: #222 !important;
+                border-radius: 6px;
+                font-weight: normal;
+                box-shadow: none !important;
+                transition: background 0.2s;
+            }
+            #btn-ajouter-initiales:hover {
+                background-color: #b48be6 !important;
+            }
+        `;
+        document.head.appendChild(style);
+    }
 })();
