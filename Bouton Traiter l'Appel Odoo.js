@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.0.8
+// @version      2.0.9
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -82,7 +82,6 @@
         // Essayer plusieurs sélecteurs pour trouver le bouton
         return document.querySelector('button[name="assign_ticket_to_self"]') ||
                document.querySelector('button.btn.btn-primary[data-hotkey="g"]') ||
-               document.querySelector('button:has(span:contains("Me l\'assigner"))') ||
                Array.from(document.getElementsByTagName('button')).find(btn => {
                    const span = btn.querySelector('span');
                    return span && span.textContent.trim().toLowerCase() === "me l'assigner";
@@ -305,6 +304,11 @@
             console.log("ID du ticket pour le bouton:", ticketId);
             let enTraitement = ticketId ? recupererEtat(ticketId) : false;
 
+            // Vérifier si le timer est en pause et si le ticket est assigné
+            const etatTimer = verifierEtatTimer();
+            const estEnPause = etatTimer === 'relancer';
+            const estAssigne = !trouverBoutonAssigner();
+
             if (enTraitement) {
                 btn.innerText = 'Mettre en Attente';
                 btn.className = 'btn btn-warning';
@@ -312,6 +316,7 @@
                     ajouterTexteCligonotant();
                 }, 500);
             } else {
+                // Toujours afficher 'Traiter l\'appel' si non en traitement
                 btn.innerText = 'Traiter l\'appel';
                 btn.className = 'btn btn-primary';
             }
@@ -325,99 +330,80 @@
                 enTraitement = !enTraitement;
 
                 if (enTraitement) {
-                    // Passage à "Mettre en Attente"
-                    btn.innerText = 'Mettre en Attente';
-                    btn.className = 'btn btn-warning';
-                    ajouterTexteCligonotant();
+                    // Vérifier l'état du timer pour déterminer l'action
+                    const etatTimer = verifierEtatTimer();
+                    const estEnPause = etatTimer === 'relancer';
+
+                    if (estEnPause) {
+                        // Cas 3: Reprendre l'appel
+                        console.log("Reprise de l'appel");
+                        btn.innerText = 'Mettre en Attente';
+                        btn.className = 'btn btn-warning';
+                        ajouterTexteCligonotant();
+                        
+                        // Relancer le timer avec Alt+W
+                        simulerRaccourciPause();
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                    } else {
+                        // Cas 1: Traiter l'appel
+                        console.log("Traitement de l'appel");
+                        btn.innerText = 'Mettre en Attente';
+                        btn.className = 'btn btn-warning';
+                        ajouterTexteCligonotant();
+
+                        // Vérifier si le bouton ME L'ASSIGNER est disponible
+                        const btnAssigner = trouverBoutonAssigner();
+                        if (btnAssigner) {
+                            console.log("Bouton ME L'ASSIGNER trouvé, clic automatique");
+                            btnAssigner.click();
+                            await new Promise(resolve => setTimeout(resolve, 3000));
+                        }
+
+                        // Démarrer le timer avec Alt+Z
+                        simulerRaccourciTimer();
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                    }
 
                     if (ticketId) {
                         sauvegarderEtat(true, ticketId);
+                    }
 
-                        // Séquence d'actions
-                        const executerActions = async () => {
-                            try {
-                                // Vérifier si le bouton ME L'ASSIGNER est disponible
-                                const btnAssigner = trouverBoutonAssigner();
-                                if (btnAssigner) {
-                                    console.log("Bouton ME L'ASSIGNER trouvé, clic automatique");
-                                    btnAssigner.click();
-                                    // Augmenter le délai d'attente après la réassignation
-                                    await new Promise(resolve => setTimeout(resolve, 2000));
-                                }
-
-                                // Attendre que la page soit complètement mise à jour
-                                await new Promise(resolve => setTimeout(resolve, 1000));
-
-                                // Vérifier l'état du timer
-                                const etatTimer = verifierEtatTimer();
-                                console.log("État du timer détecté:", etatTimer);
-
-                                // Gérer le timer selon son état
-                                switch (etatTimer) {
-                                    case 'relancer':
-                                        console.log("Timer en pause, relance avec Alt+W");
-                                        simulerRaccourciPause();
-                                        break;
-                                    case 'lancer':
-                                        console.log("Démarrage du timer avec Alt+Z");
-                                        simulerRaccourciTimer();
-                                        break;
-                                    case 'pause':
-                                        console.log("Timer déjà en cours");
-                                        break;
-                                    default:
-                                        console.log("Démarrage initial du timer avec Alt+Z");
-                                        simulerRaccourciTimer();
-                                }
-
-                                // Attendre avant d'enregistrer
-                                await new Promise(resolve => setTimeout(resolve, 1000));
-
-                                // Cliquer sur le bouton de sauvegarde (petit nuage)
-                                const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
-                                if (btnEnregistrer) {
-                                    console.log("Enregistrement des modifications (premier clic)");
-                                    btnEnregistrer.click();
-                                    
-                                    // Attendre un peu et cliquer une deuxième fois pour s'assurer que tout est bien enregistré
-                                    await new Promise(resolve => setTimeout(resolve, 1000));
-                                    console.log("Enregistrement des modifications (deuxième clic)");
-                                    btnEnregistrer.click();
-                                }
-                            } catch (error) {
-                                console.error("Erreur lors de l'exécution des actions:", error);
-                            }
-                        };
-
-                        executerActions();
+                    // Sauvegarder les changements
+                    const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
+                    if (btnEnregistrer) {
+                        console.log("Première sauvegarde");
+                        btnEnregistrer.click();
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        
+                        console.log("Deuxième sauvegarde");
+                        btnEnregistrer.click();
+                        await new Promise(resolve => setTimeout(resolve, 3000));
                     }
                 } else {
-                    // Passage à "Traiter l'appel"
+                    // Cas 2: Mettre en pause
+                    console.log("Mise en pause de l'appel");
                     btn.innerText = 'Traiter l\'appel';
                     btn.className = 'btn btn-primary';
                     supprimerTexteCligonotant();
 
                     if (ticketId) {
                         sauvegarderEtat(false, ticketId);
+                    }
 
-                        // Mettre en pause avec Alt+W
-                        console.log("Mise en pause du timer avec Alt+W");
-                        simulerRaccourciPause();
+                    // Mettre en pause avec Alt+W
+                    simulerRaccourciPause();
+                    await new Promise(resolve => setTimeout(resolve, 3000));
 
-                        // Attendre avant d'enregistrer
-                        await new Promise(resolve => setTimeout(resolve, 500));
-
-                        // Cliquer sur le bouton de sauvegarde (petit nuage)
-                        const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
-                        if (btnEnregistrer) {
-                            console.log("Enregistrement des modifications (premier clic)");
-                            btnEnregistrer.click();
-                            
-                            // Attendre un peu et cliquer une deuxième fois pour s'assurer que tout est bien enregistré
-                            await new Promise(resolve => setTimeout(resolve, 1000));
-                            console.log("Enregistrement des modifications (deuxième clic)");
-                            btnEnregistrer.click();
-                        }
+                    // Sauvegarder les changements
+                    const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
+                    if (btnEnregistrer) {
+                        console.log("Première sauvegarde");
+                        btnEnregistrer.click();
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        
+                        console.log("Deuxième sauvegarde");
+                        btnEnregistrer.click();
+                        await new Promise(resolve => setTimeout(resolve, 3000));
                     }
                 }
             });
