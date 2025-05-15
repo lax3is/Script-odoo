@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.1.1
+// @version      2.1.2
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -325,8 +325,7 @@
             statusbar.insertBefore(btn, statusbar.firstChild);
 
             // Ajouter l'événement click
-            btn.addEventListener('click', async function(e) {
-                e.preventDefault();
+            btn.addEventListener('click', async function() {
                 console.log("Bouton cliqué");
                 enTraitement = !enTraitement;
 
@@ -422,132 +421,6 @@
         }
     }
 
-    // Fonction utilitaire pour extraire les initiales (jusqu'à 3 lettres)
-    function getInitiales(nomComplet) {
-        if (!nomComplet) return '';
-        // On prend les 3 premiers mots (prénom/nom composés)
-        const mots = nomComplet.trim().split(/\s+/).slice(0, 3);
-        return mots.map(m => m[0].toUpperCase()).join('');
-    }
-
-    // Fonction utilitaire pour la date/heure au format JJ/MM/AAAA HHhMM
-    function getDateHeureStr() {
-        const now = new Date();
-        const pad = n => n.toString().padStart(2, '0');
-        return `${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} ${pad(now.getHours())}H${pad(now.getMinutes())}`;
-    }
-
-    // Nouvelle fonction pour insérer le bouton initiales dans un conteneur dédié hors du texte clignotant
-    function ajouterBoutonInitialesOdoo() {
-        // Chercher la zone de réponse
-        const reponseField = document.querySelector('div#request_answer.note-editable');
-        if (!reponseField) return;
-
-        // Vérifier si le bouton existe déjà
-        if (document.getElementById('btn-initiales-odoo')) return;
-
-        // Créer le bouton compact style Odoo
-        const btn = document.createElement('button');
-        btn.id = 'btn-initiales-odoo';
-        btn.innerText = 'Ajouter les initiales';
-        btn.title = 'Insérer initiales, date et heure';
-        btn.className = 'btn btn-primary btn-sm';
-        btn.style.fontWeight = 'bold';
-        btn.style.fontSize = '13px';
-        btn.style.padding = '2px 10px';
-        btn.style.borderRadius = '5px';
-        btn.style.marginBottom = '8px';
-        btn.style.marginTop = '0';
-        btn.style.boxShadow = 'none';
-        btn.style.display = 'inline-block';
-
-        // Fonction pour afficher une popup d'alerte avec bouton OK
-        function showPopupAlerte(message) {
-            const modal = document.createElement('div');
-            modal.style.position = 'fixed';
-            modal.style.top = '0';
-            modal.style.left = '0';
-            modal.style.width = '100vw';
-            modal.style.height = '100vh';
-            modal.style.background = 'rgba(0,0,0,0.25)';
-            modal.style.zIndex = '9999';
-            modal.style.display = 'flex';
-            modal.style.alignItems = 'center';
-            modal.style.justifyContent = 'center';
-            modal.innerHTML = `<div style="background:#fff3cd;border:1px solid #ffeeba;padding:24px 32px;border-radius:8px;box-shadow:0 2px 16px rgba(0,0,0,0.12);font-size:16px;color:#856404;max-width:90vw;min-width:260px;text-align:center;">
-                <div style='margin-bottom:18px;font-weight:bold;'>${message}</div>
-                <button style='background:#007bff;color:white;border:none;padding:6px 22px;border-radius:4px;font-size:15px;cursor:pointer;font-weight:bold;'>OK</button>
-            </div>`;
-            document.body.appendChild(modal);
-            modal.querySelector('button').onclick = () => modal.remove();
-        }
-
-        btn.onclick = function(e) {
-            e.preventDefault();
-            let nom = '';
-            const assignField = document.querySelector('.o_field_widget[name="user_id"] .o_field_many2one span, .o_field_widget[name="user_id"] input');
-            if (assignField) {
-                nom = assignField.textContent || assignField.value || '';
-            }
-            if (!nom || nom.trim() === '') {
-                showPopupAlerte("Merci de vous assigner l'appel pour pouvoir ajouter vos initiales ! ⚠️");
-                return;
-            }
-            const initiales = getInitiales(nom);
-            const dateHeure = getDateHeureStr();
-            const texte = `${initiales} ${dateHeure} : `;
-            reponseField.focus();
-            // Insérer un bloc marqué pour pouvoir le retrouver, sans color
-            if (document.queryCommandSupported('insertHTML')) {
-                document.execCommand('insertHTML', false, `<div data-initiales-odoo style='margin-top:2px;font-weight:normal;display:block;'>${texte}</div>`);
-            } else {
-                reponseField.innerHTML += `<div data-initiales-odoo style='margin-top:2px;font-weight:normal;display:block;'>${texte}</div>`;
-            }
-            replacerInitialesSousClignotant();
-            const blocs = Array.from(reponseField.querySelectorAll('div[data-initiales-odoo]'));
-            const lastBloc = blocs[blocs.length - 1];
-            if (lastBloc) {
-                const textNode = lastBloc.firstChild;
-                if (textNode && textNode.nodeType === Node.TEXT_NODE) {
-                    const idx = textNode.textContent.lastIndexOf(':');
-                    if (idx !== -1) {
-                        const range = document.createRange();
-                        range.setStart(textNode, idx + 1);
-                        range.collapse(true);
-                        const sel = window.getSelection();
-                        sel.removeAllRanges();
-                        sel.addRange(range);
-                    }
-                }
-            }
-        };
-
-        // Ajouter le bouton au-dessus de la zone de réponse
-        reponseField.parentNode.insertBefore(btn, reponseField);
-    }
-
-    // Fonction utilitaire pour replacer tous les blocs d'initiales sous le texte clignotant
-    function replacerInitialesSousClignotant() {
-        const reponseField = document.querySelector('div#request_answer.note-editable');
-        const clignotant = document.getElementById('texte-clignotant-container');
-        if (!reponseField || !clignotant) return;
-        // Récupérer tous les blocs d'initiales (div insérés par le script)
-        const initialesBlocs = Array.from(reponseField.querySelectorAll('div[data-initiales-odoo]'));
-        if (!initialesBlocs.length) return;
-        // Les retirer du DOM (seulement s'ils existent encore)
-        initialesBlocs.forEach(b => {
-            if (b && b.parentNode) b.parentNode.removeChild(b);
-        });
-        // Les réinsérer juste après le clignotant, dans l'ordre d'origine, pour que les nouvelles soient toujours en bas
-        let last = clignotant;
-        initialesBlocs.forEach(b => {
-            if (last && last.parentNode) {
-                last.insertAdjacentElement('afterend', b);
-                last = b;
-            }
-        });
-    }
-
     // Fonction pour ajouter le texte clignotant
     function ajouterTexteCligonotant() {
         console.log("Ajout du texte clignotant");
@@ -615,9 +488,6 @@
         // Ajouter un espace après le wrapper
         const space = document.createTextNode(' ');
         wrapper.after(space);
-        // Ajouter le bouton initiales Odoo hors du texte clignotant
-        setTimeout(ajouterBoutonInitialesOdoo, 200);
-        setTimeout(replacerInitialesSousClignotant, 300); // Replacer les initiales après le clignotant
     }
 
     // Fonction pour vérifier l'état du traitement
@@ -858,7 +728,6 @@
                     ajouterBoutonTraiter();
                     ajouterBoutonCreerTicket(); // Ajouter le nouveau bouton
                     modifierBoutonCloture();
-                    ajouterBoutonInitialesOdoo(); // Toujours tenter d'ajouter le bouton initiales
                 }, 500);
             }
         }
