@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.1.0
+// @version      2.1.1
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -497,19 +497,16 @@
             const dateHeure = getDateHeureStr();
             const texte = `${initiales} ${dateHeure} : `;
             reponseField.focus();
-            // Insérer un bloc marqué pour pouvoir le retrouver
+            // Insérer un bloc marqué pour pouvoir le retrouver, sans color
             if (document.queryCommandSupported('insertHTML')) {
-                document.execCommand('insertHTML', false, `<div data-initiales-odoo style='margin-top:2px;color:#333;font-weight:normal;display:block;'>${texte}</div>`);
+                document.execCommand('insertHTML', false, `<div data-initiales-odoo style='margin-top:2px;font-weight:normal;display:block;'>${texte}</div>`);
             } else {
-                reponseField.innerHTML += `<div data-initiales-odoo style='margin-top:2px;color:#333;font-weight:normal;display:block;'>${texte}</div>`;
+                reponseField.innerHTML += `<div data-initiales-odoo style='margin-top:2px;font-weight:normal;display:block;'>${texte}</div>`;
             }
-            // Replacer tous les blocs d'initiales sous le clignotant
             replacerInitialesSousClignotant();
-            // Placer le curseur juste après le ':' du dernier bloc inséré
             const blocs = Array.from(reponseField.querySelectorAll('div[data-initiales-odoo]'));
             const lastBloc = blocs[blocs.length - 1];
             if (lastBloc) {
-                // Trouver la position du ':'
                 const textNode = lastBloc.firstChild;
                 if (textNode && textNode.nodeType === Node.TEXT_NODE) {
                     const idx = textNode.textContent.lastIndexOf(':');
@@ -536,13 +533,18 @@
         if (!reponseField || !clignotant) return;
         // Récupérer tous les blocs d'initiales (div insérés par le script)
         const initialesBlocs = Array.from(reponseField.querySelectorAll('div[data-initiales-odoo]'));
-        // Les retirer du DOM
-        initialesBlocs.forEach(b => b.remove());
-        // Les réinsérer juste après le clignotant, dans l'ordre d'origine
+        if (!initialesBlocs.length) return;
+        // Les retirer du DOM (seulement s'ils existent encore)
+        initialesBlocs.forEach(b => {
+            if (b && b.parentNode) b.parentNode.removeChild(b);
+        });
+        // Les réinsérer juste après le clignotant, dans l'ordre d'origine, pour que les nouvelles soient toujours en bas
         let last = clignotant;
         initialesBlocs.forEach(b => {
-            last.after(b);
-            last = b;
+            if (last && last.parentNode) {
+                last.insertAdjacentElement('afterend', b);
+                last = b;
+            }
         });
     }
 
