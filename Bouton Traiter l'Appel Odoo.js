@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.1.3
+// @version      2.1.4
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -340,7 +340,7 @@
                         btn.innerText = 'Mettre en Attente';
                         btn.className = 'btn btn-warning';
                         ajouterTexteCligonotant();
-
+                        
                         // Relancer le timer avec Alt+W
                         simulerRaccourciPause();
                         await new Promise(resolve => setTimeout(resolve, 3000));
@@ -374,7 +374,7 @@
                         console.log("Première sauvegarde");
                         btnEnregistrer.click();
                         await new Promise(resolve => setTimeout(resolve, 3000));
-
+                        
                         console.log("Deuxième sauvegarde");
                         btnEnregistrer.click();
                         await new Promise(resolve => setTimeout(resolve, 3000));
@@ -400,7 +400,7 @@
                         console.log("Première sauvegarde");
                         btnEnregistrer.click();
                         await new Promise(resolve => setTimeout(resolve, 3000));
-
+                        
                         console.log("Deuxième sauvegarde");
                         btnEnregistrer.click();
                         await new Promise(resolve => setTimeout(resolve, 3000));
@@ -529,7 +529,7 @@
         setInterval(async () => {
             if (estTicketResolu()) {
                 console.log("Ticket résolu détecté");
-
+                
                 // Vérifier si le timer est en cours
                 const etatTimer = verifierEtatTimer();
                 if (etatTimer === 'pause' || etatTimer === 'relancer') {
@@ -570,7 +570,7 @@
                     if (btnEnregistrer) {
                         console.log("Enregistrement des modifications après clôture (premier clic)");
                         btnEnregistrer.click();
-
+                        
                         // Attendre un peu et cliquer une deuxième fois
                         await new Promise(resolve => setTimeout(resolve, 1000));
                         console.log("Enregistrement des modifications après clôture (deuxième clic)");
@@ -604,17 +604,17 @@
             btn.style.marginRight = '5px';
             btn.style.marginLeft = 'auto';
             btn.style.order = '9999';
-
+            
             // Ajouter l'événement click
             btn.addEventListener('click', function() {
                 console.log("Bouton Créer un ticket cliqué");
-
+                
                 // Récupérer le nom de la pharmacie
                 const clientElement = document.querySelector('.o_field_widget[name="partner_id"] input');
                 if (clientElement) {
                     const nomPharmacie = clientElement.value;
                     console.log("Nom de la pharmacie récupéré:", nomPharmacie);
-
+                    
                     // Stocker temporairement le nom dans le localStorage
                     localStorage.setItem('pharmacie_a_copier', nomPharmacie);
                 }
@@ -629,7 +629,7 @@
                         localStorage.removeItem(key);
                     }
                 }
-
+                
                 // Rediriger vers la page de création de ticket
                 window.location.href = 'https://winprovence.odoo.com/web?debug=#menu_id=250&cids=1&action=368&model=helpdesk.ticket&view_type=form';
             });
@@ -667,6 +667,165 @@
             }, 500);
         }
     }
+
+    // === STYLE BOUTON UI-BTN ODOO LIGHT ===
+    const style = document.createElement('style');
+    style.textContent = `
+    .ui-btn {
+      --btn-default-bg: #f5f5f5;
+      --btn-padding: 6px 14px;
+      --btn-hover-bg: #e0e0e0;
+      --btn-transition: .2s;
+      --btn-letter-spacing: .05rem;
+      --btn-animation-duration: 1.2s;
+      --btn-shadow-color: rgba(0,0,0,0.07);
+      --btn-shadow: 0 1px 4px 0 var(--btn-shadow-color);
+      --hover-btn-color: #1DE9B6;
+      --default-btn-color: #222;
+      --font-size: 14px;
+      --font-weight: 500;
+      --font-family: inherit;
+      border-radius: 6px;
+    }
+    .ui-btn {
+      box-sizing: border-box;
+      padding: var(--btn-padding);
+      align-items: center;
+      justify-content: center;
+      color: var(--default-btn-color) !important;
+      font: var(--font-weight) var(--font-size) var(--font-family);
+      background: var(--btn-default-bg);
+      border: 1px solid #d1d1d1;
+      cursor: pointer;
+      transition: var(--btn-transition);
+      overflow: hidden;
+      box-shadow: var(--btn-shadow);
+      border-radius: 6px;
+      min-width: 0;
+      min-height: 0;
+      line-height: 1.2;
+      margin-bottom: 4px;
+    }
+    .ui-btn span {
+      letter-spacing: var(--btn-letter-spacing);
+      transition: var(--btn-transition);
+      box-sizing: border-box;
+      position: relative;
+      background: inherit;
+      display: inline-block;
+      color: #222 !important;
+    }
+    .ui-btn span::before {
+      box-sizing: border-box;
+      position: absolute;
+      left: 0; top: 0; right: 0; bottom: 0;
+      width: 100%; height: 100%;
+      content: none;
+      background: transparent;
+      pointer-events: none;
+    }
+    .ui-btn:hover, .ui-btn:focus {
+      background: var(--btn-hover-bg);
+    }
+    .ui-btn:hover span, .ui-btn:focus span {
+      color: var(--hover-btn-color) !important;
+    }
+    .ui-btn:hover span::before, .ui-btn:focus span::before {
+      animation: chitchat linear both var(--btn-animation-duration);
+    }
+    @keyframes chitchat {
+      0% { content: "#"; }
+      5% { content: "."; }
+      10% { content: "^{"; }
+      15% { content: "-!"; }
+      20% { content: "#$_"; }
+      25% { content: "№:0"; }
+      30% { content: "#{+."; }
+      35% { content: "@}-?"; }
+      40% { content: "?{4@%"; }
+      45% { content: "=.,^!"; }
+      50% { content: "?2@%"; }
+      55% { content: "\\;1}]"; }
+      60% { content: "?{%:%"; right: 0; }
+      65% { content: "|{f[4"; right: 0; }
+      70% { content: "{4%0%"; right: 0; }
+      75% { content: "'1_0<"; right: 0; }
+      80% { content: "{0%"; right: 0; }
+      85% { content: "]>'"; right: 0; }
+      90% { content: "4"; right: 0; }
+      95% { content: "2"; right: 0; }
+      100% { content: none; right: 0; }
+    }
+    `;
+    document.head.appendChild(style);
+
+    // === AJOUT BOUTON INSERER INITIALES ===
+    function ajouterBoutonInsererInitiales() {
+        // Ne pas dupliquer
+        if (document.getElementById('btn-inserer-initiales')) return;
+        // Créer le bouton
+        const btn = document.createElement('button');
+        btn.id = 'btn-inserer-initiales';
+        btn.className = 'btn btn-primary';
+        btn.type = 'button';
+        btn.textContent = 'Insérer initiales';
+        btn.addEventListener('click', function() {
+            const input = document.querySelector('input[name="user_id"], input#user_id.o-autocomplete--input, .o_field_many2one[name="user_id"] input');
+            if (!input || !input.value) {
+                alert("Aucun utilisateur assigné !");
+                return;
+            }
+            const nomComplet = input.value.trim();
+            const parties = nomComplet.split(/\s+|-/g);
+            const initiales = parties.map(p => p[0]?.toUpperCase() || '').filter(Boolean).join('.');
+            const now = new Date();
+            const pad = n => n.toString().padStart(2, '0');
+            const dateStr = `${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} ${pad(now.getHours())}H${pad(now.getMinutes())}`;
+            const texte = `${initiales} ${dateStr} : `;
+            // Créer le bloc d'initiales
+            const bloc = document.createElement('div');
+            bloc.className = 'bloc-initiales-odoo';
+            bloc.style.margin = '5px 0 0 0';
+            bloc.textContent = texte;
+            // Chercher le conteneur du texte rouge
+            const cligno = document.getElementById('texte-clignotant-container');
+            if (cligno && cligno.parentNode) {
+                // Insérer juste après le texte rouge
+                if (cligno.nextSibling) {
+                    cligno.parentNode.insertBefore(bloc, cligno.nextSibling);
+                } else {
+                    cligno.parentNode.appendChild(bloc);
+                }
+            } else {
+                // Sinon, en bas de la zone de réponse
+                const reponseField = document.querySelector('div#request_answer.note-editable');
+                if (reponseField) {
+                    reponseField.appendChild(bloc);
+                } else {
+                    alert("Zone de réponse non trouvée !");
+                }
+            }
+        });
+        // Chercher le bouton 'Envoyer un message client'
+        const btnMsg = document.querySelector('button.o_chatter_button_new_message, button[title*="message client"], button[accesskey="m"]');
+        if (btnMsg && btnMsg.parentNode) {
+            btnMsg.parentNode.insertBefore(btn, btnMsg);
+        } else {
+            // Sinon, juste avant la zone de réponse
+            const reponseField = document.querySelector('div#request_answer.note-editable');
+            if (reponseField && reponseField.parentNode) {
+                reponseField.parentNode.insertBefore(btn, reponseField);
+            }
+        }
+    }
+
+    // Observer pour garder le bouton visible
+    const observerBtnInitiales = new MutationObserver(() => {
+        setTimeout(ajouterBoutonInsererInitiales, 500);
+    });
+    observerBtnInitiales.observe(document.body, {childList: true, subtree: true});
+    // Appel initial direct
+    setTimeout(ajouterBoutonInsererInitiales, 1000);
 
     // Fonction pour initialiser le script
     function initialiserScript() {
@@ -714,6 +873,9 @@
                         boutonTraiter.click();
                     }
                 }
+
+                // Appel dans l'initialisation
+                ajouterBoutonInsererInitiales();
             }, 1000);
         } else {
             setTimeout(initialiserScript, 1000);
@@ -758,7 +920,7 @@
         lignesTickets.forEach(ligne => {
             // Récupérer tout le texte de la ligne
             const contenuLigne = ligne.textContent.toLowerCase();
-
+            
             // Vérifier si le texte "traitement de l'appel en cours" est présent
             if (contenuLigne.includes("traitement de l'appel en cours")) {
                 console.log("Ticket en traitement trouvé !");
@@ -777,15 +939,15 @@
         const style = document.createElement('style');
         style.textContent = `
             @keyframes ticketEnTraitement {
-                0% {
+                0% { 
                     box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.7);
                     background-color: rgba(0, 123, 255, 0.15);
                 }
-                50% {
+                50% { 
                     box-shadow: 0 0 15px 0 rgba(0, 123, 255, 0.9);
                     background-color: rgba(0, 123, 255, 0.05);
                 }
-                100% {
+                100% { 
                     box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.7);
                     background-color: rgba(0, 123, 255, 0.15);
                 }
@@ -806,8 +968,8 @@
     const observerTickets = new MutationObserver((mutations) => {
         if (window.location.href.includes('model=helpdesk.ticket&view_type=list')) {
             for (const mutation of mutations) {
-                if (mutation.addedNodes.length ||
-                    mutation.type === 'characterData' ||
+                if (mutation.addedNodes.length || 
+                    mutation.type === 'characterData' || 
                     mutation.type === 'childList') {
                     setTimeout(() => {
                         mettreAJourAnimationTickets();
@@ -825,7 +987,7 @@
             subtree: true,
             characterData: true
         });
-
+        
         // Mettre à jour l'animation toutes les 2 secondes
         setInterval(mettreAJourAnimationTickets, 2000);
     }
@@ -838,7 +1000,7 @@
     function createClearButton() {
         // Rechercher le champ "Assigné à" avec plusieurs sélecteurs possibles
         const input = document.querySelector('input[name="user_id"], input#user_id.o-autocomplete--input, .o_field_many2one[name="user_id"] input');
-
+        
         if (!input) {
             console.log("Champ 'Assigné à' non trouvé");
             return;
@@ -889,11 +1051,11 @@
             try {
                 // Vider le champ
                 input.value = '';
-
+                
                 // Déclencher les événements nécessaires
                 input.dispatchEvent(new Event('input', { bubbles: true }));
                 input.dispatchEvent(new Event('change', { bubbles: true }));
-
+                
                 // Attendre un court délai pour s'assurer que les événements sont traités
                 await new Promise(resolve => setTimeout(resolve, 300));
 
@@ -944,4 +1106,23 @@
 
     // Vérification périodique
     setInterval(createClearButton, 5000);
+
+    const styleBtnInitiales = document.createElement('style');
+    styleBtnInitiales.textContent = `
+    #btn-inserer-initiales {
+      color: #fff !important;
+      background-color: #17b6b2 !important;
+      border-radius: 6px !important;
+      border: none !important;
+      font-weight: 500;
+      font-size: 13px;
+      padding: 4px 10px;
+      box-shadow: none;
+    }
+    #btn-inserer-initiales:hover, #btn-inserer-initiales:focus {
+      background-color: #139e9a !important;
+      color: #fff !important;
+    }
+    `;
+    document.head.appendChild(styleBtnInitiales);
 })();
