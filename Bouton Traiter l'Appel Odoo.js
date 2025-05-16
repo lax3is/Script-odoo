@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.1.2
+// @version      2.1.3
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -340,7 +340,7 @@
                         btn.innerText = 'Mettre en Attente';
                         btn.className = 'btn btn-warning';
                         ajouterTexteCligonotant();
-                        
+
                         // Relancer le timer avec Alt+W
                         simulerRaccourciPause();
                         await new Promise(resolve => setTimeout(resolve, 3000));
@@ -374,7 +374,7 @@
                         console.log("Première sauvegarde");
                         btnEnregistrer.click();
                         await new Promise(resolve => setTimeout(resolve, 3000));
-                        
+
                         console.log("Deuxième sauvegarde");
                         btnEnregistrer.click();
                         await new Promise(resolve => setTimeout(resolve, 3000));
@@ -400,7 +400,7 @@
                         console.log("Première sauvegarde");
                         btnEnregistrer.click();
                         await new Promise(resolve => setTimeout(resolve, 3000));
-                        
+
                         console.log("Deuxième sauvegarde");
                         btnEnregistrer.click();
                         await new Promise(resolve => setTimeout(resolve, 3000));
@@ -529,7 +529,7 @@
         setInterval(async () => {
             if (estTicketResolu()) {
                 console.log("Ticket résolu détecté");
-                
+
                 // Vérifier si le timer est en cours
                 const etatTimer = verifierEtatTimer();
                 if (etatTimer === 'pause' || etatTimer === 'relancer') {
@@ -570,7 +570,7 @@
                     if (btnEnregistrer) {
                         console.log("Enregistrement des modifications après clôture (premier clic)");
                         btnEnregistrer.click();
-                        
+
                         // Attendre un peu et cliquer une deuxième fois
                         await new Promise(resolve => setTimeout(resolve, 1000));
                         console.log("Enregistrement des modifications après clôture (deuxième clic)");
@@ -604,17 +604,17 @@
             btn.style.marginRight = '5px';
             btn.style.marginLeft = 'auto';
             btn.style.order = '9999';
-            
+
             // Ajouter l'événement click
             btn.addEventListener('click', function() {
                 console.log("Bouton Créer un ticket cliqué");
-                
+
                 // Récupérer le nom de la pharmacie
                 const clientElement = document.querySelector('.o_field_widget[name="partner_id"] input');
                 if (clientElement) {
                     const nomPharmacie = clientElement.value;
                     console.log("Nom de la pharmacie récupéré:", nomPharmacie);
-                    
+
                     // Stocker temporairement le nom dans le localStorage
                     localStorage.setItem('pharmacie_a_copier', nomPharmacie);
                 }
@@ -629,7 +629,7 @@
                         localStorage.removeItem(key);
                     }
                 }
-                
+
                 // Rediriger vers la page de création de ticket
                 window.location.href = 'https://winprovence.odoo.com/web?debug=#menu_id=250&cids=1&action=368&model=helpdesk.ticket&view_type=form';
             });
@@ -758,7 +758,7 @@
         lignesTickets.forEach(ligne => {
             // Récupérer tout le texte de la ligne
             const contenuLigne = ligne.textContent.toLowerCase();
-            
+
             // Vérifier si le texte "traitement de l'appel en cours" est présent
             if (contenuLigne.includes("traitement de l'appel en cours")) {
                 console.log("Ticket en traitement trouvé !");
@@ -777,15 +777,15 @@
         const style = document.createElement('style');
         style.textContent = `
             @keyframes ticketEnTraitement {
-                0% { 
+                0% {
                     box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.7);
                     background-color: rgba(0, 123, 255, 0.15);
                 }
-                50% { 
+                50% {
                     box-shadow: 0 0 15px 0 rgba(0, 123, 255, 0.9);
                     background-color: rgba(0, 123, 255, 0.05);
                 }
-                100% { 
+                100% {
                     box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.7);
                     background-color: rgba(0, 123, 255, 0.15);
                 }
@@ -806,8 +806,8 @@
     const observerTickets = new MutationObserver((mutations) => {
         if (window.location.href.includes('model=helpdesk.ticket&view_type=list')) {
             for (const mutation of mutations) {
-                if (mutation.addedNodes.length || 
-                    mutation.type === 'characterData' || 
+                if (mutation.addedNodes.length ||
+                    mutation.type === 'characterData' ||
                     mutation.type === 'childList') {
                     setTimeout(() => {
                         mettreAJourAnimationTickets();
@@ -825,7 +825,7 @@
             subtree: true,
             characterData: true
         });
-        
+
         // Mettre à jour l'animation toutes les 2 secondes
         setInterval(mettreAJourAnimationTickets, 2000);
     }
@@ -838,7 +838,7 @@
     function createClearButton() {
         // Rechercher le champ "Assigné à" avec plusieurs sélecteurs possibles
         const input = document.querySelector('input[name="user_id"], input#user_id.o-autocomplete--input, .o_field_many2one[name="user_id"] input');
-        
+
         if (!input) {
             console.log("Champ 'Assigné à' non trouvé");
             return;
@@ -889,11 +889,11 @@
             try {
                 // Vider le champ
                 input.value = '';
-                
+
                 // Déclencher les événements nécessaires
                 input.dispatchEvent(new Event('input', { bubbles: true }));
                 input.dispatchEvent(new Event('change', { bubbles: true }));
-                
+
                 // Attendre un court délai pour s'assurer que les événements sont traités
                 await new Promise(resolve => setTimeout(resolve, 300));
 
