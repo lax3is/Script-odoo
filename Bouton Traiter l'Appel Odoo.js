@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.1.4
+// @version      2.1.5
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -1125,4 +1125,138 @@
     }
     `;
     document.head.appendChild(styleBtnInitiales);
+
+    // === ANIMATION ET NOTIFICATIONS RAPPEL RDV ===
+    // Ajout des styles d'animation
+    const styleRdv = document.createElement('style');
+    styleRdv.textContent = `
+    .rdv-clignote-orange {
+      animation: rdvOrange 1.2s infinite alternate;
+    }
+    .rdv-clignote-rouge {
+      animation: rdvRouge 0.8s infinite alternate;
+    }
+    @keyframes rdvOrange {
+      from { background: transparent; color: inherit; }
+      to { background: #ff9800; color: #fff; }
+    }
+    @keyframes rdvRouge {
+      from { background: transparent; color: inherit; }
+      to { background: #e53935; color: #fff; }
+    }
+    .rdv-notif-odoo {
+      position: fixed;
+      top: 30px;
+      right: 30px;
+      left: auto;
+      transform: none;
+      background: #e53935;
+      color: #fff;
+      padding: 16px 32px 16px 20px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: bold;
+      z-index: 99999;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+      opacity: 0.97;
+      transition: opacity 0.3s;
+      min-width: 320px;
+      max-width: 480px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .rdv-notif-close {
+      margin-left: auto;
+      color: #1DE9B6;
+      font-size: 18px;
+      font-weight: normal;
+      background: none;
+      border: none;
+      cursor: pointer;
+      opacity: 0.7;
+      transition: opacity 0.2s;
+    }
+    .rdv-notif-close:hover { opacity: 1; }
+    `;
+    document.head.appendChild(styleRdv);
+
+    // Fonction pour afficher une notification en haut
+    function afficherNotifRdv(message, rdvKey) {
+        if (localStorage.getItem('notifFermee_' + rdvKey)) return; // Ne pas réafficher si déjà fermée
+        if (document.getElementById('rdv-notif-odoo')) return; // éviter les doublons
+        const notif = document.createElement('div');
+        notif.id = 'rdv-notif-odoo';
+        notif.className = 'rdv-notif-odoo';
+        notif.textContent = message;
+        // Ajout croix
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'rdv-notif-close';
+        closeBtn.innerHTML = '✖';
+        closeBtn.onclick = () => {
+            notif.remove();
+            if (rdvKey) localStorage.setItem('notifFermee_' + rdvKey, '1');
+        };
+        notif.appendChild(closeBtn);
+        document.body.appendChild(notif);
+    }
+
+    // Fonction principale de scan des rappels
+    function scanRappelsRdv() {
+        // Trouver l'index de la colonne "Nouveau rendez-vous"
+        const ths = document.querySelectorAll('table thead th');
+        let idxRdv = -1;
+        ths.forEach((th, i) => {
+            if (th.textContent.toLowerCase().includes('nouveau rendez-vous')) idxRdv = i;
+        });
+        if (idxRdv === -1) return;
+        // Chercher le tableau des tickets
+        const lignes = document.querySelectorAll('tr.o_data_row');
+        lignes.forEach(ligne => {
+            const cells = ligne.querySelectorAll('td');
+            const cellRdv = cells[idxRdv];
+            let cellPharma = null;
+            cells.forEach(cell => {
+                if (/pharmacie|pharma|pharmacies|pharmacie/i.test(cell.textContent)) cellPharma = cell;
+            });
+            if (!cellRdv) return;
+            // Extraire la date
+            const match = cellRdv.textContent.match(/(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})/);
+            if (!match) {
+                // Si la date n'est plus présente, retirer les classes
+                cellRdv.classList.remove('rdv-clignote-orange','rdv-clignote-rouge');
+                return;
+            }
+            const [_, jj, mm, aaaa, hh, min, ss] = match;
+            const dateRdv = new Date(`${aaaa}-${mm}-${jj}T${hh}:${min}:${ss}`);
+            const now = new Date();
+            const diff = (dateRdv - now) / 60000;
+            // Si le rdv n'est pas aujourd'hui, retirer les classes et ne rien faire
+            if (dateRdv.toDateString() !== now.toDateString()) {
+                cellRdv.classList.remove('rdv-clignote-orange','rdv-clignote-rouge');
+                return;
+            }
+            // Si le rdv est dépassé, retirer les classes
+            if (diff < 0) {
+                cellRdv.classList.remove('rdv-clignote-orange','rdv-clignote-rouge');
+                return;
+            }
+            // Sinon, appliquer la bonne classe (et ne jamais la retirer tant que le RDV n'est pas dépassé)
+            if (diff <= 10) {
+                cellRdv.classList.add('rdv-clignote-rouge');
+                cellRdv.classList.remove('rdv-clignote-orange');
+                // Notification (à chaque scan si pas fermée)
+                const rdvKey = `${cellRdv.textContent.trim()}_${cellPharma ? cellPharma.textContent.trim() : ''}`;
+                if (!localStorage.getItem('notifFermee_' + rdvKey)) {
+                    const nomPharma = cellPharma ? cellPharma.textContent.trim() : 'Client';
+                    afficherNotifRdv(`Rendez-vous dans 10 minutes : ${nomPharma} à ${hh}:${min}`, rdvKey);
+                }
+            } else {
+                cellRdv.classList.add('rdv-clignote-orange');
+                cellRdv.classList.remove('rdv-clignote-rouge');
+            }
+        });
+    }
+    setInterval(scanRappelsRdv, 2000); // toutes les 2s
+    setTimeout(scanRappelsRdv, 1000); // au chargement
 })();
