@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.1.5
+// @version      2.1.6
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -1136,6 +1136,10 @@
     .rdv-clignote-rouge {
       animation: rdvRouge 0.8s infinite alternate;
     }
+    .rdv-clignote-depasse {
+      animation: rdvDepasse 0.5s infinite alternate;
+      box-shadow: 0 0 15px rgba(229, 57, 53, 0.7);
+    }
     @keyframes rdvOrange {
       from { background: transparent; color: inherit; }
       to { background: #ff9800; color: #fff; }
@@ -1143,6 +1147,23 @@
     @keyframes rdvRouge {
       from { background: transparent; color: inherit; }
       to { background: #e53935; color: #fff; }
+    }
+    @keyframes rdvDepasse {
+      0% { 
+        background: #e53935;
+        color: #fff;
+        box-shadow: 0 0 15px rgba(229, 57, 53, 0.7);
+      }
+      50% { 
+        background: #b71c1c;
+        color: #fff;
+        box-shadow: 0 0 25px rgba(229, 57, 53, 0.9);
+      }
+      100% { 
+        background: #e53935;
+        color: #fff;
+        box-shadow: 0 0 15px rgba(229, 57, 53, 0.7);
+      }
     }
     .rdv-notif-odoo {
       position: fixed;
@@ -1166,6 +1187,22 @@
       align-items: center;
       gap: 12px;
     }
+    .rdv-notif-depasse {
+      background: #b71c1c;
+      animation: notifDepasse 1s infinite alternate;
+      box-shadow: 0 0 20px rgba(229, 57, 53, 0.8);
+    }
+    @keyframes notifDepasse {
+      0% {
+        box-shadow: 0 0 20px rgba(229, 57, 53, 0.8);
+      }
+      50% {
+        box-shadow: 0 0 30px rgba(229, 57, 53, 1);
+      }
+      100% {
+        box-shadow: 0 0 20px rgba(229, 57, 53, 0.8);
+      }
+    }
     .rdv-notif-close {
       margin-left: auto;
       color: #1DE9B6;
@@ -1182,12 +1219,12 @@
     document.head.appendChild(styleRdv);
 
     // Fonction pour afficher une notification en haut
-    function afficherNotifRdv(message, rdvKey) {
+    function afficherNotifRdv(message, rdvKey, estDepasse = false) {
         if (localStorage.getItem('notifFermee_' + rdvKey)) return; // Ne pas réafficher si déjà fermée
         if (document.getElementById('rdv-notif-odoo')) return; // éviter les doublons
         const notif = document.createElement('div');
         notif.id = 'rdv-notif-odoo';
-        notif.className = 'rdv-notif-odoo';
+        notif.className = 'rdv-notif-odoo' + (estDepasse ? ' rdv-notif-depasse' : '');
         notif.textContent = message;
         // Ajout croix
         const closeBtn = document.createElement('button');
@@ -1224,7 +1261,7 @@
             const match = cellRdv.textContent.match(/(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})/);
             if (!match) {
                 // Si la date n'est plus présente, retirer les classes
-                cellRdv.classList.remove('rdv-clignote-orange','rdv-clignote-rouge');
+                cellRdv.classList.remove('rdv-clignote-orange','rdv-clignote-rouge','rdv-clignote-depasse');
                 return;
             }
             const [_, jj, mm, aaaa, hh, min, ss] = match;
@@ -1233,18 +1270,25 @@
             const diff = (dateRdv - now) / 60000;
             // Si le rdv n'est pas aujourd'hui, retirer les classes et ne rien faire
             if (dateRdv.toDateString() !== now.toDateString()) {
-                cellRdv.classList.remove('rdv-clignote-orange','rdv-clignote-rouge');
+                cellRdv.classList.remove('rdv-clignote-orange','rdv-clignote-rouge','rdv-clignote-depasse');
                 return;
             }
-            // Si le rdv est dépassé, retirer les classes
+            // Si le rdv est dépassé
             if (diff < 0) {
+                cellRdv.classList.add('rdv-clignote-depasse');
                 cellRdv.classList.remove('rdv-clignote-orange','rdv-clignote-rouge');
+                // Notification pour RDV dépassé
+                const rdvKey = `depasse_${cellRdv.textContent.trim()}_${cellPharma ? cellPharma.textContent.trim() : ''}`;
+                if (!localStorage.getItem('notifFermee_' + rdvKey)) {
+                    const nomPharma = cellPharma ? cellPharma.textContent.trim() : 'Client';
+                    afficherNotifRdv(`⚠️ Attention : Heure de rendez-vous dépassée pour ${nomPharma} (${hh}:${min})`, rdvKey, true);
+                }
                 return;
             }
             // Sinon, appliquer la bonne classe (et ne jamais la retirer tant que le RDV n'est pas dépassé)
             if (diff <= 10) {
                 cellRdv.classList.add('rdv-clignote-rouge');
-                cellRdv.classList.remove('rdv-clignote-orange');
+                cellRdv.classList.remove('rdv-clignote-orange','rdv-clignote-depasse');
                 // Notification (à chaque scan si pas fermée)
                 const rdvKey = `${cellRdv.textContent.trim()}_${cellPharma ? cellPharma.textContent.trim() : ''}`;
                 if (!localStorage.getItem('notifFermee_' + rdvKey)) {
@@ -1253,7 +1297,7 @@
                 }
             } else {
                 cellRdv.classList.add('rdv-clignote-orange');
-                cellRdv.classList.remove('rdv-clignote-rouge');
+                cellRdv.classList.remove('rdv-clignote-rouge','rdv-clignote-depasse');
             }
         });
     }
