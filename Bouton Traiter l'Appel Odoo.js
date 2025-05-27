@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.1.6
+// @version      2.1.7
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -17,6 +17,10 @@
     console.log("Script de traitement d'appel démarré");
 
     let intervalId = null; // Pour stocker l'ID de l'intervalle de clignotement
+    let timerState = {
+        isRunning: false,
+        isProcessing: false
+    };
 
     // Fonction pour sauvegarder l'état du traitement
     function sauvegarderEtat(enTraitement, ticketId) {
@@ -152,6 +156,9 @@
 
     // Fonction pour simuler le raccourci clavier Alt+Z
     function simulerRaccourciTimer() {
+        if (timerState.isProcessing) return;
+        timerState.isProcessing = true;
+        
         const event = new KeyboardEvent('keydown', {
             key: 'z',
             code: 'KeyZ',
@@ -160,10 +167,17 @@
             cancelable: true
         });
         document.dispatchEvent(event);
+        
+        setTimeout(() => {
+            timerState.isProcessing = false;
+        }, 1000);
     }
 
     // Fonction pour simuler le raccourci clavier Alt+W
     function simulerRaccourciPause() {
+        if (timerState.isProcessing) return;
+        timerState.isProcessing = true;
+        
         const event = new KeyboardEvent('keydown', {
             key: 'w',
             code: 'KeyW',
@@ -172,10 +186,17 @@
             cancelable: true
         });
         document.dispatchEvent(event);
+        
+        setTimeout(() => {
+            timerState.isProcessing = false;
+        }, 1000);
     }
 
     // Fonction pour simuler le raccourci clavier Alt+Q
     function simulerRaccourciStop() {
+        if (timerState.isProcessing) return;
+        timerState.isProcessing = true;
+        
         const event = new KeyboardEvent('keydown', {
             key: 'q',
             code: 'KeyQ',
@@ -184,95 +205,10 @@
             cancelable: true
         });
         document.dispatchEvent(event);
-    }
-
-    // Fonction pour démarrer le timer avec le raccourci clavier
-    async function demarrerTimer(ticketId) {
-        try {
-            // Attendre que la page soit complètement chargée
-            await new Promise(resolve => {
-                const checkPage = () => {
-                    if (document.readyState === 'complete') {
-                        resolve();
-                    } else {
-                        setTimeout(checkPage, 100);
-                    }
-                };
-                checkPage();
-            });
-
-            // Simuler Alt+Z
-            console.log("Simulation du raccourci Alt+Z");
-            simulerRaccourciTimer();
-
-            // Attendre un peu pour s'assurer que l'action est prise en compte
-            await new Promise(resolve => setTimeout(resolve, 500));
-            return true;
-        } catch (error) {
-            console.error("Erreur lors du démarrage du timer:", error);
-            return false;
-        }
-    }
-
-    // Fonction pour mettre en pause le timer
-    async function mettreEnPauseTimer() {
-        try {
-            // Attendre que la page soit complètement chargée
-            await new Promise(resolve => {
-                const checkPage = () => {
-                    if (document.readyState === 'complete') {
-                        resolve();
-                    } else {
-                        setTimeout(checkPage, 100);
-                    }
-                };
-                checkPage();
-            });
-
-            // Simuler Alt+W
-            console.log("Simulation du raccourci Alt+W");
-            simulerRaccourciPause();
-
-            // Attendre un peu pour s'assurer que l'action est prise en compte
-            await new Promise(resolve => setTimeout(resolve, 500));
-            return true;
-        } catch (error) {
-            console.error("Erreur lors de la mise en pause du timer:", error);
-            return false;
-        }
-    }
-
-    // Fonction pour arrêter complètement le timer
-    async function arreterTimer() {
-        try {
-            // Attendre que la page soit chargée
-            await new Promise(resolve => {
-                const checkPage = () => {
-                    if (document.readyState === 'complete') {
-                        resolve();
-                    } else {
-                        setTimeout(checkPage, 100);
-                    }
-                };
-                checkPage();
-            });
-
-            // Simuler Alt+Z pour mettre en pause
-            console.log("Simulation du raccourci Alt+Z");
-            simulerRaccourciTimer();
-
-            // Attendre avant d'envoyer Alt+Q
-            await new Promise(resolve => setTimeout(resolve, 500));
-
-            // Simuler Alt+Q pour arrêter
-            console.log("Simulation du raccourci Alt+Q");
-            simulerRaccourciStop();
-
-            return true;
-        } catch (error) {
-            console.error("Erreur lors de l'arrêt du timer:", error);
-            return false;
-        }
+        
+        setTimeout(() => {
+            timerState.isProcessing = false;
+        }, 1000);
     }
 
     // Fonction pour vérifier l'état du timer
@@ -282,12 +218,16 @@
         const btnRelancer = document.querySelector('button[name="action_timer_resume"][type="object"]');
 
         if (btnRelancer) {
+            timerState.isRunning = true;
             return 'relancer';
         } else if (btnPause) {
+            timerState.isRunning = true;
             return 'pause';
         } else if (btnLancer) {
+            timerState.isRunning = false;
             return 'lancer';
         }
+        timerState.isRunning = false;
         return null;
     }
 
@@ -326,62 +266,105 @@
 
             // Ajouter l'événement click
             btn.addEventListener('click', async function() {
+                if (timerState.isProcessing) {
+                    console.log("Une action est déjà en cours, veuillez patienter...");
+                    return;
+                }
+
                 console.log("Bouton cliqué");
                 enTraitement = !enTraitement;
 
                 if (enTraitement) {
-                    // Vérifier l'état du timer pour déterminer l'action
                     const etatTimer = verifierEtatTimer();
                     const estEnPause = etatTimer === 'relancer';
 
                     if (estEnPause) {
                         // Cas 3: Reprendre l'appel
                         console.log("Reprise de l'appel");
+                        
+                        // 1. Relancer le timer en premier
+                        console.log("Démarrage du timer");
+                        simulerRaccourciPause();
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        
+                        // Vérifier si le timer a bien démarré
+                        const nouvelEtat = verifierEtatTimer();
+                        if (nouvelEtat !== 'pause') {
+                            console.log("Le timer n'a pas démarré, nouvelle tentative...");
+                            simulerRaccourciPause();
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                        }
+                        
+                        // 2. Mettre à jour l'interface
                         btn.innerText = 'Mettre en Attente';
                         btn.className = 'btn btn-warning';
                         ajouterTexteCligonotant();
                         
-                        // Relancer le timer avec Alt+W
-                        simulerRaccourciPause();
-                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        // 3. Sauvegarder
+                        const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
+                        if (btnEnregistrer) {
+                            console.log("Sauvegarde des modifications");
+                            btnEnregistrer.click();
+                        }
                     } else {
                         // Cas 1: Traiter l'appel
                         console.log("Traitement de l'appel");
-                        btn.innerText = 'Mettre en Attente';
-                        btn.className = 'btn btn-warning';
-                        ajouterTexteCligonotant();
-
-                        // Vérifier si le bouton ME L'ASSIGNER est disponible
+                        
+                        // 1. Démarrer le timer en premier
+                        console.log("Démarrage du timer");
+                        simulerRaccourciTimer();
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        
+                        // Vérifier si le timer a bien démarré
+                        const nouvelEtat = verifierEtatTimer();
+                        if (nouvelEtat !== 'pause') {
+                            console.log("Le timer n'a pas démarré, nouvelle tentative...");
+                            simulerRaccourciTimer();
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                        }
+                        
+                        // 2. Vérifier si le bouton ME L'ASSIGNER est disponible
                         const btnAssigner = trouverBoutonAssigner();
                         if (btnAssigner) {
                             console.log("Bouton ME L'ASSIGNER trouvé, clic automatique");
                             btnAssigner.click();
-                            await new Promise(resolve => setTimeout(resolve, 3000));
+                            await new Promise(resolve => setTimeout(resolve, 500));
                         }
 
-                        // Démarrer le timer avec Alt+Z
-                        simulerRaccourciTimer();
-                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        // 3. Mettre à jour l'interface
+                        btn.innerText = 'Mettre en Attente';
+                        btn.className = 'btn btn-warning';
+                        ajouterTexteCligonotant();
+
+                        // 4. Sauvegarder
+                        const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
+                        if (btnEnregistrer) {
+                            console.log("Sauvegarde des modifications");
+                            btnEnregistrer.click();
+                        }
                     }
 
                     if (ticketId) {
                         sauvegarderEtat(true, ticketId);
                     }
-
-                    // Sauvegarder les changements
-                    const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
-                    if (btnEnregistrer) {
-                        console.log("Première sauvegarde");
-                        btnEnregistrer.click();
-                        await new Promise(resolve => setTimeout(resolve, 3000));
-                        
-                        console.log("Deuxième sauvegarde");
-                        btnEnregistrer.click();
-                        await new Promise(resolve => setTimeout(resolve, 3000));
-                    }
                 } else {
                     // Cas 2: Mettre en pause
                     console.log("Mise en pause de l'appel");
+                    
+                    // 1. Mettre en pause le timer en premier
+                    console.log("Mise en pause du timer");
+                    simulerRaccourciPause();
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    
+                    // Vérifier si le timer est bien en pause
+                    const nouvelEtat = verifierEtatTimer();
+                    if (nouvelEtat !== 'relancer') {
+                        console.log("Le timer n'est pas en pause, nouvelle tentative...");
+                        simulerRaccourciPause();
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                    
+                    // 2. Mettre à jour l'interface
                     btn.innerText = 'Traiter l\'appel';
                     btn.className = 'btn btn-primary';
                     supprimerTexteCligonotant();
@@ -390,20 +373,11 @@
                         sauvegarderEtat(false, ticketId);
                     }
 
-                    // Mettre en pause avec Alt+W
-                    simulerRaccourciPause();
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-
-                    // Sauvegarder les changements
+                    // 3. Sauvegarder
                     const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
                     if (btnEnregistrer) {
-                        console.log("Première sauvegarde");
+                        console.log("Sauvegarde des modifications");
                         btnEnregistrer.click();
-                        await new Promise(resolve => setTimeout(resolve, 3000));
-                        
-                        console.log("Deuxième sauvegarde");
-                        btnEnregistrer.click();
-                        await new Promise(resolve => setTimeout(resolve, 3000));
                     }
                 }
             });
@@ -525,56 +499,91 @@
 
     // Fonction pour gérer la clôture du ticket
     function gererClotureTicket() {
-        // Vérifier régulièrement si le ticket devient résolu
+        let isProcessingClosure = false;
+
         setInterval(async () => {
-            if (estTicketResolu()) {
+            if (estTicketResolu() && !isProcessingClosure && !timerState.isProcessing) {
                 console.log("Ticket résolu détecté");
                 
-                // Vérifier si le timer est en cours
                 const etatTimer = verifierEtatTimer();
                 if (etatTimer === 'pause' || etatTimer === 'relancer') {
-                    console.log("Timer en cours détecté, arrêt complet du timer");
+                    isProcessingClosure = true;
+                    console.log("Timer en cours détecté, début de la séquence de clôture");
 
-                    // Forcer la fin de traitement
-                    const ticketId = obtenirTicketId();
-                    if (ticketId) {
-                        sauvegarderEtat(false, ticketId);
-                    }
+                    try {
+                        // 1. Supprimer le texte clignotant en premier
+                        console.log("Suppression du texte clignotant");
+                        supprimerTexteCligonotant();
+                        await new Promise(resolve => setTimeout(resolve, 200));
 
-                    // Séquence d'arrêt : Alt+Z puis Alt+Q
-                    console.log("Exécution de la séquence d'arrêt Alt+Z puis Alt+Q");
-                    simulerRaccourciTimer(); // Alt+Z
+                        // 2. Mettre à jour l'interface du bouton
+                        const boutonTraiter = document.getElementById('btn-traiter-appel');
+                        if (boutonTraiter) {
+                            boutonTraiter.innerText = 'Traiter l\'appel';
+                            boutonTraiter.className = 'btn btn-primary';
+                        }
 
-                    // Attendre avant Alt+Q
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    simulerRaccourciStop(); // Alt+Q
+                        // 3. Simuler Alt+Z une seule fois pour ouvrir la fiche de temps
+                        console.log("Ouverture de la fiche de temps (Alt+Z)");
+                        simulerRaccourciTimer();
+                        await new Promise(resolve => setTimeout(resolve, 300));
 
-                    // Attendre avant de continuer
-                    await new Promise(resolve => setTimeout(resolve, 500));
+                        // 4. Attendre que la fiche de temps soit ouverte
+                        let ficheTemps = null;
+                        let tentatives = 0;
+                        while (!ficheTemps && tentatives < 3) {
+                            ficheTemps = document.querySelector('.o_timer_dialog');
+                            if (!ficheTemps) {
+                                await new Promise(resolve => setTimeout(resolve, 200));
+                                tentatives++;
+                            }
+                        }
 
-                    // Mettre à jour le bouton
-                    const boutonTraiter = document.getElementById('btn-traiter-appel');
-                    if (boutonTraiter) {
-                        boutonTraiter.innerText = 'Traiter l\'appel';
-                        boutonTraiter.className = 'btn btn-primary';
-                    }
+                        if (ficheTemps) {
+                            console.log("Fiche de temps ouverte, attente de 1 seconde pour le remplissage");
+                            // Attendre que l'utilisateur remplisse la fiche de temps
+                            await new Promise(resolve => setTimeout(resolve, 1000));
 
-                    // Supprimer le texte clignotant
-                    supprimerTexteCligonotant();
+                            // 5. Simuler Alt+Q pour fermer la fiche de temps
+                            console.log("Fermeture de la fiche de temps (Alt+Q)");
+                            simulerRaccourciStop();
+                            await new Promise(resolve => setTimeout(resolve, 300));
 
-                    // Attendre un peu pour s'assurer que le texte est bien supprimé
-                    await new Promise(resolve => setTimeout(resolve, 500));
+                            // 6. Vérifier que la fiche est bien fermée
+                            if (document.querySelector('.o_timer_dialog')) {
+                                console.log("La fiche de temps n'est pas fermée, nouvelle tentative Alt+Q");
+                                simulerRaccourciStop();
+                                await new Promise(resolve => setTimeout(resolve, 300));
+                            }
+                        } else {
+                            console.log("La fiche de temps n'a pas pu être ouverte");
+                        }
 
-                    // Faire un double clic sur le bouton de sauvegarde
-                    const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
-                    if (btnEnregistrer) {
-                        console.log("Enregistrement des modifications après clôture (premier clic)");
-                        btnEnregistrer.click();
-                        
-                        // Attendre un peu et cliquer une deuxième fois
-                        await new Promise(resolve => setTimeout(resolve, 1000));
-                        console.log("Enregistrement des modifications après clôture (deuxième clic)");
-                        btnEnregistrer.click();
+                        // 7. Sauvegarder l'état
+                        const ticketId = obtenirTicketId();
+                        if (ticketId) {
+                            sauvegarderEtat(false, ticketId);
+                        }
+
+                        // 8. Sauvegarder les modifications
+                        const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
+                        if (btnEnregistrer) {
+                            console.log("Sauvegarde des modifications après clôture");
+                            btnEnregistrer.click();
+                            await new Promise(resolve => setTimeout(resolve, 300));
+                        }
+
+                        // 9. Dernier Alt+Q pour s'assurer que tout est bien fermé
+                        console.log("Dernier Alt+Q pour finaliser la clôture");
+                        simulerRaccourciStop();
+                        await new Promise(resolve => setTimeout(resolve, 300));
+
+                        console.log("Séquence de clôture terminée");
+                    } finally {
+                        setTimeout(() => {
+                            isProcessingClosure = false;
+                            console.log("Traitement de clôture terminé");
+                        }, 1000);
                     }
                 }
             }
