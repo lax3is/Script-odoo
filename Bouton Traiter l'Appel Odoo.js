@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.1.8
+// @version      2.1.9
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -149,6 +149,13 @@
                 visibility: hidden !important;
                 position: absolute !important;
                 left: -9999px !important;
+                top: -9999px !important;
+                width: 0 !important;
+                height: 0 !important;
+                opacity: 0 !important;
+                pointer-events: none !important;
+                margin: 0 !important;
+                padding: 0 !important;
             }
         `;
         document.head.appendChild(style);
@@ -770,6 +777,7 @@
 
     // === AJOUT BOUTON INSERER INITIALES ===
     function ajouterBoutonInsererInitiales() {
+        if (!isHelpdeskTicketForm()) return;
         // Ne pas dupliquer
         if (document.getElementById('btn-inserer-initiales')) return;
         // Créer le bouton
@@ -830,11 +838,12 @@
 
     // Observer pour garder le bouton visible
     const observerBtnInitiales = new MutationObserver(() => {
+        if (!isHelpdeskTicketForm()) return;
         setTimeout(ajouterBoutonInsererInitiales, 500);
     });
     observerBtnInitiales.observe(document.body, {childList: true, subtree: true});
     // Appel initial direct
-    setTimeout(ajouterBoutonInsererInitiales, 1000);
+    if (isHelpdeskTicketForm()) setTimeout(ajouterBoutonInsererInitiales, 1000);
 
     // Fonction pour initialiser le script
     function initialiserScript() {
@@ -857,10 +866,13 @@
 
         if (document.readyState === 'complete') {
             setTimeout(() => {
-                ajouterBoutonTraiter();
-                ajouterBoutonCreerTicket();
-                gererClotureTicket();
-                modifierBoutonCloture();
+                if (isHelpdeskTicketForm()) {
+                    ajouterBoutonTraiter();
+                    ajouterBoutonCreerTicket();
+                    gererClotureTicket();
+                    modifierBoutonCloture();
+                }
+                // Masquage du timer toujours actif (tickets et autres vues)
                 masquerBoutonsTimer();
 
                 // Vérifier et restaurer l'état du traitement
@@ -884,7 +896,8 @@
                 }
 
                 // Appel dans l'initialisation
-                ajouterBoutonInsererInitiales();
+                if (isHelpdeskTicketForm()) ajouterBoutonInsererInitiales();
+                scheduleBadgeDevisUpdate();
             }, 1000);
         } else {
             setTimeout(initialiserScript, 1000);
@@ -896,9 +909,14 @@
         for (const mutation of mutations) {
             if (mutation.addedNodes.length) {
                 setTimeout(() => {
-                    ajouterBoutonTraiter();
-                    ajouterBoutonCreerTicket(); // Ajouter le nouveau bouton
-                    modifierBoutonCloture();
+                    if (isHelpdeskTicketForm()) {
+                        ajouterBoutonTraiter();
+                        ajouterBoutonCreerTicket(); // Ajouter le nouveau bouton
+                        modifierBoutonCloture();
+                    }
+                    // Masquage du timer toujours actif
+                    masquerBoutonsTimer();
+                    scheduleBadgeDevisUpdate();
                 }, 500);
             }
         }
@@ -1049,6 +1067,357 @@
 
     console.log("Script de désassignation démarré");
 
+    // === INDICATEUR DEVIS EN COURS (VENTES) ===
+    // Styles
+    const styleDevis = document.createElement('style');
+    styleDevis.textContent = `
+    #badge-devis-client { display:inline-flex; align-items:center; gap:6px; margin-left:8px; vertical-align:middle; }
+    /* Icône sac + bulle iOS */
+    #badge-devis-client .bd-icon { width:20px; height:20px; display:inline-block; background-repeat:no-repeat; background-size:100% 100%; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23ff5252' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8h12l-1 12H7L6 8z'/%3E%3Cpath d='M9 8V6a3 3 0 0 1 6 0v2'/%3E%3C/svg%3E"); }
+    #badge-devis-client .bd-count { position:absolute; top:-7px; right:-7px; min-width:18px; height:18px; padding:0 4px; border-radius:10px; background:#e53935; color:#fff; font-size:11px; line-height:18px; text-align:center; font-weight:800; box-shadow:0 0 6px rgba(0,0,0,0.25); }
+    #badge-devis-client .bd-tip { font-size:12px; color:#ffcc80; font-weight:600; }
+    #badge-devis-client .bd-label { color:#ffe0f2; font-weight:700; }
+    #badge-devis-client button { all:unset; cursor:pointer; }
+    /* Bouton teinte Odoo */
+    #badge-devis-client .bd-btn { display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border-radius:12px; background: linear-gradient(135deg,#9a6a89 0%, #7a476a 100%); color:#fff; font-weight:700; box-shadow:0 4px 14px rgba(0,0,0,0.2); min-width:46px; height:36px; border:none; position:relative; }
+    #badge-devis-client .bd-btn:hover { filter: brightness(1.06); }
+    #badge-devis-client .bd-btn.empty { background: #455a64; color:#eceff1; }
+    /* Popup devis */
+    .popup-devis-odoobtn { position:fixed; top:80px; right:24px; background:#1f2a30; color:#fff; border-radius:8px; box-shadow:0 10px 30px rgba(0,0,0,0.35); z-index: 6000; width: 960px; max-height: 70vh; overflow:auto; }
+    .popup-devis-odoobtn header{ display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.08); font-weight:700; }
+    .popup-devis-odoobtn header button{ all:unset; cursor:pointer; color:#1DE9B6; }
+    .popup-devis-odoobtn ul{ list-style:none; margin:0; padding:8px 0; }
+    .popup-devis-odoobtn li{ padding:10px 14px; border-bottom:1px dashed rgba(255,255,255,0.08); display:flex; align-items:center; gap:12px; position:relative; cursor:pointer; flex-wrap: wrap; align-items: flex-start; }
+    .popup-devis-odoobtn li a{ color:#8be9fd; text-decoration:none; min-width:90px; }
+    .popup-devis-odoobtn .muted{ color:#9aa7ad; font-size:12px; margin-left:auto; }
+    .popup-devis-odoobtn .so-title{ color:#ffcc80; font-size:12px; margin-left:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width: 45%; }
+    .popup-devis-odoobtn li.state-sale, .popup-devis-odoobtn li.state-done { background: rgba(46,125,50,0.12); border-left: 3px solid #2e7d32; }
+    .popup-devis-odoobtn li.state-cancel { background: rgba(229,57,53,0.12); border-left: 3px solid #e53935; }
+    .popup-devis-odoobtn li.state-sent { background: rgba(255,152,0,0.12); border-left: 3px solid #ff9800; }
+    .popup-devis-odoobtn li.state-draft { background: rgba(33,150,243,0.12); border-left: 3px solid #2196f3; }
+    .popup-devis-odoobtn li:hover { background-color: rgba(255,255,255,0.05); }
+    .popup-devis-odoobtn li.expanded { flex-direction: column; align-items: stretch; }
+    .popup-devis-odoobtn .so-lines { width:100%; flex: 1 1 100%; order: 10; background: rgba(255,255,255,0.03); border-left:2px solid rgba(255,255,255,0.08); margin:8px 0 -2px 0; padding:8px 12px; border-radius:4px; }
+    .popup-devis-odoobtn .so-lines .line { display:grid; grid-template-columns: 1fr 80px 110px 120px; gap:10px; align-items:center; padding:4px 0; border-bottom:1px dashed rgba(255,255,255,0.06); }
+    .popup-devis-odoobtn .so-lines .line.header { font-weight:700; color:#cfd8dc; border-bottom:1px solid rgba(255,255,255,0.12); }
+    .popup-devis-odoobtn .so-lines .line:last-child { border-bottom:none; }
+    .popup-devis-odoobtn .so-lines .pname { color:#eceff1; }
+    .popup-devis-odoobtn .so-lines .qty { text-align:right; }
+    .popup-devis-odoobtn .so-lines .price, .popup-devis-odoobtn .so-lines .subtotal { text-align:right; color:#b0bec5; }
+    `;
+    document.head.appendChild(styleDevis);
+
+    function getOdooContext() {
+        try {
+            // odoo.session_info.user_context disponible dans le client web
+            return (window.odoo && odoo.session_info && odoo.session_info.user_context) || {};
+        } catch (e) { return {}; }
+    }
+
+    async function odooRpc(model, method, args = [], kwargs = {}) {
+        try {
+            const res = await fetch('/web/dataset/call_kw', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    jsonrpc: '2.0',
+                    method: 'call',
+                    params: { model, method, args, kwargs: Object.assign({ context: getOdooContext() }, kwargs) }
+                })
+            });
+            const data = await res.json();
+            if (data && data.result !== undefined) return data.result;
+        } catch (err) { console.warn('RPC Odoo échoué', model, method, err); }
+        return null;
+    }
+
+    // Détection dynamique du champ "Titre" de sale.order
+    let saleOrderTitleFieldName = undefined; // cache
+    async function detectSaleOrderTitleField() {
+        if (saleOrderTitleFieldName !== undefined) return saleOrderTitleFieldName;
+        const fields = await odooRpc('sale.order', 'fields_get', [[], ['string']]) || {};
+        // 1) chercher par libellé "Titre"
+        for (const [fname, def] of Object.entries(fields)) {
+            const s = (def && def.string ? String(def.string) : '').toLowerCase();
+            if (s === 'titre' || s.includes('titre')) { saleOrderTitleFieldName = fname; return fname; }
+        }
+        // 2) chercher par quelques noms probables
+        const candidates = ['x_studio_titre', 'x_studio_title', 'title', 'x_title', 'x_titre', 'client_order_ref'];
+        for (const c of candidates) { if (fields[c]) { saleOrderTitleFieldName = c; return c; } }
+        saleOrderTitleFieldName = null; // pas trouvé
+        return null;
+    }
+
+    let devisBadgeUpdateTimer = null;
+    function isHelpdeskTicketForm(){
+        const s = (window.location.href || '') + ' ' + (window.location.hash || '');
+        return s.includes('model=helpdesk.ticket') && s.includes('view_type=form');
+    }
+    function removeDevisBadge(){
+        const b = document.getElementById('badge-devis-client');
+        if (b && b.parentNode) b.parentNode.removeChild(b);
+    }
+    function assurerBadgeImmediatPlacement(){
+        if (!isHelpdeskTicketForm()) { removeDevisBadge(); return false; }
+        const stats = findStatsContainer();
+        const anchor = findTicketsOuvertsAnchor();
+        if (!stats && !anchor) return false;
+        let badge = document.getElementById('badge-devis-client');
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.id = 'badge-devis-client';
+            const btn = document.createElement('button');
+            btn.className = 'bd-btn empty';
+            btn.title = 'Ventes';
+            btn.textContent = 'Ventes';
+            badge.appendChild(btn);
+        }
+        if (stats) {
+            placeBadgeAfterStats(stats, badge);
+        } else if (anchor && anchor.parentNode) {
+            anchor.parentNode.appendChild(badge);
+        }
+        return true;
+    }
+    function findTicketsOuvertsAnchor(){
+        // Cherche un élément qui contient le texte "Tickets Ouverts"
+        const scopes = document.querySelectorAll('.o_form_statusbar, .o_form_view .o_statusbar_buttons, .o_form_statusbar .o_statusbar_buttons, .o_form_sheet_bg');
+        for (const scope of scopes){
+            const nodes = scope.querySelectorAll('button, a, span, div');
+            for (const n of nodes){
+                const txt = (n.textContent||'').replace(/\s+/g,' ').trim().toLowerCase();
+                if (txt.includes('tickets') && txt.includes('ouverts')) return n;
+            }
+        }
+        return null;
+    }
+    function findStatsContainer(){
+        // Cherche un conteneur de boutons statistiques (ligne avec "Tickets Ouverts", "Documents", ...)
+        const candidates = document.querySelectorAll('.o_form_button_box, .o_form_buttonbox, .oe_button_box, .o_button_box, .o_form_statusbar');
+        for (const el of candidates){
+            if (el.querySelector && el.querySelector('.o_stat_button, .oe_stat_button')) return el;
+        }
+        return null;
+    }
+    function getLastStatButton(container){
+        if (!container) return null;
+        const list = container.querySelectorAll('.o_stat_button, .oe_stat_button, button.o_stat_button');
+        return list && list.length ? list[list.length - 1] : null;
+    }
+    function placeBadgeAfterStats(container, badge){
+        if (!container || !badge) return;
+        const last = getLastStatButton(container);
+        if (last && last.nextSibling !== badge) {
+            last.insertAdjacentElement('afterend', badge);
+        } else if (!last && badge.parentNode !== container) {
+            container.appendChild(badge);
+        }
+    }
+    async function mettreAJourBadgeDevis() {
+        // Uniquement sur la fiche ticket
+        if (!window.location.href.includes('model=helpdesk.ticket') || !window.location.href.includes('view_type=form')) return;
+
+        const ticketId = obtenirTicketId();
+        if (!ticketId) return;
+
+        // Chercher une zone d'en-tête en haut à gauche proche de "Tickets Ouverts"
+        // Fallback: à défaut, rester près du champ client
+        let headerLeft = document.querySelector('.o_form_statusbar .o_statusbar_buttons, .o_form_statusbar');
+        // Si on trouve précisément le bouton "Tickets Ouverts", on insère juste avant
+        const ticketsAnchor = findTicketsOuvertsAnchor();
+        const statsContainer = findStatsContainer();
+        const clientField = document.querySelector('.o_field_widget[name="partner_id"]');
+
+        // Créer ou récupérer le badge
+        let badge = document.getElementById('badge-devis-client');
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.id = 'badge-devis-client';
+            if (statsContainer) {
+                placeBadgeAfterStats(statsContainer, badge);
+            } else if (ticketsAnchor && ticketsAnchor.parentNode) {
+                ticketsAnchor.parentNode.appendChild(badge);
+            } else if (headerLeft) {
+                headerLeft.insertAdjacentElement('afterbegin', badge);
+            } else if (clientField && clientField.parentNode) {
+                clientField.parentNode.appendChild(badge);
+            } else {
+                return;
+            }
+        }
+        // S'assurer à chaque update de la bonne position (après les stat buttons)
+        if (statsContainer){
+            placeBadgeAfterStats(statsContainer, badge);
+        } else if (ticketsAnchor && ticketsAnchor.parentNode && badge.parentNode !== ticketsAnchor.parentNode){
+            try { ticketsAnchor.parentNode.appendChild(badge); } catch(e){}
+        }
+
+        // Lire le partner_id du ticket via RPC
+        const recs = await odooRpc('helpdesk.ticket', 'read', [[Number(ticketId)], ['partner_id']]);
+        const partnerId = Array.isArray(recs) && recs[0] && Array.isArray(recs[0].partner_id) ? recs[0].partner_id[0] : null;
+        if (!partnerId) { badge.innerHTML = ''; return; }
+
+        // Prendre le partenaire commercial (entreprise) pour inclure tous les contacts enfants
+        const pr = await odooRpc('res.partner', 'read', [[Number(partnerId)], ['commercial_partner_id']]);
+        const commercialPartnerId = Array.isArray(pr) && pr[0] && Array.isArray(pr[0].commercial_partner_id) ? pr[0].commercial_partner_id[0] : partnerId;
+
+        // Récupérer tous les contacts appartenant à l'entreprise
+        const partnerIds = await odooRpc('res.partner', 'search', [[['commercial_partner_id', '=', commercialPartnerId]]]);
+
+        // Compter toutes les ventes (quel que soit l'état) pour ces contacts
+        const count = await odooRpc('sale.order', 'search_count', [[
+            ['partner_id', 'in', Array.isArray(partnerIds) ? partnerIds : [commercialPartnerId]]
+        ]]);
+
+        const n = Number(count) || 0;
+        // Construire le contenu
+        const btn = document.createElement('button');
+        btn.title = n > 0 ? `${n} ventes trouvées` : 'Aucune vente';
+        btn.className = 'bd-btn' + (n > 0 ? '' : ' empty');
+        btn.onclick = async () => {
+            if (n <= 0) return;
+            // Charger jusqu'à 20 ventes récentes et les proposer dans un popup cliquable
+            const titleField = await detectSaleOrderTitleField();
+            const baseFields = ['name','state','date_order','amount_total','currency_id'];
+            if (titleField) baseFields.push(titleField);
+            const records = await odooRpc('sale.order', 'search_read', [
+                [
+                    ['partner_id', 'in', Array.isArray(partnerIds) ? partnerIds : [commercialPartnerId]]
+                ],
+                baseFields,
+                0, 20, 'date_order desc'
+            ]);
+            const popId = 'popup-devis-odoobtn';
+            const old = document.getElementById(popId);
+            if (old) old.remove();
+            const pop = document.createElement('div');
+            pop.id = popId;
+            pop.className = 'popup-devis-odoobtn';
+            const header = document.createElement('header');
+            header.innerHTML = `<span>Ventes (${n})</span>`;
+            const close = document.createElement('button');
+            close.textContent = 'Fermer';
+            close.onclick = () => pop.remove();
+            header.appendChild(close);
+            const list = document.createElement('ul');
+            (records || []).forEach(r => {
+                const li = document.createElement('li');
+                // Classe en fonction du statut
+                const st = String(r.state || '').toLowerCase();
+                if (st === 'sale' || st === 'done') li.classList.add('state-sale');
+                if (st === 'cancel') li.classList.add('state-cancel');
+                if (st === 'sent') li.classList.add('state-sent');
+                if (st === 'draft') li.classList.add('state-draft');
+                const a = document.createElement('a');
+                a.href = `/web?debug=#id=${r.id}&model=sale.order&view_type=form`;
+                a.target = '_blank';
+                a.className = 'so-link';
+                a.textContent = r.name;
+                // Ne pas déclencher l'ouverture/fermeture des lignes quand on clique sur le numéro
+                a.addEventListener('click', (ev) => { ev.stopPropagation(); });
+                const titleFieldName = saleOrderTitleFieldName;
+                if (titleFieldName && r[titleFieldName]) {
+                    const t = document.createElement('span');
+                    t.className = 'so-title';
+                    t.textContent = `— ${r[titleFieldName]}`;
+                    li.appendChild(t);
+                }
+                const muted = document.createElement('span');
+                muted.className = 'muted';
+                const dt = r.date_order ? new Date(r.date_order) : null;
+                const fmt = dt ? dt.toLocaleDateString()+' '+dt.toLocaleTimeString().slice(0,5) : '';
+                const cur = Array.isArray(r.currency_id) ? r.currency_id[1] : '';
+                const stateMap = { draft: 'Brouillon', sent: 'Envoyé', sale: 'Bon de commande', done: 'Terminé', cancel: 'Annulé' };
+                const stateFr = stateMap[st] || r.state;
+                muted.textContent = `${fmt} • ${stateFr} • ${Math.round((r.amount_total||0)*100)/100} ${cur}`;
+                li.appendChild(a);
+                li.appendChild(muted);
+
+                // Chargement paresseux des lignes au clic
+                li.addEventListener('click', async (e) => {
+                    // Éviter d'ouvrir le lien si on clique dans la ligne
+                    if (e.target && e.target.tagName === 'A') return;
+                    e.preventDefault();
+                    // Toggle si déjà chargé
+                    const existing = li.querySelector('.so-lines');
+                    if (existing) { existing.remove(); return; }
+                    const lines = await odooRpc('sale.order.line', 'search_read', [
+                        [['order_id', '=', r.id]],
+                        ['name','product_uom_qty','price_unit','price_subtotal','currency_id'],
+                        0, 100, 'sequence asc'
+                    ]);
+                    const box = document.createElement('div');
+                    box.className = 'so-lines';
+                    const header = document.createElement('div');
+                    header.className = 'line header';
+                    header.innerHTML = '<div>Produit</div><div>Qté</div><div>Prix</div><div>Sous-total</div>';
+                    box.appendChild(header);
+                    (lines||[]).forEach(l => {
+                        const row = document.createElement('div');
+                        row.className = 'line';
+                        const cur = Array.isArray(l.currency_id) ? l.currency_id[1] : '';
+                        row.innerHTML = `
+                            <div class="pname">${(l.name||'').replace(/\n/g,' ')} </div>
+                            <div class="qty">${Number(l.product_uom_qty||0)}</div>
+                            <div class="price">${Math.round((l.price_unit||0)*100)/100} ${cur}</div>
+                            <div class="subtotal">${Math.round((l.price_subtotal||0)*100)/100} ${cur}</div>
+                        `;
+                        box.appendChild(row);
+                    });
+                    li.classList.add('expanded');
+                    li.appendChild(box);
+                });
+                list.appendChild(li);
+            });
+            pop.appendChild(header);
+            pop.appendChild(list);
+            document.body.appendChild(pop);
+        };
+        const icon = document.createElement('span');
+        icon.className = 'bd-icon' + (n > 0 ? ' has' : '');
+        if (n > 0) {
+            const c = document.createElement('span');
+            c.className = 'bd-count';
+            c.textContent = String(Math.min(n, 99));
+            icon.appendChild(c);
+        }
+        btn.appendChild(icon);
+        // Texte indicatif léger
+        const label = document.createElement('span');
+        label.className = 'bd-label';
+        label.textContent = 'Ventes';
+
+        btn.appendChild(label);
+
+        badge.innerHTML = '';
+        badge.style.marginRight = '8px';
+        badge.appendChild(btn);
+    }
+
+    function scheduleBadgeDevisUpdate(delay = 400) {
+        clearTimeout(devisBadgeUpdateTimer);
+        devisBadgeUpdateTimer = setTimeout(mettreAJourBadgeDevis, delay);
+    }
+
+    // Placement immédiat au plus tôt
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            assurerBadgeImmediatPlacement();
+            scheduleBadgeDevisUpdate(50);
+        });
+    } else {
+        setTimeout(() => { assurerBadgeImmediatPlacement(); scheduleBadgeDevisUpdate(50); }, 0);
+    }
+    // Observer pour re-placer dès que la barre stats apparaît
+    const observerStatsInstant = new MutationObserver(() => {
+        if (!isHelpdeskTicketForm()) { removeDevisBadge(); return; }
+        if (assurerBadgeImmediatPlacement()) {
+            // Une fois placé, on peut arrêter si souhaité mais on garde pour robustesse
+        }
+    });
+    observerStatsInstant.observe(document.body, { childList: true, subtree: true });
+
     function createClearButton() {
         // Rechercher le champ "Assigné à" avec plusieurs sélecteurs possibles
         const input = document.querySelector('input[name="user_id"], input#user_id.o-autocomplete--input, .o_field_many2one[name="user_id"] input');
@@ -1154,10 +1523,12 @@
     // Réinitialisation lors des changements de route
     window.addEventListener('hashchange', function() {
         setTimeout(createClearButton, 1000);
+        scheduleBadgeDevisUpdate(800);
     });
 
     // Vérification périodique
     setInterval(createClearButton, 5000);
+    setInterval(scheduleBadgeDevisUpdate, 5000);
 
     const styleBtnInitiales = document.createElement('style');
     styleBtnInitiales.textContent = `
