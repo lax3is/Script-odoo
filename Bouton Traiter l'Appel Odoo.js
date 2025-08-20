@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.1.7
+// @version      2.1.8
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -158,7 +158,7 @@
     function simulerRaccourciTimer() {
         if (timerState.isProcessing) return;
         timerState.isProcessing = true;
-        
+
         const event = new KeyboardEvent('keydown', {
             key: 'z',
             code: 'KeyZ',
@@ -167,7 +167,7 @@
             cancelable: true
         });
         document.dispatchEvent(event);
-        
+
         setTimeout(() => {
             timerState.isProcessing = false;
         }, 1000);
@@ -177,7 +177,7 @@
     function simulerRaccourciPause() {
         if (timerState.isProcessing) return;
         timerState.isProcessing = true;
-        
+
         const event = new KeyboardEvent('keydown', {
             key: 'w',
             code: 'KeyW',
@@ -186,7 +186,7 @@
             cancelable: true
         });
         document.dispatchEvent(event);
-        
+
         setTimeout(() => {
             timerState.isProcessing = false;
         }, 1000);
@@ -196,7 +196,7 @@
     function simulerRaccourciStop() {
         if (timerState.isProcessing) return;
         timerState.isProcessing = true;
-        
+
         const event = new KeyboardEvent('keydown', {
             key: 'q',
             code: 'KeyQ',
@@ -205,7 +205,7 @@
             cancelable: true
         });
         document.dispatchEvent(event);
-        
+
         setTimeout(() => {
             timerState.isProcessing = false;
         }, 1000);
@@ -281,12 +281,12 @@
                     if (estEnPause) {
                         // Cas 3: Reprendre l'appel
                         console.log("Reprise de l'appel");
-                        
+
                         // 1. Relancer le timer en premier
                         console.log("Démarrage du timer");
                         simulerRaccourciPause();
                         await new Promise(resolve => setTimeout(resolve, 1000));
-                        
+
                         // Vérifier si le timer a bien démarré
                         const nouvelEtat = verifierEtatTimer();
                         if (nouvelEtat !== 'pause') {
@@ -294,12 +294,12 @@
                             simulerRaccourciPause();
                             await new Promise(resolve => setTimeout(resolve, 1000));
                         }
-                        
+
                         // 2. Mettre à jour l'interface
                         btn.innerText = 'Mettre en Attente';
                         btn.className = 'btn btn-warning';
                         ajouterTexteCligonotant();
-                        
+
                         // 3. Sauvegarder
                         const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
                         if (btnEnregistrer) {
@@ -309,12 +309,12 @@
                     } else {
                         // Cas 1: Traiter l'appel
                         console.log("Traitement de l'appel");
-                        
+
                         // 1. Démarrer le timer en premier
                         console.log("Démarrage du timer");
                         simulerRaccourciTimer();
                         await new Promise(resolve => setTimeout(resolve, 1000));
-                        
+
                         // Vérifier si le timer a bien démarré
                         const nouvelEtat = verifierEtatTimer();
                         if (nouvelEtat !== 'pause') {
@@ -322,7 +322,7 @@
                             simulerRaccourciTimer();
                             await new Promise(resolve => setTimeout(resolve, 1000));
                         }
-                        
+
                         // 2. Vérifier si le bouton ME L'ASSIGNER est disponible
                         const btnAssigner = trouverBoutonAssigner();
                         if (btnAssigner) {
@@ -350,12 +350,12 @@
                 } else {
                     // Cas 2: Mettre en pause
                     console.log("Mise en pause de l'appel");
-                    
+
                     // 1. Mettre en pause le timer en premier
                     console.log("Mise en pause du timer");
                     simulerRaccourciPause();
                     await new Promise(resolve => setTimeout(resolve, 1000));
-                    
+
                     // Vérifier si le timer est bien en pause
                     const nouvelEtat = verifierEtatTimer();
                     if (nouvelEtat !== 'relancer') {
@@ -363,7 +363,7 @@
                         simulerRaccourciPause();
                         await new Promise(resolve => setTimeout(resolve, 1000));
                     }
-                    
+
                     // 2. Mettre à jour l'interface
                     btn.innerText = 'Traiter l\'appel';
                     btn.className = 'btn btn-primary';
@@ -504,7 +504,7 @@
         setInterval(async () => {
             if (estTicketResolu() && !isProcessingClosure && !timerState.isProcessing) {
                 console.log("Ticket résolu détecté");
-                
+
                 const etatTimer = verifierEtatTimer();
                 if (etatTimer === 'pause' || etatTimer === 'relancer') {
                     isProcessingClosure = true;
@@ -613,17 +613,17 @@
             btn.style.marginRight = '5px';
             btn.style.marginLeft = 'auto';
             btn.style.order = '9999';
-            
+
             // Ajouter l'événement click
             btn.addEventListener('click', function() {
                 console.log("Bouton Créer un ticket cliqué");
-                
+
                 // Récupérer le nom de la pharmacie
                 const clientElement = document.querySelector('.o_field_widget[name="partner_id"] input');
                 if (clientElement) {
                     const nomPharmacie = clientElement.value;
                     console.log("Nom de la pharmacie récupéré:", nomPharmacie);
-                    
+
                     // Stocker temporairement le nom dans le localStorage
                     localStorage.setItem('pharmacie_a_copier', nomPharmacie);
                 }
@@ -638,7 +638,7 @@
                         localStorage.removeItem(key);
                     }
                 }
-                
+
                 // Rediriger vers la page de création de ticket
                 window.location.href = 'https://winprovence.odoo.com/web?debug=#menu_id=250&cids=1&action=368&model=helpdesk.ticket&view_type=form';
             });
@@ -929,7 +929,7 @@
         lignesTickets.forEach(ligne => {
             // Récupérer tout le texte de la ligne
             const contenuLigne = ligne.textContent.toLowerCase();
-            
+
             // Vérifier si le texte "traitement de l'appel en cours" est présent
             if (contenuLigne.includes("traitement de l'appel en cours")) {
                 console.log("Ticket en traitement trouvé !");
@@ -947,28 +947,71 @@
     function ajouterStyleAnimation() {
         const style = document.createElement('style');
         style.textContent = `
+            /* Effet de glow et de fond pour les tickets en traitement (scopé à la vue liste) */
             @keyframes ticketEnTraitement {
-                0% { 
+                0% {
                     box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.7);
                     background-color: rgba(0, 123, 255, 0.15);
                 }
-                50% { 
+                50% {
                     box-shadow: 0 0 15px 0 rgba(0, 123, 255, 0.9);
                     background-color: rgba(0, 123, 255, 0.05);
                 }
-                100% { 
+                100% {
                     box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.7);
                     background-color: rgba(0, 123, 255, 0.15);
                 }
             }
-            .ticket-en-traitement {
+            @keyframes ticketEnTraitementBg {
+                0% { background-color: rgba(0, 123, 255, 0.15); }
+                50% { background-color: rgba(0, 123, 255, 0.05); }
+                100% { background-color: rgba(0, 123, 255, 0.15); }
+            }
+            /* Forcer l'effet au premier plan au-dessus du thème MAIS sous les popups */
+            .o_list_view .o_data_row.ticket-en-traitement { position: relative !important; z-index: 5000 !important; }
+            .o_list_view .o_data_row.ticket-en-traitement::after {
+                content: '';
+                position: absolute;
+                top: -2px; left: -2px; right: -2px; bottom: -2px;
+                pointer-events: none;
+                border-radius: 2px;
                 animation: ticketEnTraitement 1.5s infinite;
-                position: relative;
-                z-index: 1;
+                box-shadow: 0 0 15px 0 rgba(0, 123, 255, 0.9);
+                background-color: rgba(0, 123, 255, 0.10);
+                z-index: 5000 !important;
             }
-            .ticket-en-traitement td {
-                background-color: rgba(0, 123, 255, 0.15) !important;
+            .o_list_view .o_data_row.ticket-en-traitement td { position: relative !important; z-index: 5000 !important; }
+            .o_list_view .o_data_row.ticket-en-traitement td::after {
+                content: '';
+                position: absolute;
+                inset: 0;
+                pointer-events: none;
+                animation: ticketEnTraitementBg 1.5s infinite;
+                background-color: rgba(0, 123, 255, 0.15);
+                z-index: 5000 !important;
             }
+            /* RDV: superposer les effets par-dessus le thème (uniquement dans la vue liste) */
+            .o_list_view .rdv-clignote-orange, .o_list_view .rdv-clignote-rouge, .o_list_view .rdv-clignote-depasse { position: relative !important; z-index: 5000 !important; }
+            @keyframes rdvOrangeBg { from { background: rgba(255, 152, 0, 0.20); } to { background: rgba(255, 152, 0, 0.35); } }
+            @keyframes rdvRougeBg { from { background: rgba(229, 57, 53, 0.22); } to { background: rgba(229, 57, 53, 0.40); } }
+            @keyframes rdvDepasseBg {
+                0% { background: rgba(229, 57, 53, 0.35); box-shadow: 0 0 15px rgba(229, 57, 53, 0.7); }
+                50% { background: rgba(183, 28, 28, 0.50); box-shadow: 0 0 25px rgba(229, 57, 53, 0.9); }
+                100% { background: rgba(229, 57, 53, 0.35); box-shadow: 0 0 15px rgba(229, 57, 53, 0.7); }
+            }
+            .o_list_view .rdv-clignote-orange::after,
+            .o_list_view .rdv-clignote-rouge::after,
+            .o_list_view .rdv-clignote-depasse::after {
+                content: '';
+                position: absolute;
+                inset: -1px; /* déborde légèrement pour couvrir toute la case */
+                pointer-events: none;
+                border-radius: 2px;
+                z-index: 5000 !important;
+            }
+            .o_list_view .rdv-clignote-orange::after { animation: rdvOrangeBg 1.2s infinite alternate; }
+            .o_list_view .rdv-clignote-rouge::after { animation: rdvRougeBg 0.8s infinite alternate; }
+            .o_list_view .rdv-clignote-depasse::after { animation: rdvDepasseBg 0.5s infinite alternate; }
         `;
         document.head.appendChild(style);
     }
@@ -977,8 +1020,8 @@
     const observerTickets = new MutationObserver((mutations) => {
         if (window.location.href.includes('model=helpdesk.ticket&view_type=list')) {
             for (const mutation of mutations) {
-                if (mutation.addedNodes.length || 
-                    mutation.type === 'characterData' || 
+                if (mutation.addedNodes.length ||
+                    mutation.type === 'characterData' ||
                     mutation.type === 'childList') {
                     setTimeout(() => {
                         mettreAJourAnimationTickets();
@@ -996,7 +1039,7 @@
             subtree: true,
             characterData: true
         });
-        
+
         // Mettre à jour l'animation toutes les 2 secondes
         setInterval(mettreAJourAnimationTickets, 2000);
     }
@@ -1009,7 +1052,7 @@
     function createClearButton() {
         // Rechercher le champ "Assigné à" avec plusieurs sélecteurs possibles
         const input = document.querySelector('input[name="user_id"], input#user_id.o-autocomplete--input, .o_field_many2one[name="user_id"] input');
-        
+
         if (!input) {
             console.log("Champ 'Assigné à' non trouvé");
             return;
@@ -1060,11 +1103,11 @@
             try {
                 // Vider le champ
                 input.value = '';
-                
+
                 // Déclencher les événements nécessaires
                 input.dispatchEvent(new Event('input', { bubbles: true }));
                 input.dispatchEvent(new Event('change', { bubbles: true }));
-                
+
                 // Attendre un court délai pour s'assurer que les événements sont traités
                 await new Promise(resolve => setTimeout(resolve, 300));
 
@@ -1158,17 +1201,17 @@
       to { background: #e53935; color: #fff; }
     }
     @keyframes rdvDepasse {
-      0% { 
+      0% {
         background: #e53935;
         color: #fff;
         box-shadow: 0 0 15px rgba(229, 57, 53, 0.7);
       }
-      50% { 
+      50% {
         background: #b71c1c;
         color: #fff;
         box-shadow: 0 0 25px rgba(229, 57, 53, 0.9);
       }
-      100% { 
+      100% {
         background: #e53935;
         color: #fff;
         box-shadow: 0 0 15px rgba(229, 57, 53, 0.7);
