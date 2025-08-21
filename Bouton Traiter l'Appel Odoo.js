@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.1.9
+// @version      2.2.0
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -149,13 +149,6 @@
                 visibility: hidden !important;
                 position: absolute !important;
                 left: -9999px !important;
-                top: -9999px !important;
-                width: 0 !important;
-                height: 0 !important;
-                opacity: 0 !important;
-                pointer-events: none !important;
-                margin: 0 !important;
-                padding: 0 !important;
             }
         `;
         document.head.appendChild(style);
@@ -777,7 +770,6 @@
 
     // === AJOUT BOUTON INSERER INITIALES ===
     function ajouterBoutonInsererInitiales() {
-        if (!isHelpdeskTicketForm()) return;
         // Ne pas dupliquer
         if (document.getElementById('btn-inserer-initiales')) return;
         // Créer le bouton
@@ -838,12 +830,11 @@
 
     // Observer pour garder le bouton visible
     const observerBtnInitiales = new MutationObserver(() => {
-        if (!isHelpdeskTicketForm()) return;
         setTimeout(ajouterBoutonInsererInitiales, 500);
     });
     observerBtnInitiales.observe(document.body, {childList: true, subtree: true});
     // Appel initial direct
-    if (isHelpdeskTicketForm()) setTimeout(ajouterBoutonInsererInitiales, 1000);
+    setTimeout(ajouterBoutonInsererInitiales, 1000);
 
     // Fonction pour initialiser le script
     function initialiserScript() {
@@ -866,13 +857,10 @@
 
         if (document.readyState === 'complete') {
             setTimeout(() => {
-                if (isHelpdeskTicketForm()) {
-                    ajouterBoutonTraiter();
-                    ajouterBoutonCreerTicket();
-                    gererClotureTicket();
-                    modifierBoutonCloture();
-                }
-                // Masquage du timer toujours actif (tickets et autres vues)
+                ajouterBoutonTraiter();
+                ajouterBoutonCreerTicket();
+                gererClotureTicket();
+                modifierBoutonCloture();
                 masquerBoutonsTimer();
 
                 // Vérifier et restaurer l'état du traitement
@@ -896,7 +884,7 @@
                 }
 
                 // Appel dans l'initialisation
-                if (isHelpdeskTicketForm()) ajouterBoutonInsererInitiales();
+                ajouterBoutonInsererInitiales();
                 scheduleBadgeDevisUpdate();
             }, 1000);
         } else {
@@ -909,13 +897,9 @@
         for (const mutation of mutations) {
             if (mutation.addedNodes.length) {
                 setTimeout(() => {
-                    if (isHelpdeskTicketForm()) {
-                        ajouterBoutonTraiter();
-                        ajouterBoutonCreerTicket(); // Ajouter le nouveau bouton
-                        modifierBoutonCloture();
-                    }
-                    // Masquage du timer toujours actif
-                    masquerBoutonsTimer();
+                    ajouterBoutonTraiter();
+                    ajouterBoutonCreerTicket(); // Ajouter le nouveau bouton
+                    modifierBoutonCloture();
                     scheduleBadgeDevisUpdate();
                 }, 500);
             }
@@ -1072,18 +1056,18 @@
     const styleDevis = document.createElement('style');
     styleDevis.textContent = `
     #badge-devis-client { display:inline-flex; align-items:center; gap:6px; margin-left:8px; vertical-align:middle; }
-    /* Icône sac + bulle iOS */
-    #badge-devis-client .bd-icon { width:20px; height:20px; display:inline-block; background-repeat:no-repeat; background-size:100% 100%; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23ff5252' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8h12l-1 12H7L6 8z'/%3E%3Cpath d='M9 8V6a3 3 0 0 1 6 0v2'/%3E%3C/svg%3E"); }
-    #badge-devis-client .bd-count { position:absolute; top:-7px; right:-7px; min-width:18px; height:18px; padding:0 4px; border-radius:10px; background:#e53935; color:#fff; font-size:11px; line-height:18px; text-align:center; font-weight:800; box-shadow:0 0 6px rgba(0,0,0,0.25); }
+    /* Icône sac type Odoo */
+    #badge-devis-client .bd-bag { width:18px; height:18px; display:inline-block; background-repeat:no-repeat; background-size:100% 100%; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.2));
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8h12l-1 12H7L6 8z'/%3E%3Cpath d='M9 8V6a3 3 0 0 1 6 0v2'/%3E%3C/g%3E%3C/svg%3E"); }
+    /* pastille iOS collée au bord du bouton */
+    #badge-devis-client .bd-count { position:absolute; top:-6px; right:-6px; min-width:18px; height:18px; padding:0 4px; border-radius:10px; background:#e53935; color:#fff; font-size:11px; line-height:18px; text-align:center; font-weight:800; box-shadow:0 0 6px rgba(0,0,0,0.25); }
     #badge-devis-client .bd-tip { font-size:12px; color:#ffcc80; font-weight:600; }
-    #badge-devis-client .bd-label { color:#ffe0f2; font-weight:700; }
+    #badge-devis-client .bd-label { color:#fff; font-weight:700; letter-spacing:.2px; }
     #badge-devis-client button { all:unset; cursor:pointer; }
-    /* Bouton teinte Odoo */
-    #badge-devis-client .bd-btn { display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border-radius:12px; background: linear-gradient(135deg,#9a6a89 0%, #7a476a 100%); color:#fff; font-weight:700; box-shadow:0 4px 14px rgba(0,0,0,0.2); min-width:46px; height:36px; border:none; position:relative; }
-    #badge-devis-client .bd-btn:hover { filter: brightness(1.06); }
+    #badge-devis-client .bd-btn { position:relative; display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:6px 12px; border-radius:12px; background: linear-gradient(135deg,#9a6a89 0%, #7a476a 100%); color:#fff; font-weight:700; box-shadow:0 4px 14px rgba(0,0,0,0.2); min-width:46px; height:36px; border:none; }
     #badge-devis-client .bd-btn.empty { background: #455a64; color:#eceff1; }
     /* Popup devis */
-    .popup-devis-odoobtn { position:fixed; top:80px; right:24px; background:#1f2a30; color:#fff; border-radius:8px; box-shadow:0 10px 30px rgba(0,0,0,0.35); z-index: 6000; width: 960px; max-height: 70vh; overflow:auto; }
+    .popup-devis-odoobtn { position:fixed; top:80px; right:24px; background:#1f2a30; color:#fff; border-radius:8px; box-shadow:0 10px 30px rgba(0,0,0,0.35); z-index: 6000; width: 1100px; max-height: 70vh; overflow:auto; }
     .popup-devis-odoobtn header{ display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.08); font-weight:700; }
     .popup-devis-odoobtn header button{ all:unset; cursor:pointer; color:#1DE9B6; }
     .popup-devis-odoobtn ul{ list-style:none; margin:0; padding:8px 0; }
@@ -1093,8 +1077,6 @@
     .popup-devis-odoobtn .so-title{ color:#ffcc80; font-size:12px; margin-left:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width: 45%; }
     .popup-devis-odoobtn li.state-sale, .popup-devis-odoobtn li.state-done { background: rgba(46,125,50,0.12); border-left: 3px solid #2e7d32; }
     .popup-devis-odoobtn li.state-cancel { background: rgba(229,57,53,0.12); border-left: 3px solid #e53935; }
-    .popup-devis-odoobtn li.state-sent { background: rgba(255,152,0,0.12); border-left: 3px solid #ff9800; }
-    .popup-devis-odoobtn li.state-draft { background: rgba(33,150,243,0.12); border-left: 3px solid #2196f3; }
     .popup-devis-odoobtn li:hover { background-color: rgba(255,255,255,0.05); }
     .popup-devis-odoobtn li.expanded { flex-direction: column; align-items: stretch; }
     .popup-devis-odoobtn .so-lines { width:100%; flex: 1 1 100%; order: 10; background: rgba(255,255,255,0.03); border-left:2px solid rgba(255,255,255,0.08); margin:8px 0 -2px 0; padding:8px 12px; border-radius:4px; }
@@ -1301,20 +1283,18 @@
             close.onclick = () => pop.remove();
             header.appendChild(close);
             const list = document.createElement('ul');
+            const stateMap = { draft: 'Brouillon', sent: 'Envoyé', sale: 'Bon de commande', done: 'Terminé', cancel: 'Annulé' };
             (records || []).forEach(r => {
                 const li = document.createElement('li');
                 // Classe en fonction du statut
                 const st = String(r.state || '').toLowerCase();
                 if (st === 'sale' || st === 'done') li.classList.add('state-sale');
                 if (st === 'cancel') li.classList.add('state-cancel');
-                if (st === 'sent') li.classList.add('state-sent');
-                if (st === 'draft') li.classList.add('state-draft');
                 const a = document.createElement('a');
                 a.href = `/web?debug=#id=${r.id}&model=sale.order&view_type=form`;
                 a.target = '_blank';
-                a.className = 'so-link';
                 a.textContent = r.name;
-                // Ne pas déclencher l'ouverture/fermeture des lignes quand on clique sur le numéro
+                // Empêcher le clic sur le numéro d'ouvrir/fermer les lignes
                 a.addEventListener('click', (ev) => { ev.stopPropagation(); });
                 const titleFieldName = saleOrderTitleFieldName;
                 if (titleFieldName && r[titleFieldName]) {
@@ -1328,9 +1308,8 @@
                 const dt = r.date_order ? new Date(r.date_order) : null;
                 const fmt = dt ? dt.toLocaleDateString()+' '+dt.toLocaleTimeString().slice(0,5) : '';
                 const cur = Array.isArray(r.currency_id) ? r.currency_id[1] : '';
-                const stateMap = { draft: 'Brouillon', sent: 'Envoyé', sale: 'Bon de commande', done: 'Terminé', cancel: 'Annulé' };
-                const stateFr = stateMap[st] || r.state;
-                muted.textContent = `${fmt} • ${stateFr} • ${Math.round((r.amount_total||0)*100)/100} ${cur}`;
+                const stFr = stateMap[st] || r.state;
+                muted.textContent = `${fmt} • ${stFr} • ${Math.round((r.amount_total||0)*100)/100} ${cur}`;
                 li.appendChild(a);
                 li.appendChild(muted);
 
@@ -1374,21 +1353,22 @@
             pop.appendChild(list);
             document.body.appendChild(pop);
         };
-        const icon = document.createElement('span');
-        icon.className = 'bd-icon' + (n > 0 ? ' has' : '');
+        // Icône sac
+        const bag = document.createElement('span');
+        bag.className = 'bd-bag';
+        btn.appendChild(bag);
+        // Libellé dans le bouton
+        const label = document.createElement('span');
+        label.className = 'bd-label';
+        label.textContent = 'Ventes';
+        btn.appendChild(label);
+        // Bulle compteur au bord du bouton
         if (n > 0) {
             const c = document.createElement('span');
             c.className = 'bd-count';
             c.textContent = String(Math.min(n, 99));
-            icon.appendChild(c);
+            btn.appendChild(c);
         }
-        btn.appendChild(icon);
-        // Texte indicatif léger
-        const label = document.createElement('span');
-        label.className = 'bd-label';
-        label.textContent = 'Ventes';
-
-        btn.appendChild(label);
 
         badge.innerHTML = '';
         badge.style.marginRight = '8px';
