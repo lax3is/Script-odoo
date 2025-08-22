@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.2.0
+// @version      2.2.1
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -154,6 +154,22 @@
         document.head.appendChild(style);
     }
 
+    // Fonction pour retirer les éléments liés au traitement en dehors de la fiche ticket
+    function retirerBoutonsTraitement() {
+        try {
+            const btnTraiter = document.getElementById('btn-traiter-appel');
+            if (btnTraiter && !isHelpdeskTicketForm()) {
+                btnTraiter.remove();
+            }
+            const texteCligno = document.getElementById('texte-clignotant-container');
+            if (texteCligno && !isHelpdeskTicketForm()) {
+                texteCligno.remove();
+            }
+        } catch (e) {
+            /* ignore */
+        }
+    }
+
     // Fonction pour simuler le raccourci clavier Alt+Z
     function simulerRaccourciTimer() {
         if (timerState.isProcessing) return;
@@ -234,6 +250,11 @@
     // Fonction pour créer le bouton
     function ajouterBoutonTraiter() {
         console.log("Tentative d'ajout du bouton");
+        // Limiter strictement à la fiche ticket
+        if (!isHelpdeskTicketForm()) {
+            retirerBoutonsTraitement();
+            return;
+        }
         const statusbar = document.querySelector('.o_statusbar_buttons, .o_form_statusbar .o_statusbar_buttons');
         if (statusbar && !document.getElementById('btn-traiter-appel')) {
             console.log("Barre de statut trouvée, ajout du bouton");
@@ -603,6 +624,12 @@
     // Fonction pour créer le bouton "Créer un ticket"
     function ajouterBoutonCreerTicket() {
         console.log("Tentative d'ajout du bouton Créer un ticket");
+        // Limiter strictement à la fiche ticket
+        if (!isHelpdeskTicketForm()) {
+            const exist = document.getElementById('btn-creer-ticket');
+            if (exist) exist.remove();
+            return;
+        }
         const statusbar = document.querySelector('.o_statusbar_buttons, .o_form_statusbar .o_statusbar_buttons');
         if (statusbar && !document.getElementById('btn-creer-ticket')) {
             console.log("Barre de statut trouvée, ajout du bouton Créer un ticket");
@@ -770,6 +797,12 @@
 
     // === AJOUT BOUTON INSERER INITIALES ===
     function ajouterBoutonInsererInitiales() {
+        // Limiter strictement à la fiche ticket
+        if (!isHelpdeskTicketForm()) {
+            const exist = document.getElementById('btn-inserer-initiales');
+            if (exist) exist.remove();
+            return;
+        }
         // Ne pas dupliquer
         if (document.getElementById('btn-inserer-initiales')) return;
         // Créer le bouton
@@ -794,25 +827,28 @@
             // Créer le bloc d'initiales
             const bloc = document.createElement('div');
             bloc.className = 'bloc-initiales-odoo';
-            bloc.style.margin = '5px 0 0 0';
+            bloc.style.margin = '0';
             bloc.textContent = texte;
-            // Chercher le conteneur du texte rouge
-            const cligno = document.getElementById('texte-clignotant-container');
-            if (cligno && cligno.parentNode) {
-                // Insérer juste après le texte rouge
-                if (cligno.nextSibling) {
-                    cligno.parentNode.insertBefore(bloc, cligno.nextSibling);
-                } else {
-                    cligno.parentNode.appendChild(bloc);
-                }
+            // Insérer à la toute fin de la zone de réponse (toujours en bas)
+            const reponseField = document.querySelector('div#request_answer.note-editable');
+            if (reponseField) {
+                // Nettoyer les espaces/sauts de ligne de fin
+                (function cleanupTail(node){
+                    while (node.lastChild && (
+                        node.lastChild.nodeName === 'BR' ||
+                        (node.lastChild.nodeType === 3 && !node.lastChild.textContent.trim()) ||
+                        (node.lastChild.nodeType === 1 && !(node.lastChild.id === 'texte-clignotant-container') && node.lastChild.textContent.trim() === '')
+                    )) {
+                        node.removeChild(node.lastChild);
+                    }
+                })(reponseField);
+                // Un seul saut de ligne avant le bloc si du contenu existe
+                if (reponseField.childNodes.length) reponseField.appendChild(document.createElement('br'));
+                reponseField.appendChild(bloc);
+                // Faire défiler vers le bas pour visibilité
+                try { reponseField.scrollTop = reponseField.scrollHeight; } catch(e) {}
             } else {
-                // Sinon, en bas de la zone de réponse
-                const reponseField = document.querySelector('div#request_answer.note-editable');
-                if (reponseField) {
-                    reponseField.appendChild(bloc);
-                } else {
-                    alert("Zone de réponse non trouvée !");
-                }
+                alert("Zone de réponse non trouvée !");
             }
         });
         // Chercher le bouton 'Envoyer un message client'
@@ -886,6 +922,7 @@
                 // Appel dans l'initialisation
                 ajouterBoutonInsererInitiales();
                 scheduleBadgeDevisUpdate();
+                appliquerClignotementInternet();
             }, 1000);
         } else {
             setTimeout(initialiserScript, 1000);
@@ -901,6 +938,7 @@
                     ajouterBoutonCreerTicket(); // Ajouter le nouveau bouton
                     modifierBoutonCloture();
                     scheduleBadgeDevisUpdate();
+                    appliquerClignotementInternet();
                 }, 500);
             }
         }
@@ -1504,6 +1542,12 @@
     window.addEventListener('hashchange', function() {
         setTimeout(createClearButton, 1000);
         scheduleBadgeDevisUpdate(800);
+        // Nettoyage si on quitte la fiche ticket
+        retirerBoutonsTraitement();
+        const bc = document.getElementById('btn-creer-ticket');
+        if (bc && !isHelpdeskTicketForm()) bc.remove();
+        const bi = document.getElementById('btn-inserer-initiales');
+        if (bi && !isHelpdeskTicketForm()) bi.remove();
     });
 
     // Vérification périodique
@@ -1620,6 +1664,54 @@
     .rdv-notif-close:hover { opacity: 1; }
     `;
     document.head.appendChild(styleRdv);
+
+    // Style clignotement léger pour le tag INTERNET
+    const styleInternet = document.createElement('style');
+    styleInternet.textContent = `
+    @keyframes internetBlink {
+      0% { filter: none; background-color: rgba(30,136,229,0.10); box-shadow: 0 0 0 0 rgba(30,136,229,0); }
+      50% { filter: brightness(1.12) saturate(1.15); background-color: rgba(30,136,229,0.22); box-shadow: 0 0 16px 3px rgba(30,136,229,0.55); }
+      100% { filter: none; background-color: rgba(30,136,229,0.10); box-shadow: 0 0 0 0 rgba(30,136,229,0); }
+    }
+    @keyframes internetRing {
+      0% { opacity: .25; transform: scale(0.98); }
+      50% { opacity: .65; transform: scale(1); }
+      100% { opacity: .25; transform: scale(0.98); }
+    }
+    .internet-blink {
+      animation: internetBlink 1.2s infinite;
+      position: relative;
+      z-index: 1;
+    }
+    .internet-blink::after {
+      content: '';
+      position: absolute;
+      left: -2px; right: -2px; top: -2px; bottom: -2px;
+      border-radius: 6px;
+      pointer-events: none;
+      box-shadow: 0 0 18px 4px rgba(30,136,229,0.55);
+      animation: internetRing 1.2s infinite;
+      z-index: 2;
+    }
+    `;
+    document.head.appendChild(styleInternet);
+
+    function appliquerClignotementInternet() {
+        try {
+            const nodes = document.querySelectorAll('.o_tag, .badge, .o_tag_badge_text, .o_tag_badge, .o_badge');
+            nodes.forEach(el => {
+                const text = (el.textContent || '').trim().toLowerCase();
+                if (text.includes('internet')) {
+                    const target = el.classList && (el.classList.contains('o_tag') || el.classList.contains('badge'))
+                        ? el
+                        : (el.closest && el.closest('.o_tag, .badge')) || el;
+                    if (target && target.classList && !target.classList.contains('internet-blink')) {
+                        target.classList.add('internet-blink');
+                    }
+                }
+            });
+        } catch (e) { /* ignore */ }
+    }
 
     // Fonction pour afficher une notification en haut
     function afficherNotifRdv(message, rdvKey, estDepasse = false) {
