@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.2.1
+// @version      2.2.2
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -157,13 +157,17 @@
     // Fonction pour retirer les éléments liés au traitement en dehors de la fiche ticket
     function retirerBoutonsTraitement() {
         try {
-            const btnTraiter = document.getElementById('btn-traiter-appel');
-            if (btnTraiter && !isHelpdeskTicketForm()) {
-                btnTraiter.remove();
-            }
-            const texteCligno = document.getElementById('texte-clignotant-container');
-            if (texteCligno && !isHelpdeskTicketForm()) {
-                texteCligno.remove();
+            // Ne retirer que si on n'est ni sur la fiche ticket ni sur la liste des tickets
+            const isTicketPage = window.location.href.includes('model=helpdesk.ticket');
+            if (!isTicketPage) {
+                const btnTraiter = document.getElementById('btn-traiter-appel');
+                if (btnTraiter) {
+                    btnTraiter.remove();
+                }
+                const texteCligno = document.getElementById('texte-clignotant-container');
+                if (texteCligno) {
+                    texteCligno.remove();
+                }
             }
         } catch (e) {
             /* ignore */
@@ -250,8 +254,9 @@
     // Fonction pour créer le bouton
     function ajouterBoutonTraiter() {
         console.log("Tentative d'ajout du bouton");
-        // Limiter strictement à la fiche ticket
-        if (!isHelpdeskTicketForm()) {
+        // Limiter aux pages de tickets (fiche et liste)
+        const isTicketPage = window.location.href.includes('model=helpdesk.ticket');
+        if (!isTicketPage) {
             retirerBoutonsTraitement();
             return;
         }
@@ -436,6 +441,7 @@
         // Créer le conteneur
         const container = document.createElement('div');
         container.id = 'texte-clignotant-container';
+        container.setAttribute('data-persistent', 'true'); // Marquer comme persistant
         container.style.cssText = `
             display: inline-flex;
             align-items: center;
@@ -624,8 +630,9 @@
     // Fonction pour créer le bouton "Créer un ticket"
     function ajouterBoutonCreerTicket() {
         console.log("Tentative d'ajout du bouton Créer un ticket");
-        // Limiter strictement à la fiche ticket
-        if (!isHelpdeskTicketForm()) {
+        // Limiter aux pages de tickets (fiche et liste)
+        const isTicketPage = window.location.href.includes('model=helpdesk.ticket');
+        if (!isTicketPage) {
             const exist = document.getElementById('btn-creer-ticket');
             if (exist) exist.remove();
             return;
@@ -797,8 +804,9 @@
 
     // === AJOUT BOUTON INSERER INITIALES ===
     function ajouterBoutonInsererInitiales() {
-        // Limiter strictement à la fiche ticket
-        if (!isHelpdeskTicketForm()) {
+        // Limiter aux pages de tickets (fiche et liste)
+        const isTicketPage = window.location.href.includes('model=helpdesk.ticket');
+        if (!isTicketPage) {
             const exist = document.getElementById('btn-inserer-initiales');
             if (exist) exist.remove();
             return;
@@ -974,11 +982,22 @@
             if (contenuLigne.includes("traitement de l'appel en cours")) {
                 console.log("Ticket en traitement trouvé !");
                 ligne.classList.add('ticket-en-traitement');
-                // Ajouter une bordure plus visible
-                ligne.style.border = '2px solid rgba(0, 123, 255, 0.5)';
+
+                // Vérifier si on a déjà appliqué le style pour éviter les doublons
+                if (!ligne.hasAttribute('data-animation-applied')) {
+                    ligne.setAttribute('data-animation-applied', 'true');
+                    // Ajouter une bordure plus visible
+                    ligne.style.border = '2px solid rgba(0, 123, 255, 0.6)';
+                    ligne.style.borderRadius = '4px';
+                }
             } else {
-                ligne.classList.remove('ticket-en-traitement');
-                ligne.style.border = '';
+                // Retirer les classes et styles seulement si nécessaire
+                if (ligne.classList.contains('ticket-en-traitement')) {
+                    ligne.classList.remove('ticket-en-traitement');
+                    ligne.removeAttribute('data-animation-applied');
+                    ligne.style.border = '';
+                    ligne.style.borderRadius = '';
+                }
             }
         });
     }
@@ -990,68 +1009,79 @@
             /* Effet de glow et de fond pour les tickets en traitement (scopé à la vue liste) */
             @keyframes ticketEnTraitement {
                 0% {
-                    box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.7);
-                    background-color: rgba(0, 123, 255, 0.15);
+                    box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.4);
+                    background-color: rgba(0, 123, 255, 0.08);
                 }
                 50% {
-                    box-shadow: 0 0 15px 0 rgba(0, 123, 255, 0.9);
-                    background-color: rgba(0, 123, 255, 0.05);
+                    box-shadow: 0 0 8px 0 rgba(0, 123, 255, 0.6);
+                    background-color: rgba(0, 123, 255, 0.03);
                 }
                 100% {
-                    box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.7);
-                    background-color: rgba(0, 123, 255, 0.15);
+                    box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.4);
+                    background-color: rgba(0, 123, 255, 0.08);
                 }
             }
             @keyframes ticketEnTraitementBg {
-                0% { background-color: rgba(0, 123, 255, 0.15); }
-                50% { background-color: rgba(0, 123, 255, 0.05); }
-                100% { background-color: rgba(0, 123, 255, 0.15); }
+                0% { background-color: rgba(0, 123, 255, 0.08); }
+                50% { background-color: rgba(0, 123, 255, 0.03); }
+                100% { background-color: rgba(0, 123, 255, 0.08); }
             }
             /* Forcer l'effet au premier plan au-dessus du thème MAIS sous les popups */
-            .o_list_view .o_data_row.ticket-en-traitement { position: relative !important; z-index: 5000 !important; }
+            .o_list_view .o_data_row.ticket-en-traitement {
+                position: relative !important;
+                z-index: 1 !important;
+                border: 2px solid rgba(0, 123, 255, 0.6) !important;
+                border-radius: 4px !important;
+            }
             .o_list_view .o_data_row.ticket-en-traitement::after {
                 content: '';
                 position: absolute;
-                top: -2px; left: -2px; right: -2px; bottom: -2px;
+                top: -1px; left: -1px; right: -1px; bottom: -1px;
                 pointer-events: none;
-                border-radius: 2px;
-                animation: ticketEnTraitement 1.5s infinite;
-                box-shadow: 0 0 15px 0 rgba(0, 123, 255, 0.9);
-                background-color: rgba(0, 123, 255, 0.10);
-                z-index: 5000 !important;
+                border-radius: 3px;
+                animation: ticketEnTraitement 2s infinite;
+                box-shadow: 0 0 8px 0 rgba(0, 123, 255, 0.6);
+                background-color: rgba(0, 123, 255, 0.05);
+                z-index: 1 !important;
             }
-            .o_list_view .o_data_row.ticket-en-traitement td { position: relative !important; z-index: 5000 !important; }
+            .o_list_view .o_data_row.ticket-en-traitement td {
+                position: relative !important;
+                z-index: 1 !important;
+            }
             .o_list_view .o_data_row.ticket-en-traitement td::after {
                 content: '';
                 position: absolute;
                 inset: 0;
                 pointer-events: none;
-                animation: ticketEnTraitementBg 1.5s infinite;
-                background-color: rgba(0, 123, 255, 0.15);
-                z-index: 5000 !important;
+                animation: ticketEnTraitementBg 2s infinite;
+                background-color: rgba(0, 123, 255, 0.08);
+                z-index: 1 !important;
             }
-            /* RDV: superposer les effets par-dessus le thème (uniquement dans la vue liste) */
-            .o_list_view .rdv-clignote-orange, .o_list_view .rdv-clignote-rouge, .o_list_view .rdv-clignote-depasse { position: relative !important; z-index: 5000 !important; }
-            @keyframes rdvOrangeBg { from { background: rgba(255, 152, 0, 0.20); } to { background: rgba(255, 152, 0, 0.35); } }
-            @keyframes rdvRougeBg { from { background: rgba(229, 57, 53, 0.22); } to { background: rgba(229, 57, 53, 0.40); } }
+            /* RDV: effets plus subtils */
+            .o_list_view .rdv-clignote-orange, .o_list_view .rdv-clignote-rouge, .o_list_view .rdv-clignote-depasse {
+                position: relative !important;
+                z-index: 1 !important;
+            }
+            @keyframes rdvOrangeBg { from { background: rgba(255, 152, 0, 0.15); } to { background: rgba(255, 152, 0, 0.25); } }
+            @keyframes rdvRougeBg { from { background: rgba(229, 57, 53, 0.15); } to { background: rgba(229, 57, 53, 0.25); } }
             @keyframes rdvDepasseBg {
-                0% { background: rgba(229, 57, 53, 0.35); box-shadow: 0 0 15px rgba(229, 57, 53, 0.7); }
-                50% { background: rgba(183, 28, 28, 0.50); box-shadow: 0 0 25px rgba(229, 57, 53, 0.9); }
-                100% { background: rgba(229, 57, 53, 0.35); box-shadow: 0 0 15px rgba(229, 57, 53, 0.7); }
+                0% { background: rgba(229, 57, 53, 0.25); box-shadow: 0 0 8px rgba(229, 57, 53, 0.5); }
+                50% { background: rgba(183, 28, 28, 0.35); box-shadow: 0 0 12px rgba(229, 57, 53, 0.6); }
+                100% { background: rgba(229, 57, 53, 0.25); box-shadow: 0 0 8px rgba(229, 57, 53, 0.5); }
             }
             .o_list_view .rdv-clignote-orange::after,
             .o_list_view .rdv-clignote-rouge::after,
             .o_list_view .rdv-clignote-depasse::after {
                 content: '';
                 position: absolute;
-                inset: -1px; /* déborde légèrement pour couvrir toute la case */
+                inset: -1px;
                 pointer-events: none;
                 border-radius: 2px;
-                z-index: 5000 !important;
+                z-index: 1 !important;
             }
-            .o_list_view .rdv-clignote-orange::after { animation: rdvOrangeBg 1.2s infinite alternate; }
-            .o_list_view .rdv-clignote-rouge::after { animation: rdvRougeBg 0.8s infinite alternate; }
-            .o_list_view .rdv-clignote-depasse::after { animation: rdvDepasseBg 0.5s infinite alternate; }
+            .o_list_view .rdv-clignote-orange::after { animation: rdvOrangeBg 1.5s infinite alternate; }
+            .o_list_view .rdv-clignote-rouge::after { animation: rdvRougeBg 1.2s infinite alternate; }
+            .o_list_view .rdv-clignote-depasse::after { animation: rdvDepasseBg 1s infinite alternate; }
         `;
         document.head.appendChild(style);
     }
@@ -1065,11 +1095,43 @@
                     mutation.type === 'childList') {
                     setTimeout(() => {
                         mettreAJourAnimationTickets();
+                        // Restaurer les éléments après rafraîchissement automatique
+                        restaurerElementsApresRafraichissement();
                     }, 500);
                 }
             }
         }
     });
+
+    // Fonction pour restaurer les éléments après rafraîchissement automatique
+    function restaurerElementsApresRafraichissement() {
+        try {
+            // Vérifier si on est sur la liste des tickets
+            if (!window.location.href.includes('model=helpdesk.ticket&view_type=list')) return;
+
+            // Restaurer le texte clignotant si nécessaire
+            const lignesTickets = document.querySelectorAll('.o_list_view .o_data_row');
+            lignesTickets.forEach(ligne => {
+                const contenuLigne = ligne.textContent.toLowerCase();
+                if (contenuLigne.includes("traitement de l'appel en cours")) {
+                    // Vérifier si l'animation est déjà appliquée
+                    if (!ligne.classList.contains('ticket-en-traitement')) {
+                        ligne.classList.add('ticket-en-traitement');
+                        ligne.setAttribute('data-animation-applied', 'true');
+                        ligne.style.border = '2px solid rgba(0, 123, 255, 0.6)';
+                        ligne.style.borderRadius = '4px';
+                    }
+                }
+            });
+
+            // Restaurer le bouton de traitement si nécessaire
+            setTimeout(() => {
+                ajouterBoutonTraiter();
+            }, 300);
+        } catch (e) {
+            console.log("Erreur lors de la restauration:", e);
+        }
+    }
 
     // Ajouter l'initialisation de l'animation dans la fonction d'initialisation
     function initialiserAnimation() {
@@ -1080,12 +1142,31 @@
             characterData: true
         });
 
-        // Mettre à jour l'animation toutes les 2 secondes
-        setInterval(mettreAJourAnimationTickets, 2000);
+        // Mettre à jour l'animation plus fréquemment pour une meilleure persistance
+        setInterval(mettreAJourAnimationTickets, 1000);
+
+        // Restaurer les éléments plus fréquemment aussi
+        setInterval(restaurerElementsApresRafraichissement, 1500);
     }
 
     // Appeler l'initialisation de l'animation au démarrage
     setTimeout(initialiserAnimation, 1000);
+
+    // Gestion spéciale des rafraîchissements automatiques d'Odoo
+    let lastUrl = window.location.href;
+    setInterval(() => {
+        const currentUrl = window.location.href;
+        if (currentUrl !== lastUrl) {
+            lastUrl = currentUrl;
+            // URL a changé, attendre un peu puis restaurer
+            setTimeout(() => {
+                if (window.location.href.includes('model=helpdesk.ticket&view_type=list')) {
+                    restaurerElementsApresRafraichissement();
+                    mettreAJourAnimationTickets();
+                }
+            }, 1000);
+        }
+    }, 500);
 
     console.log("Script de désassignation démarré");
 
@@ -1179,7 +1260,8 @@
         if (b && b.parentNode) b.parentNode.removeChild(b);
     }
     function assurerBadgeImmediatPlacement(){
-        if (!isHelpdeskTicketForm()) { removeDevisBadge(); return false; }
+        const isTicketPage = window.location.href.includes('model=helpdesk.ticket');
+        if (!isTicketPage) { removeDevisBadge(); return false; }
         const stats = findStatsContainer();
         const anchor = findTicketsOuvertsAnchor();
         if (!stats && !anchor) return false;
@@ -1235,8 +1317,8 @@
         }
     }
     async function mettreAJourBadgeDevis() {
-        // Uniquement sur la fiche ticket
-        if (!window.location.href.includes('model=helpdesk.ticket') || !window.location.href.includes('view_type=form')) return;
+        // Uniquement sur les pages de tickets (fiche et liste)
+        if (!window.location.href.includes('model=helpdesk.ticket')) return;
 
         const ticketId = obtenirTicketId();
         if (!ticketId) return;
@@ -1429,7 +1511,8 @@
     }
     // Observer pour re-placer dès que la barre stats apparaît
     const observerStatsInstant = new MutationObserver(() => {
-        if (!isHelpdeskTicketForm()) { removeDevisBadge(); return; }
+        const isTicketPage = window.location.href.includes('model=helpdesk.ticket');
+        if (!isTicketPage) { removeDevisBadge(); return; }
         if (assurerBadgeImmediatPlacement()) {
             // Une fois placé, on peut arrêter si souhaité mais on garde pour robustesse
         }
