@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.2.3
+// @version      2.2.4
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -982,7 +982,7 @@
             if (contenuLigne.includes("traitement de l'appel en cours")) {
                 console.log("Ticket en traitement trouvé !");
                 ligne.classList.add('ticket-en-traitement');
-                
+
                 // Vérifier si on a déjà appliqué le style pour éviter les doublons
                 if (!ligne.hasAttribute('data-animation-applied')) {
                     ligne.setAttribute('data-animation-applied', 'true');
@@ -1007,14 +1007,14 @@
             if (ligne.classList.contains('text-danger')) {
                 console.log("Ticket bloquant détecté !");
                 ligne.classList.add('ticket-bloquant');
-                
+
                 // Vérifier si on a déjà appliqué le style pour éviter les doublons
                 if (!ligne.hasAttribute('data-bloquant-applied')) {
                     ligne.setAttribute('data-bloquant-applied', 'true');
                     // Ajouter une bordure rouge simple
                     ligne.style.border = '2px solid rgba(220, 53, 69, 0.8)';
                     ligne.style.borderRadius = '4px';
-                    
+
                     // Pas de son d'alerte pour rester subtil
                 }
             } else {
@@ -1054,9 +1054,9 @@
                 100% { background-color: rgba(0, 123, 255, 0.08); }
             }
             /* Forcer l'effet au premier plan au-dessus du thème MAIS sous les popups */
-            .o_list_view .o_data_row.ticket-en-traitement { 
-                position: relative !important; 
-                z-index: 1 !important; 
+            .o_list_view .o_data_row.ticket-en-traitement {
+                position: relative !important;
+                z-index: 1 !important;
                 border: 2px solid rgba(0, 123, 255, 0.6) !important;
                 border-radius: 4px !important;
             }
@@ -1071,9 +1071,9 @@
                 background-color: rgba(0, 123, 255, 0.05);
                 z-index: 1 !important;
             }
-            .o_list_view .o_data_row.ticket-en-traitement td { 
-                position: relative !important; 
-                z-index: 1 !important; 
+            .o_list_view .o_data_row.ticket-en-traitement td {
+                position: relative !important;
+                z-index: 1 !important;
             }
             .o_list_view .o_data_row.ticket-en-traitement td::after {
                 content: '';
@@ -1085,9 +1085,9 @@
                 z-index: 1 !important;
             }
             /* RDV: effets plus subtils */
-            .o_list_view .rdv-clignote-orange, .o_list_view .rdv-clignote-rouge, .o_list_view .rdv-clignote-depasse { 
-                position: relative !important; 
-                z-index: 1 !important; 
+            .o_list_view .rdv-clignote-orange, .o_list_view .rdv-clignote-rouge, .o_list_view .rdv-clignote-depasse {
+                position: relative !important;
+                z-index: 1 !important;
             }
             @keyframes rdvOrangeBg { from { background: rgba(255, 152, 0, 0.15); } to { background: rgba(255, 152, 0, 0.25); } }
             @keyframes rdvRougeBg { from { background: rgba(229, 57, 53, 0.15); } to { background: rgba(229, 57, 53, 0.25); } }
@@ -1132,9 +1132,9 @@
                 50% { color: #dc3545 !important; } /* Rouge Bootstrap */
                 100% { color: #17a2b8 !important; } /* Retour à la couleur originale */
             }
-            .o_list_view .o_data_row.ticket-bloquant { 
-                position: relative !important; 
-                z-index: 1 !important; 
+            .o_list_view .o_data_row.ticket-bloquant {
+                position: relative !important;
+                z-index: 1 !important;
                 border: 2px solid rgba(220, 53, 69, 0.8) !important;
                 border-radius: 4px !important;
             }
@@ -1148,27 +1148,27 @@
                 box-shadow: 0 0 8px 0 rgba(220, 53, 69, 0.6);
                 z-index: 1 !important;
             }
-            .o_list_view .o_data_row.ticket-bloquant td { 
-                position: relative !important; 
-                z-index: 1 !important; 
+            .o_list_view .o_data_row.ticket-bloquant td {
+                position: relative !important;
+                z-index: 1 !important;
             }
             /* Faire clignoter seulement le texte en rouge */
             .o_list_view .o_data_row.ticket-bloquant td {
                 animation: ticketBloquantText 2s infinite !important;
             }
-            
+
             /* Faire clignoter le nom du client en rouge aussi */
             .o_list_view .o_data_row.ticket-bloquant td:first-child,
             .o_list_view .o_data_row.ticket-bloquant td:nth-child(2) {
                 animation: ticketBloquantClient 2s infinite !important;
             }
-            
+
             /* Forcer la couleur sur tous les éléments enfants pour surcharger Odoo */
             .o_list_view .o_data_row.ticket-bloquant td:first-child *,
             .o_list_view .o_data_row.ticket-bloquant td:nth-child(2) * {
                 animation: ticketBloquantClient 2s infinite !important;
             }
-            
+
             /* Cibler spécifiquement les liens et spans du nom du client */
             .o_list_view .o_data_row.ticket-bloquant td:first-child a,
             .o_list_view .o_data_row.ticket-bloquant td:first-child span,
@@ -1205,22 +1205,22 @@
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
             const oscillator = audioContext.createOscillator();
             const gainNode = audioContext.createGain();
-            
+
             // Configuration du son d'alerte
             oscillator.connect(gainNode);
             gainNode.connect(audioContext.destination);
-            
+
             // Son d'urgence : 3 bips courts et aigus
             oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
             oscillator.frequency.setValueAtTime(1000, audioContext.currentTime + 0.1);
             oscillator.frequency.setValueAtTime(1200, audioContext.currentTime + 0.2);
-            
+
             gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
             gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
-            
+
             oscillator.start(audioContext.currentTime);
             oscillator.stop(audioContext.currentTime + 0.3);
-            
+
         } catch (e) {
             console.log("Son d'alerte non supporté:", e);
         }
@@ -1277,7 +1277,7 @@
 
         // Mettre à jour l'animation plus fréquemment pour une meilleure persistance
         setInterval(mettreAJourAnimationTickets, 1000);
-        
+
         // Restaurer les éléments plus fréquemment aussi
         setInterval(restaurerElementsApresRafraichissement, 1500);
     }
