@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.2.4
+// @version      2.2.5
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -931,6 +931,7 @@
                 ajouterBoutonInsererInitiales();
                 scheduleBadgeDevisUpdate();
                 appliquerClignotementInternet();
+                scheduleOpenTicketsUpdate();
             }, 1000);
         } else {
             setTimeout(initialiserScript, 1000);
@@ -947,6 +948,7 @@
                     modifierBoutonCloture();
                     scheduleBadgeDevisUpdate();
                     appliquerClignotementInternet();
+                    scheduleOpenTicketsUpdate();
                 }, 500);
             }
         }
@@ -1651,6 +1653,260 @@
         }
     });
     observerStatsInstant.observe(document.body, { childList: true, subtree: true });
+    // Relier l'alerte doublon aux changements rapides de la barre stats
+    const observerStatsOpenTickets = new MutationObserver(() => {
+        scheduleOpenTicketsUpdate(200);
+    });
+    observerStatsOpenTickets.observe(document.body, { childList: true, subtree: true });
+
+    // === ALERTE TICKETS OUVERTS (DOUBLONS) PAR CODE CLIENT ===
+    const styleTicketsOuverts = document.createElement('style');
+    styleTicketsOuverts.textContent = `
+    #badge-tickets-ouverts { display:inline-flex; align-items:center; gap:6px; margin-left:8px; vertical-align:middle; margin-top:2px; }
+    /* Bouton Doublon plus épais (moins écrasé) sans élargir horizontalement */
+    #badge-tickets-ouverts .to-btn { position:relative; display:inline-flex; align-items:center; gap:8px; padding:8px 14px; border-radius:12px; background:#8d6e63; color:#fff; font-weight:700; box-shadow:0 4px 14px rgba(0,0,0,0.2); min-width:46px; height:44px; border:none; cursor:pointer; line-height:1; }
+    #badge-tickets-ouverts .to-btn.alert { background:#e53935; }
+    #badge-tickets-ouverts .to-count { position:absolute; top:-6px; right:-6px; min-width:18px; height:18px; padding:0 4px; border-radius:10px; background:#ff7043; color:#fff; font-size:11px; line-height:18px; text-align:center; font-weight:800; box-shadow:0 0 6px rgba(0,0,0,0.25); }
+    .popup-tickets-ouverts { position:fixed; top:80px; right:24px; background:#1f2a30; color:#fff; border-radius:8px; box-shadow:0 10px 30px rgba(0,0,0,0.35); z-index: 6100; width: 1100px; max-height: 78vh; overflow:hidden; display:flex; flex-direction:column; }
+    .popup-tickets-ouverts.compact { width: 780px; }
+    .popup-tickets-ouverts header{ display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.08); font-weight:700; }
+    .popup-tickets-ouverts header button{ all:unset; cursor:pointer; color:#1DE9B6; padding:6px 8px; }
+    .popup-tickets-ouverts .content { display:flex; min-height: 50vh; }
+    .popup-tickets-ouverts .list { width: 38%; min-width: 280px; max-width: 460px; overflow:auto; border-right:1px solid rgba(255,255,255,0.08); }
+    .popup-tickets-ouverts.compact .list { width: 100%; max-width: none; border-right:0; }
+    .popup-tickets-ouverts .viewer { flex:1; }
+    .popup-tickets-ouverts.compact .viewer { display:none; }
+    .popup-tickets-ouverts.compact header{ padding:6px 10px; font-size:13px; }
+    .popup-tickets-ouverts.compact ul{ padding:4px 0; }
+    .popup-tickets-ouverts.compact li{ padding:6px 10px; grid-template-columns: 1fr 150px 120px; gap:8px; }
+    .popup-tickets-ouverts iframe { width:100%; height: calc(78vh - 48px); border:0; background:#152026; }
+    .popup-tickets-ouverts ul{ list-style:none; margin:0; padding:8px 0; }
+    .popup-tickets-ouverts li{ padding:10px 14px; border-bottom:1px dashed rgba(255,255,255,0.08); display:grid; grid-template-columns: 1fr 180px 150px; gap:12px; align-items:center; cursor:pointer; }
+    .popup-tickets-ouverts li:hover { background: rgba(255,255,255,0.05); }
+    .popup-tickets-ouverts .muted{ color:#9aa7ad; font-size:12px; margin-left:auto; }
+    .popup-tickets-ouverts .team{ color:#cfd8dc; font-size:12px; }
+    @keyframes doublonBlink { 0%, 100% { filter:none; box-shadow:0 10px 28px rgba(0,0,0,0.35); } 50% { filter:brightness(1.15) saturate(1.1); box-shadow:0 12px 34px rgba(0,0,0,0.45); } }
+    .doublon-toast{ position:fixed; top:50%; left:50%; transform: translate(-50%, -50%); background:#ffb300; color:#1b1b1b; padding:18px 24px; border-radius:12px; box-shadow:0 10px 28px rgba(0,0,0,0.35); z-index: 6200; font-weight:800; display:flex; align-items:center; gap:14px; max-width: 760px; font-size: 20px; line-height:1.25; animation: doublonBlink 0.75s ease-in-out 8; }
+    .doublon-toast .close{ cursor:pointer; color:#1b1b1b; opacity:.8; }
+    `;
+    document.head.appendChild(styleTicketsOuverts);
+
+    let openTicketsUpdateTimer = null;
+    let cachedCloseStages = null;
+    function scheduleOpenTicketsUpdate(delay = 400){
+        clearTimeout(openTicketsUpdateTimer);
+        openTicketsUpdateTimer = setTimeout(mettreAJourAlerteTicketsOuverts, delay);
+    }
+
+    function isCreatingHelpdeskTicket(){
+        const s = (window.location.href || '') + ' ' + (window.location.hash || '');
+        const isForm = s.includes('model=helpdesk.ticket') && s.includes('view_type=form');
+        if (!isForm) return false;
+        // Vérif 1: id dans l'URL
+        const hasIdInUrl = /[#&]id=\d+/.test(s);
+        if (hasIdInUrl) return false;
+        // Vérif 2: id détecté (titre/fil d'ariane)
+        const currentId = obtenirTicketId();
+        if (currentId) return false;
+        // Vérif 3: attribut data-res-id du formulaire (Odoo)
+        try {
+            const form = document.querySelector('.o_form_view, .o_form_editable');
+            const rid = form && (form.getAttribute('data-res-id') || form.dataset && (form.dataset.resId || form.dataset.resId === 0 ? form.dataset.resId : ''));
+            if (rid && String(rid).trim() && String(rid) !== 'false' && !isNaN(Number(rid))) return false;
+        } catch(e){ /* ignore */ }
+        return true; // aucun id trouvé => création
+    }
+
+    async function getCloseStageIds(){
+        if (Array.isArray(cachedCloseStages)) return cachedCloseStages;
+        // Essai 1: is_close
+        let ids = await odooRpc('helpdesk.stage','search',[[['is_close','=',true]]]);
+        if (!Array.isArray(ids)) ids = await odooRpc('helpdesk.stage','search',[[['is_closed','=',true]]]);
+        if (!Array.isArray(ids)) ids = await odooRpc('helpdesk.stage','search',[[['fold','=',true]]]);
+        if (!Array.isArray(ids)) ids = [];
+        if (!ids.length){
+            const recs = await odooRpc('helpdesk.stage','search_read',[[],['name'],0,100,'sequence asc']) || [];
+            ids = recs.filter(r => /resolu|résolu|fermé|clos|done|closed/i.test(String(r.name||''))).map(r => r.id);
+        }
+        cachedCloseStages = ids;
+        return ids;
+    }
+
+    function findPartnerCode(){
+        // Champ lecture seule (span) côté ticket
+        const wrap = document.querySelector('.o_field_widget[name="partner_code"]');
+        if (wrap){
+            const txt = (wrap.textContent||'').trim();
+            if (txt) return txt;
+        }
+        return null;
+    }
+
+    function ensureOpenTicketsBadgeAnchor(){
+        const isCreate = isCreatingHelpdeskTicket();
+        const isTicketPage = window.location.href.includes('model=helpdesk.ticket');
+        if (!isTicketPage || !isCreate) {
+            const ex = document.getElementById('badge-tickets-ouverts');
+            if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+            return null;
+        }
+        const stats = findStatsContainer();
+        if (!stats) return null;
+        let badge = document.getElementById('badge-tickets-ouverts');
+        if (!badge){
+            badge = document.createElement('span');
+            badge.id = 'badge-tickets-ouverts';
+            const btn = document.createElement('button');
+            btn.className = 'to-btn';
+            btn.title = 'Tickets ouverts du client';
+            btn.textContent = 'Tickets ouverts';
+            badge.appendChild(btn);
+            placeBadgeAfterStats(stats, badge);
+        } else {
+            placeBadgeAfterStats(stats, badge);
+        }
+        try { badge.style.marginRight = '8px'; } catch(e){}
+        return badge;
+    }
+
+    let autoPopupLastCode = '';
+    async function mettreAJourAlerteTicketsOuverts(){
+        if (!isCreatingHelpdeskTicket()) {
+            const ex = document.getElementById('badge-tickets-ouverts');
+            if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+            const t = document.getElementById('doublon-toast');
+            if (t) try { t.remove(); } catch(e){}
+            return;
+        }
+        const badge = ensureOpenTicketsBadgeAnchor();
+        if (!badge) return;
+        const code = findPartnerCode();
+        if (!code){ badge.innerHTML = ''; return; }
+        const closeIds = await getCloseStageIds();
+        const domain = [ ['partner_code', '=', code] ];
+        if (Array.isArray(closeIds) && closeIds.length) domain.push(['stage_id','not in', closeIds]);
+        const count = await odooRpc('helpdesk.ticket','search_count',[ domain ]);
+        const n = Number(count)||0;
+        const btn = document.createElement('button');
+        btn.className = 'to-btn' + (n>0 ? ' alert' : '');
+        // Nettoyer toute largeur forcée pour garder la largeur naturelle
+        try { btn.style.minWidth = ''; } catch(e){}
+        btn.title = n>0 ? `${n} ticket(s) ouvert(s) pour ce client` : 'Aucun ticket ouvert';
+        btn.textContent = 'Doublon ?';
+        btn.onclick = () => { if (n>0) afficherPopupTicketsOuverts(code, domain); };
+        if (n>0){
+            const c = document.createElement('span');
+            c.className = 'to-count';
+            c.textContent = String(Math.min(n,99));
+            btn.appendChild(c);
+            // Afficher un toast d'avertissement discret
+            try { afficherToastDoublon(code, n); } catch(e) { /* ignore */ }
+            // Ouvrir automatiquement le panneau une seule fois par code
+            if (autoPopupLastCode !== code) {
+                autoPopupLastCode = code;
+                try { afficherPopupTicketsOuverts(code, domain); } catch(e){}
+            }
+        }
+        badge.innerHTML = '';
+        badge.appendChild(btn);
+    }
+
+    async function afficherPopupTicketsOuverts(codeClient, domain){
+        const popId = 'popup-tickets-ouverts';
+        const old = document.getElementById(popId);
+        if (old) old.remove();
+        const pop = document.createElement('div');
+        pop.id = popId;
+        pop.className = 'popup-tickets-ouverts';
+        // Mode compact par défaut: pas de panneau droit visible tant qu'aucun ticket n'est sélectionné
+        try { pop.classList.add('compact'); } catch(e){}
+        const header = document.createElement('header');
+        header.innerHTML = `<span>⚠️ Attention : risque de doublon — Code client ${codeClient}</span>`;
+        const close = document.createElement('button');
+        close.textContent = 'Fermer';
+        close.onclick = () => pop.remove();
+        header.appendChild(close);
+        pop.appendChild(header);
+
+        const content = document.createElement('div');
+        content.className = 'content';
+        const listBox = document.createElement('div');
+        listBox.className = 'list';
+        const viewer = document.createElement('div');
+        viewer.className = 'viewer';
+        const iframe = document.createElement('iframe');
+        // Masquer l'iframe tant qu'on n'a pas choisi un ticket pour éviter un grand cadre blanc
+        try { iframe.style.display = 'none'; } catch(e){}
+        viewer.appendChild(iframe);
+        const ul = document.createElement('ul');
+        listBox.appendChild(ul);
+        content.appendChild(listBox);
+        content.appendChild(viewer);
+        pop.appendChild(content);
+        document.body.appendChild(pop);
+
+        const fields = ['name','stage_id','user_id','create_date','team_id'];
+        const recs = await odooRpc('helpdesk.ticket','search_read',[ domain, fields, 0, 30, 'create_date desc' ]) || [];
+        const stateMap = {};
+        recs.forEach(r => {
+            const li = document.createElement('li');
+            const a = document.createElement('a');
+            a.href = `/web?debug=#id=${r.id}&model=helpdesk.ticket&view_type=form`;
+            a.textContent = r.name || ('Ticket #' + r.id);
+            a.style.color = '#8be9fd';
+            a.onclick = (e) => {
+                e.preventDefault();
+                // Ouvrir directement le ticket dans l'onglet courant et fermer la popup
+                try { window.location.href = a.href; } catch(_) { iframe.src = a.href; }
+                try { pop.remove(); } catch(_){}
+            };
+            const team = document.createElement('span');
+            team.className = 'team';
+            team.textContent = Array.isArray(r.team_id) ? r.team_id[1] : '';
+            const muted = document.createElement('span');
+            muted.className = 'muted';
+            const dt = r.create_date ? new Date(r.create_date) : null;
+            const fmt = dt ? dt.toLocaleDateString()+' '+dt.toLocaleTimeString().slice(0,5) : '';
+            const ass = Array.isArray(r.user_id) ? r.user_id[1] : '';
+            muted.textContent = `${fmt}${ass? ' • ' + ass : ''}`;
+            li.appendChild(a);
+            li.appendChild(team);
+            li.appendChild(muted);
+            li.addEventListener('click', (e)=>{
+                if (e.target && e.target.tagName==='A') return;
+                // Idem: clic sur la ligne ouvre le ticket directement
+                try { window.location.href = a.href; } catch(_) { iframe.src = a.href; }
+                try { pop.remove(); } catch(_){}
+            });
+            ul.appendChild(li);
+        });
+        if (!recs.length){
+            ul.innerHTML = '<li style="opacity:.8;">Aucun ticket à afficher</li>';
+        }
+    }
+
+    // Petit toast d'avertissement en haut à gauche
+    const DOUBLON_TOAST_DURATION_MS = 9000; // durée d'affichage souhaitée
+    let lastToastKey = '';
+    function afficherToastDoublon(codeClient, n){
+        const key = `${codeClient}_${n}`;
+        if (lastToastKey === key) return;
+        lastToastKey = key;
+        const old = document.getElementById('doublon-toast');
+        if (old) old.remove();
+        const el = document.createElement('div');
+        el.id = 'doublon-toast';
+        el.className = 'doublon-toast';
+        el.textContent = `Attention : risque de doublon (${n} ouvert${n>1?'s':''})`;
+        const close = document.createElement('span');
+        close.className = 'close';
+        close.textContent = '✖';
+        close.onclick = () => el.remove();
+        el.appendChild(close);
+        document.body.appendChild(el);
+        // Utiliser la durée configurable
+        setTimeout(() => { try { el.remove(); } catch(e){} }, DOUBLON_TOAST_DURATION_MS);
+    }
 
     function createClearButton() {
         // Rechercher le champ "Assigné à" avec plusieurs sélecteurs possibles
@@ -1752,12 +2008,14 @@
     // Initialisation au chargement
     window.addEventListener('load', function() {
         setTimeout(createClearButton, 2000);
+        scheduleOpenTicketsUpdate(800);
     });
 
     // Réinitialisation lors des changements de route
     window.addEventListener('hashchange', function() {
         setTimeout(createClearButton, 1000);
         scheduleBadgeDevisUpdate(800);
+        scheduleOpenTicketsUpdate(800);
         // Nettoyage si on quitte la fiche ticket
         retirerBoutonsTraitement();
         const bc = document.getElementById('btn-creer-ticket');
@@ -1769,6 +2027,7 @@
     // Vérification périodique
     setInterval(createClearButton, 5000);
     setInterval(scheduleBadgeDevisUpdate, 5000);
+    setInterval(scheduleOpenTicketsUpdate, 5000);
 
     const styleBtnInitiales = document.createElement('style');
     styleBtnInitiales.textContent = `
