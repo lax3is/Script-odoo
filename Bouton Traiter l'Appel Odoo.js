@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.2.5
+// @version      2.2.6
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -1691,6 +1691,26 @@
     `;
     document.head.appendChild(styleTicketsOuverts);
 
+    // Helpers pour dates Odoo/UTC -> Europe/Paris et filtres récents
+    function odooUtcNowMinusMinutes(minutes){
+        const d = new Date(Date.now() - (minutes*60000));
+        return d.toISOString().slice(0,19).replace('T',' ');
+    }
+
+    function formatOdooDateTimeFr(dtString){
+        if (!dtString) return '';
+        const s = dtString.includes('Z') ? dtString : dtString.replace(' ', 'T') + 'Z';
+        const d = new Date(s);
+        try {
+            return new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Paris', year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+        } catch(e){
+            const dd = isNaN(d) ? null : d;
+            if (!dd) return dtString;
+            const pad = n => String(n).padStart(2,'0');
+            return `${pad(dd.getDate())}/${pad(dd.getMonth()+1)}/${String(dd.getFullYear()).slice(-2)} ${pad(dd.getHours())}:${pad(dd.getMinutes())}`;
+        }
+    }
+
     let openTicketsUpdateTimer = null;
     let cachedCloseStages = null;
     function scheduleOpenTicketsUpdate(delay = 400){
@@ -1785,6 +1805,15 @@
         const closeIds = await getCloseStageIds();
         const domain = [ ['partner_code', '=', code] ];
         if (Array.isArray(closeIds) && closeIds.length) domain.push(['stage_id','not in', closeIds]);
+        // Exclure le ticket courant si détecté
+        try {
+            const currentId = obtenirTicketId();
+            if (currentId && !isNaN(Number(currentId))) domain.push(['id','!=', Number(currentId)]);
+        } catch(e){ /* ignore */ }
+        // Ignorer les tickets très récents (30s) pendant la création pour éviter auto-détection
+        try {
+            if (isCreatingHelpdeskTicket()) domain.push(['create_date','<', odooUtcNowMinusMinutes(0.5)]);
+        } catch(e){ /* ignore */ }
         const count = await odooRpc('helpdesk.ticket','search_count',[ domain ]);
         const n = Number(count)||0;
         const btn = document.createElement('button');
@@ -1865,8 +1894,7 @@
             team.textContent = Array.isArray(r.team_id) ? r.team_id[1] : '';
             const muted = document.createElement('span');
             muted.className = 'muted';
-            const dt = r.create_date ? new Date(r.create_date) : null;
-            const fmt = dt ? dt.toLocaleDateString()+' '+dt.toLocaleTimeString().slice(0,5) : '';
+            const fmt = r.create_date ? formatOdooDateTimeFr(r.create_date) : '';
             const ass = Array.isArray(r.user_id) ? r.user_id[1] : '';
             muted.textContent = `${fmt}${ass? ' • ' + ass : ''}`;
             li.appendChild(a);
