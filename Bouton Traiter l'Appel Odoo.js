@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.2.6
+// @version      2.2.7
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -2301,4 +2301,132 @@
     }
     setInterval(scanRappelsRdv, 2000); // toutes les 2s
     setTimeout(scanRappelsRdv, 1000); // au chargement
+
+    // =========================
+    // Priorité Contrat Matériel via indicateur dans le Titre
+    // =========================
+    (function(){
+        if (document.getElementById('prio-title-style')) return;
+        const st = document.createElement('style');
+        st.id = 'prio-title-style';
+        st.textContent = `
+        .row-prio-contrat{background:rgba(183,28,28,.06)}
+        .prio-badge{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:#b71c1c;color:#fff;font-size:11px;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+        .prio-glow{animation:prioBlink 2.6s infinite alternate ease-in-out}
+        @keyframes prioBlink{from{opacity:.55} to{opacity:1}}
+        .title-flag{margin-top:6px}
+        .prio-under{display:block; margin-top:4px}
+        `;
+        document.head.appendChild(st);
+    })();
+
+    // Stockage local des IDs prioritaires
+    const PRIO_STORE_KEY = 'odoo_ticket_prio_ids_v1';
+    const PRIO_TITLE_KEY = 'odoo_ticket_prio_titles_v1';
+    function getPrioSet(){ try{ return new Set(JSON.parse(localStorage.getItem(PRIO_STORE_KEY)||'[]')); }catch{return new Set();} }
+    function savePrioSet(s){ try{ localStorage.setItem(PRIO_STORE_KEY, JSON.stringify(Array.from(s))); }catch{} }
+    function addPrioId(id){ if(!id) return; const s=getPrioSet(); s.add(String(id)); savePrioSet(s); }
+    function hasPrioId(id){ if(!id) return false; return getPrioSet().has(String(id)); }
+    function getPrioTitleSet(){ try{ return new Set(JSON.parse(localStorage.getItem(PRIO_TITLE_KEY)||'[]')); }catch{return new Set();} }
+    function savePrioTitleSet(s){ try{ localStorage.setItem(PRIO_TITLE_KEY, JSON.stringify(Array.from(s))); }catch{} }
+    function addPrioTitle(title){
+        const norm=(title||'').trim().toLowerCase(); if(!norm) return;
+        const s=getPrioTitleSet(); s.add(norm); savePrioTitleSet(s);
+    }
+    function hasPrioTitle(title){ const norm=(title||'').trim().toLowerCase(); if(!norm) return false; return getPrioTitleSet().has(norm); }
+
+    function getCurrentTicketId(){
+        const m = location.href.match(/(?:[#&]?id=)(\d+)/); if(m) return m[1];
+        const b = document.querySelector('.breadcrumb, .o_control_panel .breadcrumb');
+        if (b){ const m2=(b.textContent||'').match(/#(\d+)/); if(m2) return m2[1]; }
+        return null;
+    }
+
+    function hasContractMaterielInDetail() {
+        try {
+            // cibler les tags du champ contrat
+            const tags = Array.from(document.querySelectorAll('.o_field_tags .o_tag_badge_text, .o_field_tags .o_tag, .badge'));
+            return tags.some(t => /assistance\s*mat(é|e)riel/i.test((t.textContent||'')));
+        } catch { return false; }
+    }
+
+    function ensureTitleIndicatorForContract() {
+        try {
+            const inDetail = hasContractMaterielInDetail();
+            // champs possibles pour le titre
+            const input = document.querySelector('#name_o_input')
+                       || document.querySelector('.oe_title input[name], .o_field_widget[name="name"] input, input[name="name"]');
+            if (!input) return;
+            // Retirer visuellement une éventuelle étoile déjà présente (ne pas afficher aux utilisateurs)
+            if (/^\*/.test(input.value || '')) {
+                input.value = (input.value || '').replace(/^\*\s+/, '');
+                input.dispatchEvent(new Event('input', {bubbles:true}));
+                input.dispatchEvent(new Event('change', {bubbles:true}));
+            }
+            // Afficher un badge rouge sous le titre si contrat matériel
+            const titleWrap = input.closest('.oe_title') || input.parentElement;
+            if (titleWrap) {
+                let flag = titleWrap.querySelector('.prio-badge.title-flag');
+                if (inDetail) {
+                    if (!flag) {
+                        flag = document.createElement('div');
+                        flag.className = 'prio-badge prio-glow title-flag';
+                        flag.textContent = 'Contrat matériel — Priorité';
+                        titleWrap.appendChild(flag);
+                    }
+                    const id = getCurrentTicketId(); if (id) addPrioId(id);
+                    // enregistrer aussi le titre nettoyé
+                    addPrioTitle((input.value||'').replace(/^\*\s+/, ''));
+                } else if (flag) {
+                    flag.remove();
+                }
+            }
+        } catch {}
+    }
+
+    function extractRowId(tr){
+        const attrs=['data-id','data-res-id','data-oe-id'];
+        for(const a of attrs){ const v=tr.getAttribute(a); if(v && /\d+/.test(v)) return v.match(/\d+/)[0]; }
+        const link=tr.querySelector('a[href*="id="]'); if(link){ const m=(link.getAttribute('href')||'').match(/id=(\d+)/); if(m) return m[1]; }
+        const inner=tr.querySelector('[data-id],[data-res-id]'); if(inner){ const v=inner.getAttribute('data-id')||inner.getAttribute('data-res-id'); if(v && /\d+/.test(v)) return v.match(/\d+/)[0]; }
+        const m2=(tr.textContent||'').match(/#(\d{3,})/); if(m2) return m2[1];
+        return null;
+    }
+    function prioritizeListByTitleIndicator() {
+        try {
+            const table = document.querySelector('table'); if (!table) return;
+            const ths = Array.from(table.querySelectorAll('thead th')); if (!ths.length) return;
+            let idxName = -1;
+            ths.forEach((th,i)=>{ const t=(th.textContent||'').toLowerCase();
+                if(idxName===-1 && /(nom|name|objet|sujet)/i.test(t)) idxName=i;
+            });
+            if (idxName === -1) return;
+            const tbody = table.querySelector('tbody'); if (!tbody) return;
+            const rows = Array.from(tbody.querySelectorAll('tr.o_data_row'));
+            rows.forEach(tr => {
+                const tds = tr.querySelectorAll('td'); const cell = tds[idxName]; if(!cell) return;
+                // Cacher visuellement une éventuelle étoile au début du titre
+                const a = cell.querySelector('a, span, div');
+                if (a && a.firstChild && a.firstChild.nodeType === 3) {
+                    const t = a.firstChild.nodeValue || '';
+                    if (/^\*\s+/.test(t)) a.firstChild.nodeValue = t.replace(/^\*\s+/, '');
+                }
+                const rowId = extractRowId(tr);
+                if ((rowId && hasPrioId(rowId)) || hasPrioTitle((cell.textContent||''))) {
+                    tr.classList.add('row-prio-contrat');
+                    let under = cell.querySelector('.prio-under');
+                    if (!under) { under = document.createElement('div'); under.className = 'prio-under'; cell.appendChild(under); }
+                    if (!under.querySelector('.prio-badge')) {
+                        const b=document.createElement('span'); b.className='prio-badge prio-glow'; b.textContent='Contrat matériel — Priorité';
+                        under.appendChild(b);
+                    }
+                }
+            });
+        } catch {}
+    }
+
+    setInterval(ensureTitleIndicatorForContract, 1200);
+    setTimeout(ensureTitleIndicatorForContract, 800);
+    setInterval(prioritizeListByTitleIndicator, 1500);
+    setTimeout(prioritizeListByTitleIndicator, 900);
 })();
