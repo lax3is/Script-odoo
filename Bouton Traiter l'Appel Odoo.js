@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.2.8
+// @version      2.2.9
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -1055,6 +1055,73 @@
                 50% { background-color: rgba(0, 123, 255, 0.03); }
                 100% { background-color: rgba(0, 123, 255, 0.08); }
             }
+            /* En-tête du groupe Matériel N2 dans la vue liste */
+            .o_list_view .n2-group-header td,
+            .o_list_view .n2-group-header-row td {
+                background: #263238;
+                color: #fff;
+                font-weight: 700;
+                cursor: pointer;
+                user-select: none;
+                border-top: 2px solid #1b2328;
+                border-bottom: 1px solid #1b2328;
+                position: sticky;
+                top: 0;
+                z-index: 3;
+            }
+            .o_list_view .n2-group-header .chev,
+            .o_list_view .n2-group-header-row .chev {
+                display: inline-block;
+                margin-right: 8px;
+                transform: rotate(0deg);
+                transition: transform .15s ease-in-out;
+            }
+            .o_list_view .n2-group-header.expanded .chev,
+            .o_list_view .n2-group-header-row.expanded .chev {
+                transform: rotate(90deg);
+            }
+            /* Cadre professionnel pour le groupe Matériel N2 (sans traits internes par cellule) */
+            /* On utilise des box-shadow "inset" pour dessiner le cadre sans impacter la largeur des colonnes */
+            .o_list_view tr.n2-group-header-row {
+                box-shadow: inset 2px 0 0 #394b59, inset -2px 0 0 #394b59, inset 0 2px 0 #394b59;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                background: rgba(255,255,255,0.03);
+            }
+            .o_list_view tr.in-n2-group {
+                box-shadow: inset 2px 0 0 #394b59, inset -2px 0 0 #394b59;
+                background: rgba(255,255,255,0.02);
+            }
+            .o_list_view tr.n2-last {
+                box-shadow: inset 2px 0 0 #394b59, inset -2px 0 0 #394b59, inset 0 -2px 0 #394b59;
+                border-bottom-left-radius: 6px;
+                border-bottom-right-radius: 6px;
+                background: rgba(255,255,255,0.03);
+            }
+            /* Nettoyage des petits séparateurs horizontaux par cellule à l'intérieur du bloc */
+            .o_list_view tr.in-n2-group td {
+                border-top-color: transparent !important;
+                border-bottom-color: transparent !important;
+            }
+            /* Séparateurs haut/bas pour créer une zone distincte */
+            .o_list_view tr.n2-sep td { padding: 0 !important; border: none !important; }
+            .o_list_view tr.n2-sep .n2-line {
+                display:block; height:9px; background:transparent; position:relative;
+                border-left: 2px solid #7e57c2;  /* vertical left to close rectangle */
+                border-right: 2px solid #7e57c2; /* vertical right to close rectangle */
+            }
+            .o_list_view tr.n2-sep-top .n2-line {
+                border-top:3px solid #7e57c2; /* violet lisible sur fond sombre */
+                box-shadow: 0 -1px 0 rgba(126,87,194,0.40), 0 -6px 12px rgba(126,87,194,0.16) inset;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+            }
+            .o_list_view tr.n2-sep-bottom .n2-line {
+                border-bottom:3px solid #7e57c2;
+                box-shadow: 0 1px 0 rgba(126,87,194,0.40), 0 6px 12px rgba(126,87,194,0.16) inset;
+                border-bottom-left-radius: 6px;
+                border-bottom-right-radius: 6px;
+            }
             /* Forcer l'effet au premier plan au-dessus du thème MAIS sous les popups */
             .o_list_view .o_data_row.ticket-en-traitement {
                 position: relative !important;
@@ -1183,6 +1250,364 @@
         document.head.appendChild(style);
     }
 
+    let n2GroupUpdateTimer = null;
+    function scheduleN2GroupUpdate(delay = 350){
+        clearTimeout(n2GroupUpdateTimer);
+        n2GroupUpdateTimer = setTimeout(regrouperTicketsMaterielN2, delay);
+    }
+    // Surveillance de stabilité: réappliquer périodiquement (léger) pour contrer les micro-refresh Odoo
+    let n2StabilityTimer = null;
+    function startN2StabilityWatch(intervalMs = 800){
+        stopN2StabilityWatch();
+        n2StabilityTimer = setInterval(() => {
+            const onList = window.location.href.includes('model=helpdesk.ticket&view_type=list');
+            if (onList) scheduleN2GroupUpdate(0);
+        }, intervalMs);
+    }
+    function stopN2StabilityWatch(){
+        if (n2StabilityTimer) {
+            clearInterval(n2StabilityTimer);
+            n2StabilityTimer = null;
+        }
+    }
+
+    // Regrouper les tickets dont l'étape est "Matériel N2" sous une section repliable (sans multiplier les TBODY).
+    // Optimisé: debounce + idempotent (ne reconstruit pas si déjà OK).
+    function regrouperTicketsMaterielN2() {
+        try {
+            if (!window.location.href.includes('model=helpdesk.ticket&view_type=list')) return;
+            const table = document.querySelector('.o_list_view table');
+            if (!table || !table.tHead) return;
+
+            // Trouver le TBODY principal qui contient des .o_data_row
+            const tbodies = Array.from(table.tBodies || []);
+            const mainTbody = tbodies.find(tb => tb.querySelector('tr.o_data_row')) || tbodies[0];
+            if (!mainTbody) return;
+
+            // 1) Gestion spéciale des listes groupées: appliquer UNIQUEMENT dans le groupe "Matériel"
+            const isGroupedView = !!table.querySelector('tr.o_group_header');
+            if (isGroupedView) {
+                const normalize = (s) => (String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+                const groupHeaders = Array.from(mainTbody.querySelectorAll('tr.o_group_header'));
+                // Chercher le header de niveau 0 dont le libellé est exactement "Matériel" (sans "N2", "RMA", etc.)
+                const matHeader = groupHeaders.find(tr => {
+                    const caret = tr.querySelector('.o_group_caret');
+                    const styleStr = caret && caret.getAttribute('style') || '';
+                    const m = styleStr.match(/--o-list-group-level:\s*([0-9]+)/);
+                    const level = m ? parseInt(m[1], 10) : 0;
+                    if (level !== 0) return false; // on ne veut que le groupe racine
+                    const t = normalize(tr.textContent||'').trim();
+                    // Nettoyer le compteur éventuel "(xx)"
+                    const tClean = t.replace(/\(\d+\)\s*$/, '').trim();
+                    // Accepter "materiel" seul
+                    return tClean === 'materiel';
+                });
+                // Nettoyage si aucun groupe Matériel présent
+                if (!matHeader) {
+                    const oldHdr = mainTbody.querySelector('tr.n2-group-header-row[data-scope="materiel-group"]');
+                    if (oldHdr) try { oldHdr.remove(); } catch(_){}
+                    Array.from(mainTbody.querySelectorAll('tr.o_data_row.in-n2-group')).forEach(tr => {
+                        try { tr.classList.remove('in-n2-group','n2-first','n2-mid','n2-last'); tr.hidden = false; } catch(_){}
+                    });
+                    return;
+                }
+                // Déterminer les lignes appartenant à ce groupe (jusqu'au prochain header)
+                const rowsInGroup = [];
+                let p = matHeader.nextElementSibling;
+                while (p && !p.classList.contains('o_group_header')) {
+                    rowsInGroup.push(p);
+                    p = p.nextElementSibling;
+                }
+                const dataRowsInGroup = rowsInGroup.filter(r => r.classList && r.classList.contains('o_data_row'));
+                if (!dataRowsInGroup.length) {
+                    // Groupe "Matériel" replié: ne rien afficher et nettoyer tout header injecté
+                    const hdr = mainTbody.querySelector('tr.n2-group-header-row[data-scope="materiel-group"]');
+                    if (hdr) try { hdr.remove(); } catch(_){}
+                    Array.from(mainTbody.querySelectorAll('tr.o_data_row.in-n2-group')).forEach(tr => {
+                        try { tr.classList.remove('in-n2-group','n2-first','n2-mid','n2-last'); tr.hidden = false; } catch(_){}
+                    });
+                    return;
+                }
+                // Déterminer l'index Étape
+                const headers = Array.from(table.tHead.querySelectorAll('th'));
+                const etapeIndex = headers.findIndex(th => /(^|\s)(etape|étape|stage)(\s|$)/i.test(String(th.textContent||'').trim()));
+                if (etapeIndex < 0) return;
+                const rowsN2 = dataRowsInGroup.filter(tr => {
+                    const cell = tr.cells && tr.cells[etapeIndex];
+                    if (!cell) return false;
+                    const val = normalize(cell.textContent);
+                    return /\bmateriel\s*n2\b/.test(val);
+                });
+                // Préparer/placer l'en-tête N2 pour ce groupe
+                let headerRow = mainTbody.querySelector('tr.n2-group-header-row[data-scope="materiel-group"]');
+                if (!headerRow) {
+                    headerRow = document.createElement('tr');
+                    headerRow.className = 'n2-group-header-row';
+                    headerRow.setAttribute('data-scope','materiel-group');
+                    const td = document.createElement('td');
+                    td.colSpan = headers.length || 8;
+                    td.innerHTML = `<span class="chev">▶</span> Matériel N2 (0) — cliquer pour ouvrir/fermer`;
+                    headerRow.appendChild(td);
+                    const desired = matHeader.nextElementSibling;
+                    if (desired) {
+                        mainTbody.insertBefore(headerRow, desired);
+                    } else {
+                        mainTbody.appendChild(headerRow);
+                    }
+                    // toggle
+                    const storageKey = 'n2_group_open';
+                    const toggle = (e) => {
+                        try { e.preventDefault(); e.stopPropagation(); } catch(_){}
+                        const expanded = headerRow.classList.toggle('expanded');
+                        const n2Rows = Array.from(mainTbody.querySelectorAll('tr.o_data_row.in-n2-group'));
+                        n2Rows.forEach(tr => { tr.hidden = !expanded; });
+                        try { localStorage.setItem(storageKey, expanded ? 'true' : 'false'); } catch(_){}
+                    };
+                    headerRow.addEventListener('click', toggle, true);
+                    headerRow.addEventListener('mousedown', (e)=>{ try{ e.preventDefault(); }catch(_){}} , true);
+                    const wasOpen = localStorage.getItem('n2_group_open') === 'true';
+                    if (wasOpen) { try { headerRow.classList.add('expanded'); } catch(_){ } }
+                } else {
+                    // Repositionner systématiquement juste après le header de groupe
+                    const desired = matHeader.nextElementSibling;
+                    if (desired && headerRow !== desired) {
+                        try { mainTbody.insertBefore(headerRow, desired); } catch(_){}
+                    }
+                }
+                const headerTd = headerRow.cells[0];
+                // Déplacer les lignes N2 juste après le header
+                let insertAfter = headerRow;
+                rowsN2.forEach(tr => {
+                    if (!tr.classList.contains('in-n2-group') || tr.previousSibling !== insertAfter) {
+                        try {
+                            tr.classList.add('in-n2-group');
+                            mainTbody.insertBefore(tr, insertAfter.nextSibling);
+                            insertAfter = tr;
+                        } catch(_) {}
+                    } else {
+                        insertAfter = tr;
+                    }
+                });
+                // Appliquer visibilité et cadre
+                const expandedNow = headerRow.classList.contains('expanded') || (localStorage.getItem('n2_group_open') === 'true');
+                rowsN2.forEach(tr => { tr.hidden = !expandedNow; tr.classList.remove('n2-first','n2-mid','n2-last'); });
+                if (rowsN2.length) {
+                    rowsN2.forEach((tr,i) => {
+                        tr.classList.add('in-n2-group');
+                        if (i === 0) tr.classList.add('n2-first');
+                        else if (i === rowsN2.length - 1) tr.classList.add('n2-last');
+                        else tr.classList.add('n2-mid');
+                    });
+                }
+                // Séparateurs de zone (haut/bas) pour ce groupe
+                const colCount = headers.length || 8;
+                // Top separator just before headerRow (but after group header)
+                let sepTop = mainTbody.querySelector('tr.n2-sep-top[data-scope="materiel-group"]');
+                if (!sepTop) {
+                    sepTop = document.createElement('tr');
+                    sepTop.className = 'n2-sep n2-sep-top';
+                    sepTop.setAttribute('data-scope','materiel-group');
+                    const td = document.createElement('td');
+                    td.colSpan = colCount;
+                    const div = document.createElement('div'); div.className = 'n2-line';
+                    td.appendChild(div); sepTop.appendChild(td);
+                }
+                try { mainTbody.insertBefore(sepTop, headerRow); } catch(_){}
+                // Bottom separator just after last N2 row
+                let sepBottom = mainTbody.querySelector('tr.n2-sep-bottom[data-scope="materiel-group"]');
+                if (!sepBottom) {
+                    sepBottom = document.createElement('tr');
+                    sepBottom.className = 'n2-sep n2-sep-bottom';
+                    sepBottom.setAttribute('data-scope','materiel-group');
+                    const td = document.createElement('td');
+                    td.colSpan = colCount;
+                    const div = document.createElement('div'); div.className = 'n2-line';
+                    td.appendChild(div); sepBottom.appendChild(td);
+                }
+                const afterNode = rowsN2.length ? rowsN2[rowsN2.length-1].nextSibling : headerRow.nextSibling;
+                try { mainTbody.insertBefore(sepBottom, afterNode); } catch(_){}
+                // Visibilité des séparateurs liée à l'état du bloc
+                if (sepTop) sepTop.style.display = expandedNow ? '' : 'none';
+                if (sepBottom) sepBottom.style.display = expandedNow ? '' : 'none';
+                if (headerTd) {
+                    const chevHtml = `<span class="chev">▶</span>`;
+                    headerTd.innerHTML = `${chevHtml} Matériel N2 (${rowsN2.length}) — cliquer pour ouvrir/fermer`;
+                }
+                return; // fin mode groupé
+            }
+
+            // Déterminer l'index de la colonne Étape
+            const headers = Array.from(table.tHead.querySelectorAll('th'));
+            const etapeIndex = headers.findIndex(th => /(^|\s)(etape|étape|stage)(\s|$)/i.test(String(th.textContent||'').trim()));
+            if (etapeIndex < 0) return;
+
+            const normalize = (s) => (String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+            // 2) Appliquer uniquement sur l'équipe "Matériel"
+            let isMaterielContext = false;
+            // a) via facette de recherche "Équipe: Matériel"
+            try {
+                isMaterielContext = Array.from(document.querySelectorAll('.o_searchview .o_searchview_facet')).some(f => {
+                    const t = normalize(f.textContent||'');
+                    return /(equipe|équipe|team)/.test(t) && /\bmateriel\b/.test(t) && !/\bn2\b/.test(t);
+                });
+            } catch(_) {}
+            // a-bis) via fil d'Ariane/onglet actif qui contient "Matériel" (mais pas "Toutes les équipes")
+            if (!isMaterielContext) {
+                try {
+                    const bc = document.querySelector('.o_control_panel .breadcrumb, .o_control_panel_breadcrumbs');
+                    const bct = normalize(bc ? bc.textContent : '');
+                    if (/\bmateriel\b/.test(bct) && !/(toutes|all).*(equipes|équipes)/.test(bct)) {
+                        isMaterielContext = true;
+                    }
+                } catch(_) {}
+            }
+            // b) heuristique: colonne "Équipe/Team" présente et valeurs = "Matériel"
+            if (!isMaterielContext) {
+                const teamIdx = headers.findIndex(th => /(equipe|équipe|team)/i.test(String(th.textContent||'').trim()));
+                if (teamIdx >= 0) {
+                    const probe = Array.from(mainTbody.querySelectorAll('tr.o_data_row')).slice(0, 20);
+                    if (probe.length) {
+                        isMaterielContext = probe.every(tr => {
+                            const c = tr.cells && tr.cells[teamIdx];
+                            const v = normalize(c ? c.textContent : '');
+                            return /\bmateriel\b/.test(v) && !/\bn2\b/.test(v);
+                        });
+                    }
+                }
+            }
+            if (!isMaterielContext) {
+                const oldHdr = mainTbody.querySelector('tr.n2-group-header-row');
+                if (oldHdr) try { oldHdr.remove(); } catch(_){}
+                Array.from(mainTbody.querySelectorAll('tr.o_data_row.in-n2-group')).forEach(tr => {
+                    try { tr.classList.remove('in-n2-group','n2-first','n2-mid','n2-last'); tr.hidden = false; } catch(_){}
+                });
+                return;
+            }
+            const dataRows = Array.from(mainTbody.querySelectorAll('tr.o_data_row'));
+            if (!dataRows.length) return;
+
+            const rowsN2 = dataRows.filter(tr => {
+                const cell = tr.cells && tr.cells[etapeIndex];
+                if (!cell) return false;
+                const val = normalize(cell.textContent);
+                return /\bmateriel\s*n2\b/.test(val);
+            });
+            // Marquer/délimiter les lignes Matériel (non N2)
+            dataRows.forEach(tr => tr.classList && tr.classList.remove('mat-classic'));
+            const rowsMatClassic = dataRows.filter(tr => {
+                const cell = tr.cells && tr.cells[etapeIndex];
+                if (!cell) return false;
+                const val = normalize(cell.textContent);
+                return /\bmateriel\b/.test(val) && !/\bmateriel\s*n2\b/.test(val);
+            });
+            rowsMatClassic.forEach(tr => { try { tr.classList.add('mat-classic'); } catch(_){ } });
+            const count = rowsN2.length;
+
+            // Chercher header existant
+            let headerRow = mainTbody.querySelector('tr.n2-group-header-row');
+            const storageKey = 'n2_group_open';
+            const wasOpen = localStorage.getItem(storageKey) === 'true';
+            if (!headerRow) {
+                headerRow = document.createElement('tr');
+                headerRow.className = 'n2-group-header-row';
+                const td = document.createElement('td');
+                td.colSpan = headers.length || (table.tHead.querySelectorAll('th').length || 8);
+                td.innerHTML = `<span class="chev">▶</span> Matériel N2 (0) — cliquer pour ouvrir/fermer`;
+                headerRow.appendChild(td);
+                // Insérer juste avant la première ligne de données
+                const firstDataRow = mainTbody.querySelector('tr.o_data_row');
+                if (firstDataRow) { mainTbody.insertBefore(headerRow, firstDataRow); }
+                else { mainTbody.appendChild(headerRow); }
+                // Gestion du clic robuste
+                const toggle = (e) => {
+                    try { e.preventDefault(); e.stopPropagation(); } catch(_){}
+                    const expanded = headerRow.classList.toggle('expanded');
+                    const n2Rows = Array.from(mainTbody.querySelectorAll('tr.o_data_row.in-n2-group'));
+                    n2Rows.forEach(tr => { tr.hidden = !expanded; });
+                    try { localStorage.setItem(storageKey, expanded ? 'true' : 'false'); } catch(_){}
+                };
+                headerRow.addEventListener('click', toggle, true);
+                headerRow.addEventListener('mousedown', (e)=>{ try{ e.preventDefault(); }catch(_){}} , true);
+                // Appliquer état mémorisé
+                if (wasOpen) { try { headerRow.classList.add('expanded'); } catch(_){ } }
+            } else {
+                // Repositionner systématiquement en haut du TBODY (avant 1ère data_row)
+                const firstDataRow = mainTbody.querySelector('tr.o_data_row');
+                if (firstDataRow && headerRow.nextSibling !== firstDataRow) {
+                    try { mainTbody.insertBefore(headerRow, firstDataRow); } catch(_){}
+                }
+            }
+            const headerTd = headerRow.cells[0];
+
+            // Déplacer les lignes N2 juste après l'en-tête si elles ne sont pas déjà groupées
+            let insertAfter = headerRow;
+            rowsN2.forEach(tr => {
+                if (!tr.classList.contains('in-n2-group') || tr.previousSibling !== insertAfter) {
+                    try {
+                        tr.classList.add('in-n2-group');
+                        mainTbody.insertBefore(tr, insertAfter.nextSibling);
+                        insertAfter = tr;
+                    } catch(_) {}
+                } else {
+                    insertAfter = tr;
+                }
+            });
+            // Appliquer état visible/masqué selon préférence mémorisée
+            const expandedNow = headerRow.classList.contains('expanded') || wasOpen;
+            rowsN2.forEach(tr => { tr.hidden = !expandedNow; });
+            // Encadrement propre: first/middle/last
+            rowsN2.forEach(tr => {
+                tr.classList.remove('n2-first','n2-mid','n2-last');
+                tr.classList.add('in-n2-group');
+            });
+            if (rowsN2.length) {
+                rowsN2.forEach((tr,i) => {
+                    if (i === 0) tr.classList.add('n2-first');
+                    else if (i === rowsN2.length - 1) tr.classList.add('n2-last');
+                    else tr.classList.add('n2-mid');
+                });
+            }
+            // Séparateurs haut/bas pour créer une zone distincte
+            const colCount = headers.length || (table.tHead.querySelectorAll('th').length || 8);
+            let sepTop = mainTbody.querySelector('tr.n2-sep-top:not([data-scope])');
+            if (!sepTop) {
+                sepTop = document.createElement('tr');
+                sepTop.className = 'n2-sep n2-sep-top';
+                const td = document.createElement('td');
+                td.colSpan = colCount;
+                const div = document.createElement('div'); div.className = 'n2-line';
+                td.appendChild(div); sepTop.appendChild(td);
+            }
+            try {
+                mainTbody.insertBefore(sepTop, headerRow);
+            } catch(_){}
+            let sepBottom = mainTbody.querySelector('tr.n2-sep-bottom:not([data-scope])');
+            if (!sepBottom) {
+                sepBottom = document.createElement('tr');
+                sepBottom.className = 'n2-sep n2-sep-bottom';
+                const td = document.createElement('td');
+                td.colSpan = colCount;
+                const div = document.createElement('div'); div.className = 'n2-line';
+                td.appendChild(div); sepBottom.appendChild(td);
+            }
+            const afterNode = rowsN2.length ? rowsN2[rowsN2.length-1].nextSibling : headerRow.nextSibling;
+            try {
+                mainTbody.insertBefore(sepBottom, afterNode);
+            } catch(_){}
+            if (sepTop) sepTop.style.display = expandedNow ? '' : 'none';
+            if (sepBottom) sepBottom.style.display = expandedNow ? '' : 'none';
+
+            // Toggle visibilité
+            // Mettre à jour le libellé (compteur) sans recréer le header
+            if (headerTd) {
+                const chevHtml = `<span class="chev">▶</span>`;
+                headerTd.innerHTML = `${chevHtml} Matériel N2 (${count}) — cliquer pour ouvrir/fermer`;
+            }
+        } catch(e){
+            console.warn('Regroupement Matériel N2: erreur', e);
+        }
+    }
+
     // Modifier l'observer pour être plus spécifique à la vue liste
     const observerTickets = new MutationObserver((mutations) => {
         if (window.location.href.includes('model=helpdesk.ticket&view_type=list')) {
@@ -1194,7 +1619,9 @@
                         mettreAJourAnimationTickets();
                         // Restaurer les éléments après rafraîchissement automatique
                         restaurerElementsApresRafraichissement();
-                    }, 500);
+                        // Appliquer/regénérer le groupe "Matériel N2" au plus tôt
+                        scheduleN2GroupUpdate(0);
+                    }, 50);
                 }
             }
         }
@@ -1263,6 +1690,8 @@
             setTimeout(() => {
                 ajouterBoutonTraiter();
             }, 300);
+            // Reposer le regroupement Matériel N2 après les rafraîchissements Odoo
+            scheduleN2GroupUpdate(0);
         } catch (e) {
             console.log("Erreur lors de la restauration:", e);
         }
@@ -1282,10 +1711,13 @@
 
         // Restaurer les éléments plus fréquemment aussi
         setInterval(restaurerElementsApresRafraichissement, 1500);
+        // Plus de interval permanent pour N2: uniquement debounced via scheduleN2GroupUpdate
+        // Nouvelle surveillance légère pour garantir la stabilité de N2 malgré les micro-refresh
+        startN2StabilityWatch(700);
     }
 
     // Appeler l'initialisation de l'animation au démarrage
-    setTimeout(initialiserAnimation, 1000);
+    setTimeout(() => { initialiserAnimation(); scheduleN2GroupUpdate(0); startN2StabilityWatch(700); }, 1000);
 
     // Gestion spéciale des rafraîchissements automatiques d'Odoo
     let lastUrl = window.location.href;
@@ -1298,6 +1730,7 @@
                 if (window.location.href.includes('model=helpdesk.ticket&view_type=list')) {
                     restaurerElementsApresRafraichissement();
                     mettreAJourAnimationTickets();
+                    scheduleN2GroupUpdate(0);
                 }
             }, 1000);
         }
@@ -2037,6 +2470,7 @@
     window.addEventListener('load', function() {
         setTimeout(createClearButton, 2000);
         scheduleOpenTicketsUpdate(800);
+        startN2StabilityWatch(700);
     });
 
     // Réinitialisation lors des changements de route
@@ -2044,6 +2478,8 @@
         setTimeout(createClearButton, 1000);
         scheduleBadgeDevisUpdate(800);
         scheduleOpenTicketsUpdate(800);
+        scheduleN2GroupUpdate(0);
+        startN2StabilityWatch(700);
         // Nettoyage si on quitte la fiche ticket
         retirerBoutonsTraitement();
         const bc = document.getElementById('btn-creer-ticket');
@@ -2056,6 +2492,11 @@
     setInterval(createClearButton, 5000);
     setInterval(scheduleBadgeDevisUpdate, 5000);
     setInterval(scheduleOpenTicketsUpdate, 5000);
+    // Garde-fou périodique faible coût
+    setInterval(() => {
+        const onList = window.location.href.includes('model=helpdesk.ticket&view_type=list');
+        if (onList) scheduleN2GroupUpdate(0);
+    }, 3000);
 
     const styleBtnInitiales = document.createElement('style');
     styleBtnInitiales.textContent = `
