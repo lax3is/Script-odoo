@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.2.9
+// @version      2.3.0
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -1360,11 +1360,21 @@
                         try { e.preventDefault(); e.stopPropagation(); } catch(_){}
                         const expanded = headerRow.classList.toggle('expanded');
                         const n2Rows = Array.from(mainTbody.querySelectorAll('tr.o_data_row.in-n2-group'));
-                        n2Rows.forEach(tr => { tr.hidden = !expanded; });
+                        n2Rows.forEach(tr => { tr.style.display = expanded ? '' : 'none'; });
+                        // Mettre à jour séparateurs visibles/invisibles et aria
+                        try {
+                            const sepTop = mainTbody.querySelector('tr.n2-sep-top[data-scope="materiel-group"]');
+                            const sepBottom = mainTbody.querySelector('tr.n2-sep-bottom[data-scope="materiel-group"]');
+                            if (sepTop) sepTop.style.display = expanded ? '' : 'none';
+                            if (sepBottom) sepBottom.style.display = expanded ? '' : 'none';
+                            headerRow.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+                        } catch(_) {}
                         try { localStorage.setItem(storageKey, expanded ? 'true' : 'false'); } catch(_){}
                     };
-                    headerRow.addEventListener('click', toggle, true);
-                    headerRow.addEventListener('mousedown', (e)=>{ try{ e.preventDefault(); }catch(_){}} , true);
+                    // Accessibilité + fiabilité du clic (pas de preventDefault sur mousedown)
+                    try { headerRow.setAttribute('role','button'); headerRow.setAttribute('tabindex','0'); } catch(_){}
+                    headerRow.addEventListener('click', toggle);
+                    headerRow.addEventListener('keydown', (e)=>{ if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space') { e.preventDefault(); toggle(e); }});
                     const wasOpen = localStorage.getItem('n2_group_open') === 'true';
                     if (wasOpen) { try { headerRow.classList.add('expanded'); } catch(_){ } }
                 } else {
@@ -1390,7 +1400,7 @@
                 });
                 // Appliquer visibilité et cadre
                 const expandedNow = headerRow.classList.contains('expanded') || (localStorage.getItem('n2_group_open') === 'true');
-                rowsN2.forEach(tr => { tr.hidden = !expandedNow; tr.classList.remove('n2-first','n2-mid','n2-last'); });
+                rowsN2.forEach(tr => { tr.style.display = expandedNow ? '' : 'none'; tr.classList.remove('n2-first','n2-mid','n2-last'); });
                 if (rowsN2.length) {
                     rowsN2.forEach((tr,i) => {
                         tr.classList.add('in-n2-group');
@@ -1523,11 +1533,20 @@
                     try { e.preventDefault(); e.stopPropagation(); } catch(_){}
                     const expanded = headerRow.classList.toggle('expanded');
                     const n2Rows = Array.from(mainTbody.querySelectorAll('tr.o_data_row.in-n2-group'));
-                    n2Rows.forEach(tr => { tr.hidden = !expanded; });
+                    n2Rows.forEach(tr => { tr.style.display = expanded ? '' : 'none'; });
+                    // Mettre à jour séparateurs et aria
+                    try {
+                        const sepTop = mainTbody.querySelector('tr.n2-sep-top:not([data-scope])');
+                        const sepBottom = mainTbody.querySelector('tr.n2-sep-bottom:not([data-scope])');
+                        if (sepTop) sepTop.style.display = expanded ? '' : 'none';
+                        if (sepBottom) sepBottom.style.display = expanded ? '' : 'none';
+                        headerRow.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+                    } catch(_) {}
                     try { localStorage.setItem(storageKey, expanded ? 'true' : 'false'); } catch(_){}
                 };
-                headerRow.addEventListener('click', toggle, true);
-                headerRow.addEventListener('mousedown', (e)=>{ try{ e.preventDefault(); }catch(_){}} , true);
+                try { headerRow.setAttribute('role','button'); headerRow.setAttribute('tabindex','0'); } catch(_){}
+                headerRow.addEventListener('click', toggle);
+                headerRow.addEventListener('keydown', (e)=>{ if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space') { e.preventDefault(); toggle(e); }});
                 // Appliquer état mémorisé
                 if (wasOpen) { try { headerRow.classList.add('expanded'); } catch(_){ } }
             } else {
@@ -1554,7 +1573,7 @@
             });
             // Appliquer état visible/masqué selon préférence mémorisée
             const expandedNow = headerRow.classList.contains('expanded') || wasOpen;
-            rowsN2.forEach(tr => { tr.hidden = !expandedNow; });
+            rowsN2.forEach(tr => { tr.style.display = expandedNow ? '' : 'none'; });
             // Encadrement propre: first/middle/last
             rowsN2.forEach(tr => {
                 tr.classList.remove('n2-first','n2-mid','n2-last');
