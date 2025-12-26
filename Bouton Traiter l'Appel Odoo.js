@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.3.1
+// @version      2.3.2
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -276,11 +276,22 @@
             const estAssigne = !trouverBoutonAssigner();
 
             if (enTraitement) {
-                btn.innerText = 'Mettre en Attente';
-                btn.className = 'btn btn-warning';
-                setTimeout(() => {
-                    ajouterTexteCligonotant();
-                }, 500);
+                if (estAssigne) {
+                    btn.innerText = 'Mettre en Attente';
+                    btn.className = 'btn btn-warning';
+                    setTimeout(() => {
+                        ajouterTexteCligonotant();
+                    }, 500);
+                } else {
+                    // Aucun assigné: ne pas afficher l'état en cours
+                    btn.innerText = 'Traiter l\'appel';
+                    btn.className = 'btn btn-primary';
+                    supprimerTexteCligonotant();
+                    if (ticketId) {
+                        sauvegarderEtat(false, ticketId);
+                    }
+                    enTraitement = false;
+                }
             } else {
                 // Toujours afficher 'Traiter l\'appel' si non en traitement
                 btn.innerText = 'Traiter l\'appel';
@@ -368,6 +379,27 @@
                             console.log("Sauvegarde des modifications");
                             btnEnregistrer.click();
                         }
+
+                        // 5. Vérifier si l'assignation est effective, sinon annuler l'état en cours
+                        const estToujoursNonAssigne = !!trouverBoutonAssigner();
+                        if (estToujoursNonAssigne) {
+                            console.log("Aucun assigné détecté, annulation de l'état en cours");
+                            // Remettre le timer en pause si nécessaire
+                            const etatTimerApres = verifierEtatTimer();
+                            if (etatTimerApres === 'pause') {
+                                simulerRaccourciPause();
+                                await new Promise(resolve => setTimeout(resolve, 800));
+                            }
+                            // Nettoyer l'UI et l'état
+                            btn.innerText = 'Traiter l\'appel';
+                            btn.className = 'btn btn-primary';
+                            supprimerTexteCligonotant();
+                            if (ticketId) {
+                                sauvegarderEtat(false, ticketId);
+                            }
+                            enTraitement = false;
+                            return;
+                        }
                     }
 
                     if (ticketId) {
@@ -424,6 +456,14 @@
     // Fonction pour ajouter le texte clignotant
     function ajouterTexteCligonotant() {
         console.log("Ajout du texte clignotant");
+
+        // Si aucun assigné, ne pas afficher (et nettoyer au besoin)
+        const estAssigne = !trouverBoutonAssigner();
+        if (!estAssigne) {
+            console.log("Aucun assigné: suppression/absence du texte clignotant");
+            supprimerTexteCligonotant();
+            return;
+        }
 
         // Vérifier si l'élément existe déjà
         if (document.getElementById('texte-clignotant-container')) {
@@ -606,6 +646,8 @@
                         await new Promise(resolve => setTimeout(resolve, 300));
 
                         console.log("Séquence de clôture terminée");
+						// Planifier l'ouverture robuste du panneau d'étiquettes
+						scheduleAffichagePanneauEtiquettes();
                     } finally {
                         setTimeout(() => {
                             isProcessingClosure = false;
@@ -617,6 +659,442 @@
         }, 1000);
     }
 
+	// === PANNEAU SÉLECTION RAISONS MATÉRIEL/LOGICIEL ===
+	function ouvrirPanneauEtiquettesApresCloture() {
+		try {
+			// Éviter simplement les doublons pendant l'affichage courant
+			if (document.getElementById('odoo-reason-overlay')) return;
+			ouvrirPanneauEtiquettes();
+		} catch (e) {
+			console.warn('Erreur ouverture panneau étiquettes:', e);
+		}
+	}
+
+	// Réessaie l'ouverture pendant quelques secondes pour survivre aux rechargements/refresh d'Odoo
+	function scheduleAffichagePanneauEtiquettes(retryMs = 350, maxTries = 28) {
+		try {
+			sessionStorage.setItem('pendingReasonPanel', '1');
+			let tries = 0;
+			const attempt = () => {
+				// Déjà visible => terminer et nettoyer
+				if (document.getElementById('odoo-reason-overlay')) {
+					sessionStorage.removeItem('pendingReasonPanel');
+					return;
+				}
+				tries++;
+				ouvrirPanneauEtiquettesApresCloture();
+				// Si ce n'est pas encore visible, reprogrammer
+				if (!document.getElementById('odoo-reason-overlay')) {
+					if (tries < maxTries) {
+						setTimeout(attempt, retryMs);
+					} else {
+						// Abandon en silence et nettoyage
+						sessionStorage.removeItem('pendingReasonPanel');
+					}
+				} else {
+					sessionStorage.removeItem('pendingReasonPanel');
+				}
+			};
+			// Premier essai rapide
+			setTimeout(attempt, 50);
+		} catch (e) {
+			console.warn('Erreur planification panneau étiquettes:', e);
+		}
+	}
+
+	// Surveille l'ouverture puis la fermeture de la fiche de temps; ouvre le panneau à la fermeture
+	let reasonPanelWatcherId = null;
+	let reasonPanelDialogWasOpen = false;
+	let reasonPanelOpenedForResolution = false;
+	function startReasonPanelWatcher() {
+		if (reasonPanelWatcherId) return;
+		reasonPanelWatcherId = setInterval(() => {
+			try {
+				const resolved = estTicketResolu();
+				const dialog = document.querySelector('.o_timer_dialog');
+				if (resolved && dialog) {
+					reasonPanelDialogWasOpen = true;
+				}
+				if (resolved && !dialog && reasonPanelDialogWasOpen && !reasonPanelOpenedForResolution) {
+					reasonPanelDialogWasOpen = false;
+					reasonPanelOpenedForResolution = true;
+					scheduleAffichagePanneauEtiquettes();
+				}
+				if (!resolved) {
+					reasonPanelDialogWasOpen = false;
+					reasonPanelOpenedForResolution = false;
+				}
+			} catch (_) {}
+		}, 400);
+	}
+
+	function ouvrirPanneauEtiquettes() {
+		// Listes modifiables facilement (noms tels qu'affichés dans Odoo)
+		const HARDWARE_REASONS = [
+			'TMH/TMJ','Imprimante A4','SSV','TPE','Serveur','Scanner Documents',
+			'Terminal D\'inventaire','Etiquettes électronique','Lecteur code barre','Ecran','Caméras',
+			'Imprimante etiquettes','Poste Client','FAX','Reseau','Borne file d\'attente','BAD',
+			'Robot','Antivirus','Borne de prix','Monnayeur','PAX','Onduleur'
+		];
+		const SOFTWARE_REASONS = [
+			'Commandes','Télétransmisson / Rejets','Caisse / Synthese','Facturation',
+			'Droits Opérateurs / Options','Stocks / Inventaires','Clients','Robot','Etiquettes',
+			'Modules','Produits','Autres','Paramètres','Winperformance','WAP','Statistiques'
+		];
+
+		const themeKey = 'reasonPanelTheme';
+		const savedTheme = localStorage.getItem(themeKey) || 'dark';
+
+		// Conteneur overlay
+		const overlay = document.createElement('div');
+		overlay.id = 'odoo-reason-overlay';
+		overlay.style.cssText = `
+			position: fixed;
+			inset: 0;
+			z-index: 2147483647;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			background: rgba(0,0,0,0.45);
+		`;
+
+		// Panneau
+		const panel = document.createElement('div');
+		panel.id = 'odoo-reason-panel';
+		panel.style.cssText = `
+			width: min(960px, 92vw);
+			max-height: 86vh;
+			border-radius: 14px;
+			overflow: hidden;
+			box-shadow: 0 20px 50px rgba(0,0,0,0.35);
+			display: flex;
+			flex-direction: column;
+			font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+		`;
+
+		// Styles thèmes via variables
+		const styleTheme = document.createElement('style');
+		styleTheme.textContent = `
+		#odoo-reason-panel {
+			--bg: #0f1115;
+			--elev: #151823;
+			--text: #e6e8ee;
+			--muted: #a8b0c2;
+			--accent: #00d0b6;
+			--accent-2: #3b82f6;
+			--danger: #ef4444;
+			--success: #22c55e;
+			--chip: #1f2330;
+			--chip-border: #2a3042;
+		}
+		#odoo-reason-panel.theme-light {
+			--bg: #ffffff;
+			--elev: #f6f7fb;
+			--text: #0e1320;
+			--muted: #56607a;
+			--accent: #09b39e;
+			--accent-2: #2563eb;
+			--danger: #dc2626;
+			--success: #16a34a;
+			--chip: #eef1f7;
+			--chip-border: #dde3f0;
+		}
+		#odoo-reason-panel .hdr {
+			background: linear-gradient(180deg, rgba(0,0,0,0.06), transparent), var(--elev);
+			padding: 16px 18px;
+			display: flex;
+			align-items: center;
+			gap: 12px;
+			color: var(--text);
+			border-bottom: 1px solid var(--chip-border);
+		}
+		#odoo-reason-panel .title {
+			font-size: 16px;
+			font-weight: 600;
+			letter-spacing: .2px;
+			margin-right: auto;
+		}
+		#odoo-reason-panel .theme-toggle {
+			border: 1px solid var(--chip-border);
+			background: var(--chip);
+			color: var(--text);
+			border-radius: 20px;
+			padding: 6px 10px;
+			cursor: pointer;
+			font-size: 12px;
+		}
+		#odoo-reason-panel .close-btn {
+			border: 1px solid var(--chip-border);
+			background: transparent;
+			color: var(--danger);
+			border-radius: 999px;
+			width: 32px;
+			height: 32px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			cursor: pointer;
+			font-size: 18px;
+			line-height: 0;
+			transition: background .15s ease, transform .06s ease;
+		}
+		#odoo-reason-panel .close-btn:hover {
+			background: color-mix(in srgb, var(--danger) 12%, transparent);
+			transform: translateY(-1px);
+		}
+		#odoo-reason-panel .body {
+			background: var(--bg);
+			color: var(--text);
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 0;
+		}
+		#odoo-reason-panel .col {
+			padding: 14px 16px;
+			border-right: 1px solid var(--chip-border);
+		}
+		#odoo-reason-panel .col:last-child {
+			border-right: 0;
+		}
+		#odoo-reason-panel .col .col-title {
+			font-weight: 600;
+			margin-bottom: 10px;
+			color: var(--muted);
+			text-transform: uppercase;
+			font-size: 12px;
+			letter-spacing: .6px;
+		}
+		#odoo-reason-panel .list {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 8px;
+		}
+		#odoo-reason-panel .chip {
+			border: 1px solid var(--chip-border);
+			background: var(--chip);
+			color: var(--text);
+			padding: 9px 10px;
+			border-radius: 10px;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			cursor: pointer;
+			user-select: none;
+			transition: transform .06s ease, background .2s ease, border-color .2s ease;
+		}
+		#odoo-reason-panel .chip:hover { transform: translateY(-1px); }
+		#odoo-reason-panel .chip input { accent-color: var(--accent-2); }
+		#odoo-reason-panel .chip--software input { accent-color: var(--success); }
+		#odoo-reason-panel .chip.selected {
+			border-color: var(--accent-2);
+			box-shadow: 0 0 0 2px rgba(59,130,246,.25) inset;
+			background: linear-gradient(180deg, rgba(59,130,246,.06), transparent), var(--chip);
+		}
+		#odoo-reason-panel .chip--software.selected {
+			border-color: var(--success);
+			box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 25%, transparent) inset;
+			background: linear-gradient(180deg, color-mix(in srgb, var(--success) 8%, transparent), transparent), var(--chip);
+		}
+		#odoo-reason-panel .ftr {
+			background: var(--elev);
+			padding: 12px 16px;
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			border-top: 1px solid var(--chip-border);
+		}
+		#odoo-reason-panel .btn {
+			padding: 10px 16px;
+			border-radius: 10px;
+			font-weight: 600;
+			border: 1px solid transparent;
+			cursor: pointer;
+		}
+		#odoo-reason-panel .btn.primary {
+			background: linear-gradient(180deg, var(--accent), #08a892);
+			color: white;
+		}
+		#odoo-reason-panel .btn.primary:disabled {
+			opacity: .55;
+			cursor: not-allowed;
+			filter: grayscale(.3);
+		}
+		#odoo-reason-panel .btn.ghost {
+			background: transparent;
+			border-color: var(--chip-border);
+			color: var(--text);
+		}
+		`;
+		document.head.appendChild(styleTheme);
+
+		// Entête
+		const header = document.createElement('div');
+		header.className = 'hdr';
+		const title = document.createElement('div');
+		title.className = 'title';
+		title.textContent = "Sélection des raisons (Matériel / Logiciel)";
+		const themeBtn = document.createElement('button');
+		themeBtn.className = 'theme-toggle';
+		themeBtn.textContent = savedTheme === 'dark' ? 'Thème clair' : 'Thème sombre';
+		const closeBtn = document.createElement('button');
+		closeBtn.className = 'close-btn';
+		closeBtn.setAttribute('aria-label', 'Fermer');
+		closeBtn.textContent = '×';
+		header.appendChild(title);
+		header.appendChild(themeBtn);
+		header.appendChild(closeBtn);
+
+		// Corps
+		const body = document.createElement('div');
+		body.className = 'body';
+
+		function buildColumn(titleText, items, prefix, type) {
+			const col = document.createElement('div');
+			col.className = 'col';
+			const ttl = document.createElement('div');
+			ttl.className = 'col-title';
+			ttl.textContent = titleText;
+			const list = document.createElement('div');
+			list.className = 'list';
+			items.forEach((label, idx) => {
+				const chip = document.createElement('label');
+				chip.className = 'chip ' + (type === 'software' ? 'chip--software' : 'chip--hardware');
+				const cb = document.createElement('input');
+				cb.type = 'checkbox';
+				cb.value = label;
+				cb.id = `${prefix}-${idx}`;
+				const span = document.createElement('span');
+				span.textContent = label;
+				chip.appendChild(cb);
+				chip.appendChild(span);
+				list.appendChild(chip);
+			});
+			col.appendChild(ttl);
+			col.appendChild(list);
+			return col;
+		}
+
+		const colHardware = buildColumn('🔧 Raisons matériel', HARDWARE_REASONS, 'hw', 'hardware');
+		const colSoftware = buildColumn('📖 Raisons logiciel', SOFTWARE_REASONS, 'sw', 'software');
+		body.appendChild(colHardware);
+		body.appendChild(colSoftware);
+
+		// Pied
+		const footer = document.createElement('div');
+		footer.className = 'ftr';
+		const skipBtn = document.createElement('button');
+		skipBtn.className = 'btn ghost';
+		skipBtn.textContent = "Pas d'étiquette";
+		const submitBtn = document.createElement('button');
+		submitBtn.className = 'btn primary';
+		submitBtn.textContent = 'Valider';
+		submitBtn.disabled = true;
+		submitBtn.style.display = 'none';
+		footer.appendChild(skipBtn);
+		footer.appendChild(submitBtn);
+
+		panel.appendChild(header);
+		panel.appendChild(body);
+		panel.appendChild(footer);
+		overlay.appendChild(panel);
+		document.body.appendChild(overlay);
+
+		// Appliquer le thème initial
+		if (savedTheme === 'light') panel.classList.add('theme-light');
+
+		// Intéractions
+		const allChips = panel.querySelectorAll('.chip');
+		const updateSubmitVisibility = () => {
+			const checked = panel.querySelectorAll('.chip input:checked').length;
+			submitBtn.disabled = checked === 0;
+			submitBtn.style.display = checked === 0 ? 'none' : 'inline-block';
+			allChips.forEach(chip => chip.classList.toggle('selected', chip.querySelector('input').checked));
+		};
+		allChips.forEach(chip => {
+			chip.addEventListener('click', (e) => {
+				// Si on clique hors de la checkbox, empêcher le toggle natif du label
+				if (!(e.target instanceof HTMLInputElement)) {
+					e.preventDefault();
+					e.stopPropagation();
+					const cb = chip.querySelector('input');
+					cb.checked = !cb.checked;
+				}
+				updateSubmitVisibility();
+			});
+			const cb = chip.querySelector('input');
+			cb.addEventListener('change', updateSubmitVisibility);
+		});
+		updateSubmitVisibility();
+
+		themeBtn.addEventListener('click', () => {
+			const isLight = panel.classList.toggle('theme-light');
+			localStorage.setItem(themeKey, isLight ? 'light' : 'dark');
+			themeBtn.textContent = isLight ? 'Thème sombre' : 'Thème clair';
+		});
+		closeBtn.addEventListener('click', () => {
+			document.body.removeChild(overlay);
+		});
+		skipBtn.addEventListener('click', () => {
+			document.body.removeChild(overlay);
+		});
+
+		submitBtn.addEventListener('click', async () => {
+			const selectedHw = Array.from(panel.querySelectorAll('#odoo-reason-panel .col:nth-child(1) .chip input:checked'))
+				.map(i => i.value);
+			const selectedSw = Array.from(panel.querySelectorAll('#odoo-reason-panel .col:nth-child(2) .chip input:checked'))
+				.map(i => i.value);
+			try {
+				await renseignerEtiquettesDansTicket(selectedHw, selectedSw);
+			} catch (e) {
+				console.warn('Erreur remplissage étiquettes:', e);
+			}
+			document.body.removeChild(overlay);
+		});
+	}
+
+	async function renseignerEtiquettesDansTicket(hardwareLabels, softwareLabels) {
+		// Helpers robustes pour trouver les inputs Odoo
+		function findTagInputByFieldName(fieldName) {
+			let input =
+				document.querySelector(`input[id*="${fieldName}"].o-autocomplete--input`) ||
+				document.querySelector(`.o_field_widget[name="${fieldName}"] input.o-autocomplete--input`) ||
+				document.querySelector(`.o_field_many2many_tags[name="${fieldName}"] input.o-autocomplete--input`);
+			if (!input) {
+				// Fallback très large: prendre le n-ième champ par libellé supposé
+				const guess = fieldName.includes('material') ? 'raison matériel' : 'raison logiciel';
+				const nodes = Array.from(document.querySelectorAll('label, .o_horizontal_separator, .o_form_label, span, div'))
+					.filter(n => (n.textContent || '').trim().toLowerCase() === guess);
+				if (nodes.length) {
+					const container = nodes[0].closest('.o_field_widget') || nodes[0].parentElement;
+					if (container) input = container.querySelector('input.o-autocomplete--input');
+				}
+			}
+			return input || null;
+		}
+		function wait(ms){ return new Promise(r => setTimeout(r, ms)); }
+		async function addTagsToField(fieldName, labels) {
+			if (!labels || labels.length === 0) return;
+			const input = findTagInputByFieldName(fieldName);
+			if (!input) return;
+			input.scrollIntoView({behavior:'smooth', block:'center'});
+			await wait(120);
+			for (const label of labels) {
+				input.focus();
+				input.value = '';
+				input.dispatchEvent(new Event('input', {bubbles: true}));
+				await wait(40);
+				input.value = label;
+				input.dispatchEvent(new Event('input', {bubbles: true}));
+				// Attendre l'autocomplete puis valider
+				await wait(300);
+				input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true}));
+				await wait(160);
+			}
+		}
+		await addTagsToField('material_reason_tag_ids', hardwareLabels);
+		await addTagsToField('software_reason_tag_ids', softwareLabels);
+	}
+
     // Fonction pour modifier le style du bouton de clôture
     function modifierBoutonCloture() {
         const boutonCloture = document.querySelector('button[name="close_ticket"][type="object"]');
@@ -624,6 +1102,19 @@
             boutonCloture.className = 'btn btn-danger';
             boutonCloture.style.backgroundColor = '#dc3545';
             boutonCloture.style.borderColor = '#dc3545';
+			// Brancher l'ouverture du panneau au clic sur "Clôturer"
+			if (!boutonCloture.dataset.reasonPanelHooked) {
+				boutonCloture.addEventListener('click', () => {
+					try {
+						// Programmer l'ouverture du panneau immédiatement et en reprise
+						sessionStorage.setItem('pendingReasonPanel', '1');
+						scheduleAffichagePanneauEtiquettes(250, 40);
+					} catch (e) {
+						console.warn('Erreur hook bouton clôturer:', e);
+					}
+				});
+				boutonCloture.dataset.reasonPanelHooked = '1';
+			}
         }
     }
 
@@ -2037,6 +2528,12 @@
     window.addEventListener('load', function() {
         setTimeout(createClearButton, 2000);
         scheduleOpenTicketsUpdate(800);
+		// Relance du panneau si une ouverture est en attente après refresh
+		if (sessionStorage.getItem('pendingReasonPanel') === '1') {
+			setTimeout(() => scheduleAffichagePanneauEtiquettes(), 600);
+		}
+		// Démarrer le surveillant de fiche de temps
+		setTimeout(startReasonPanelWatcher, 600);
     });
 
     // Réinitialisation lors des changements de route
@@ -2044,6 +2541,18 @@
         setTimeout(createClearButton, 1000);
         scheduleBadgeDevisUpdate(800);
         scheduleOpenTicketsUpdate(800);
+		// Assurer la présence du hook sur le bouton de clôture
+		setTimeout(modifierBoutonCloture, 300);
+		// Réaffichage robuste après navigation interne
+		if (sessionStorage.getItem('pendingReasonPanel') === '1') {
+			setTimeout(() => scheduleAffichagePanneauEtiquettes(), 600);
+		}
+		// Reset et relance du surveillant
+		try {
+			reasonPanelDialogWasOpen = false;
+			reasonPanelOpenedForResolution = false;
+			setTimeout(startReasonPanelWatcher, 600);
+		} catch (_) {}
         // Nettoyage si on quitte la fiche ticket
         retirerBoutonsTraitement();
         const bc = document.getElementById('btn-creer-ticket');
@@ -2056,6 +2565,8 @@
     setInterval(createClearButton, 5000);
     setInterval(scheduleBadgeDevisUpdate, 5000);
     setInterval(scheduleOpenTicketsUpdate, 5000);
+	// Vérification périodique légère pour s'assurer que le hook de clôture reste présent
+	setInterval(modifierBoutonCloture, 3000);
 
     const styleBtnInitiales = document.createElement('style');
     styleBtnInitiales.textContent = `
