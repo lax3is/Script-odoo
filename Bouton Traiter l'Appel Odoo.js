@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.3.2
+// @version      2.3.3
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -675,7 +675,12 @@
 		try {
 			sessionStorage.setItem('pendingReasonPanel', '1');
 			let tries = 0;
+			const shouldContinue = () => sessionStorage.getItem('pendingReasonPanel') === '1';
 			const attempt = () => {
+				// Arrêt explicite si on a demandé l'annulation (ex: fermeture/validation)
+				if (!shouldContinue()) {
+					return;
+				}
 				// Déjà visible => terminer et nettoyer
 				if (document.getElementById('odoo-reason-overlay')) {
 					sessionStorage.removeItem('pendingReasonPanel');
@@ -699,6 +704,30 @@
 			setTimeout(attempt, 50);
 		} catch (e) {
 			console.warn('Erreur planification panneau étiquettes:', e);
+		}
+	}
+
+	// Récupère dynamiquement les modèles et libellés des raisons dans Odoo
+	async function fetchReasonListsFromOdoo() {
+		try {
+			const fields = await odooRpc('helpdesk.ticket', 'fields_get', [[
+				'material_reason_tag_ids', 'software_reason_tag_ids'
+			], ['relation','string']]) || {};
+			const hwRelation = fields && fields.material_reason_tag_ids && fields.material_reason_tag_ids.relation;
+			const swRelation = fields && fields.software_reason_tag_ids && fields.software_reason_tag_ids.relation;
+			const result = { hardware: null, software: null };
+			if (hwRelation) {
+				const recs = await odooRpc(hwRelation, 'search_read', [[], ['name'], 0, 2000, 'name asc']) || [];
+				result.hardware = recs.map(r => String(r.name || '').trim()).filter(Boolean);
+			}
+			if (swRelation) {
+				const recs = await odooRpc(swRelation, 'search_read', [[], ['name'], 0, 2000, 'name asc']) || [];
+				result.software = recs.map(r => String(r.name || '').trim()).filter(Boolean);
+			}
+			return result;
+		} catch (e) {
+			console.warn('Impossible de lire les raisons dynamiques via RPC:', e);
+			return { hardware: null, software: null };
 		}
 	}
 
@@ -728,19 +757,25 @@
 		}, 400);
 	}
 
-	function ouvrirPanneauEtiquettes() {
+	async function ouvrirPanneauEtiquettes() {
 		// Listes modifiables facilement (noms tels qu'affichés dans Odoo)
-		const HARDWARE_REASONS = [
+		let HARDWARE_REASONS = [
 			'TMH/TMJ','Imprimante A4','SSV','TPE','Serveur','Scanner Documents',
 			'Terminal D\'inventaire','Etiquettes électronique','Lecteur code barre','Ecran','Caméras',
 			'Imprimante etiquettes','Poste Client','FAX','Reseau','Borne file d\'attente','BAD',
 			'Robot','Antivirus','Borne de prix','Monnayeur','PAX','Onduleur'
 		];
-		const SOFTWARE_REASONS = [
+		let SOFTWARE_REASONS = [
 			'Commandes','Télétransmisson / Rejets','Caisse / Synthese','Facturation',
 			'Droits Opérateurs / Options','Stocks / Inventaires','Clients','Robot','Etiquettes',
 			'Modules','Produits','Autres','Paramètres','Winperformance','WAP','Statistiques'
 		];
+		// Essayer de charger dynamiquement depuis Odoo
+		try {
+			const dyn = await fetchReasonListsFromOdoo();
+			if (Array.isArray(dyn.hardware) && dyn.hardware.length) HARDWARE_REASONS = dyn.hardware;
+			if (Array.isArray(dyn.software) && dyn.software.length) SOFTWARE_REASONS = dyn.software;
+		} catch (_) { /* fallback sur les listes par défaut */ }
 
 		const themeKey = 'reasonPanelTheme';
 		const savedTheme = localStorage.getItem(themeKey) || 'dark';
@@ -956,7 +991,11 @@
 			ttl.textContent = titleText;
 			const list = document.createElement('div');
 			list.className = 'list';
-			items.forEach((label, idx) => {
+			// Tri alphabétique (français, ignore accents/ponctuation)
+			const sortedItems = items.slice().sort((a, b) =>
+				a.localeCompare(b, 'fr', { sensitivity: 'base', ignorePunctuation: true })
+			);
+			sortedItems.forEach((label, idx) => {
 				const chip = document.createElement('label');
 				chip.className = 'chip ' + (type === 'software' ? 'chip--software' : 'chip--hardware');
 				const cb = document.createElement('input');
@@ -1032,13 +1071,23 @@
 			themeBtn.textContent = isLight ? 'Thème sombre' : 'Thème clair';
 		});
 		closeBtn.addEventListener('click', () => {
+			// Empêcher toute réouverture planifiée
+			sessionStorage.removeItem('pendingReasonPanel');
 			document.body.removeChild(overlay);
 		});
 		skipBtn.addEventListener('click', () => {
+			// Empêcher toute réouverture planifiée
+			sessionStorage.removeItem('pendingReasonPanel');
 			document.body.removeChild(overlay);
 		});
 
+		let submitLocked = false;
 		submitBtn.addEventListener('click', async () => {
+			if (submitLocked) return;
+			submitLocked = true;
+			submitBtn.disabled = true;
+			// Empêcher toute réouverture planifiée
+			sessionStorage.removeItem('pendingReasonPanel');
 			const selectedHw = Array.from(panel.querySelectorAll('#odoo-reason-panel .col:nth-child(1) .chip input:checked'))
 				.map(i => i.value);
 			const selectedSw = Array.from(panel.querySelectorAll('#odoo-reason-panel .col:nth-child(2) .chip input:checked'))
@@ -1076,18 +1125,43 @@
 			if (!labels || labels.length === 0) return;
 			const input = findTagInputByFieldName(fieldName);
 			if (!input) return;
+			const normalize = (s) => (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g,' ').trim().toLowerCase();
+			const widget = input.closest('.o_field_many2many_tags') || input.closest('.o_field_widget') || document;
 			input.scrollIntoView({behavior:'smooth', block:'center'});
 			await wait(120);
 			for (const label of labels) {
+				// Sauter si déjà présent
+				const existing = Array.from(widget.querySelectorAll('.o_tag, .badge, .o_m2m_tag_color, .o_tag_color'))
+					.map(e => normalize(e.textContent));
+				if (existing.includes(normalize(label))) {
+					continue;
+				}
 				input.focus();
 				input.value = '';
 				input.dispatchEvent(new Event('input', {bubbles: true}));
 				await wait(40);
 				input.value = label;
 				input.dispatchEvent(new Event('input', {bubbles: true}));
-				// Attendre l'autocomplete puis valider
+				// Attendre l'autocomplete puis sélectionner l'option existante si elle apparaît
 				await wait(300);
-				input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true}));
+				let optionCliquee = false;
+				try {
+					const dropdown = document.querySelector('.o-autocomplete--dropdown, .ui-autocomplete, .o-dropdown--menu');
+					if (dropdown) {
+						const options = Array.from(dropdown.querySelectorAll('[role="option"], .ui-menu-item, li, div'))
+							.filter(n => n && n.textContent && normalize(n.textContent) === normalize(label));
+						const match = options[0];
+						if (match) {
+							match.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+							match.click();
+							optionCliquee = true;
+						}
+					}
+				} catch(_) {}
+				// Si aucune suggestion exacte, valider avec Enter (créera si nécessaire)
+				if (!optionCliquee) {
+					input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true}));
+				}
 				await wait(160);
 			}
 		}
