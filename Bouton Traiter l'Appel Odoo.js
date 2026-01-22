@@ -1,10 +1,18 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.3.7
+// @version      2.3.8
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
-// @match        https://winprovence.odoo.com/*
+// @match        https://*.odoo.com/*
+// @match        https://winprovence.fr/*
+// @match        http://winprovence.fr/*
+// @match        https://*.winprovence.fr/*
+// @match        http://*.winprovence.fr/*
+// @match        https://www.winprovence.fr/*
+// @match        http://www.winprovence.fr/*
+// @match        https://winprovence.odoo.fr/*
+// @match        http://winprovence.odoo.fr/*
 // @match        http://winprovence.odoo.com/*
 // @updateURL    https://raw.githubusercontent.com/lax3is/Script-odoo/refs/heads/main/Bouton Traiter l'Appel Odoo.js
 // @downloadURL  https://raw.githubusercontent.com/lax3is/Script-odoo/refs/heads/main/Bouton Traiter l'Appel Odoo.js
