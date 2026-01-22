@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.3.6
+// @version      2.3.7
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -2886,4 +2886,94 @@
     }
     setInterval(scanRappelsRdv, 2000); // toutes les 2s
     setTimeout(scanRappelsRdv, 1000); // au chargement
+
+    // === MISE EN FORME DES LIBELLÉS "Logiciel", "Matériel", "Materiel N2" et "RMA" ===
+    // Objectif: appliquer un fond coloré + emoji uniquement pour ces 4 lignes
+    (function initStyleCategories() {
+        const CATEGORY_STYLES = {
+            // Couleurs de fond pastel + bordure assortie
+            'LOGICIEL':              { bg: 'rgba(22,163,74,0.18)',  border: '1px solid rgba(22,163,74,0.35)',  emoji: '💻' }, // vert
+            'MATERIEL':              { bg: 'rgba(168,85,247,0.18)', border: '1px solid rgba(168,85,247,0.35)', emoji: '🛠️' }, // violet
+            'MATERIEL N2':           { bg: 'rgba(220,38,38,0.18)',  border: '1px solid rgba(220,38,38,0.35)',  emoji: '🧰' }, // rouge
+            'RMA/SAV TECH EN COURS': { bg: 'rgba(249,115,22,0.18)', border: '1px solid rgba(249,115,22,0.35)', emoji: '📦' }, // orange
+            'RMA':                   { bg: 'rgba(249,115,22,0.18)', border: '1px solid rgba(249,115,22,0.35)', emoji: '📦' }  // orange
+        };
+        // Normalise: retire le (xx), supprime accents, uppercase strict
+        function normalizeLabel(text) {
+            return (text || '')
+                .replace(/\s*\(\d+\)\s*$/, '')
+                .trim()
+                .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                .toUpperCase();
+        }
+        function addEmojiIfNeeded(el, emoji) {
+            if (!el || !emoji) return;
+            if (el.querySelector && el.querySelector('.category-emoji-tag')) return;
+            const tag = document.createElement('span');
+            tag.className = 'category-emoji-tag';
+            tag.textContent = emoji + ' ';
+            // Préfixe sans casser la structure interne
+            if (el.firstChild) {
+                el.insertBefore(tag, el.firstChild);
+            } else {
+                el.appendChild(tag);
+            }
+        }
+        function tryStyleElement(el) {
+            if (!el || el.nodeType !== 1) return;
+            if (el.dataset && el.dataset.styledCategory === '1') return;
+            // Éviter les gros conteneurs
+            const raw = (el.innerText || el.textContent || '').trim();
+            if (!raw || raw.length > 64) return;
+            const base = normalizeLabel(raw);
+            // Exclure "Matériel N2" du simple "Matériel"
+            let key = null;
+            if (CATEGORY_STYLES[base]) {
+                key = base;
+            } else if (base === 'MATERIEL' && /\bN2\b/i.test(raw)) {
+                key = 'MATERIEL N2';
+            }
+            if (!key) return;
+            const cfg = CATEGORY_STYLES[key];
+            if (!cfg) return;
+            // Appliquer fond + emoji uniquement ici
+            try {
+                el.style.backgroundColor = cfg.bg || '';
+                el.style.border = cfg.border || '';
+                el.style.borderRadius = '6px';
+                el.style.padding = '2px 8px';
+                el.style.display = 'inline-block';
+                el.style.fontWeight = '600';
+                addEmojiIfNeeded(el, cfg.emoji);
+                el.dataset.styledCategory = '1';
+            } catch (_) { /* no-op */ }
+        }
+        function scanAndStyle(root) {
+            const scope = root && root.querySelectorAll
+                ? root
+                : document;
+            const candidates = scope.querySelectorAll('label, a, li, div, span');
+            candidates.forEach(tryStyleElement);
+        }
+        // Premier passage après chargement
+        setTimeout(() => scanAndStyle(document), 500);
+        // Observer pour capter l'apparition dynamique des lignes
+        const observerCategories = new MutationObserver((mutations) => {
+            for (const m of mutations) {
+                if (m.addedNodes && m.addedNodes.length > 0) {
+                    m.addedNodes.forEach(n => {
+                        if (n.nodeType === 1) {
+                            scanAndStyle(n);
+                        }
+                    });
+                }
+            }
+        });
+        try {
+            observerCategories.observe(document.body, { childList: true, subtree: true });
+        } catch (_) { /* ignore */ }
+        // Vérification périodique douce
+        setInterval(() => scanAndStyle(document), 3000);
+    })();
+    // === FIN mise en forme catégories ciblées ===
 })();
