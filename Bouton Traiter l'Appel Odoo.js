@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.3.4
+// @version      2.3.5
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -2906,25 +2906,25 @@
               line-height: 1.6;
             }
             .ai-label-logiciel {
-              background: rgba(39, 174, 96, 0.12);
+              background: transparent !important;
               border-left-color: #27ae60;
               color: inherit;
               position: relative;
             }
             .ai-label-materiel {
-              background: rgba(155, 89, 182, 0.12); /* violet */
+              background: transparent !important; /* pas de fond local */
               border-left-color: #9b59b6;           /* violet bord */
               color: inherit;
               position: relative;
             }
             .ai-label-materiel-n2 {
-              background: rgba(231, 76, 60, 0.12); /* swapped with RMA */
+              background: transparent !important; /* pas de fond local */
               border-left-color: #e74c3c;          /* swapped with RMA */
               color: inherit;
               position: relative;
             }
             .ai-label-rma {
-              background: rgba(230, 126, 34, 0.12); /* swapped with N2 */
+              background: transparent !important; /* pas de fond local */
               border-left-color: #e67e22;          /* swapped with N2 */
               color: inherit;
               position: relative;
