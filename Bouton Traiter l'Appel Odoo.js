@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.3.9
+// @version      2.4.0
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -2922,6 +2922,18 @@
         function tryStyleElement(el) {
             if (!el || el.nodeType !== 1) return;
             if (el.dataset && el.dataset.styledCategory === '1') return;
+            // Ne jamais styler les éléments situés dans des menus déroulants / autocomplete
+            // (bug visuel observé dans les selecteurs M2O / dropdown)
+            const isInDropdown = !!(el.closest &&
+                el.closest(
+                  '.dropdown-menu, .o-dropdown--menu, .o_dropdown_menu, ' +
+                  '.o-autocomplete, .o-autocomplete--dropdown, .o-autocomplete--menu, ' +
+                  '.o_field_many2one_dropdown, .o_m2o_dropdown, ' +
+                  '.ui-autocomplete, .ui-menu, ' +
+                  '.o_select_menu, .o_popover'
+                )
+            );
+            if (isInDropdown) return;
             // Éviter les gros conteneurs
             const raw = (el.innerText || el.textContent || '').trim();
             if (!raw || raw.length > 64) return;
