@@ -1,18 +1,10 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.3.8
+// @version      2.3.9
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
-// @match        https://*.odoo.com/*
-// @match        https://winprovence.fr/*
-// @match        http://winprovence.fr/*
-// @match        https://*.winprovence.fr/*
-// @match        http://*.winprovence.fr/*
-// @match        https://www.winprovence.fr/*
-// @match        http://www.winprovence.fr/*
-// @match        https://winprovence.odoo.fr/*
-// @match        http://winprovence.odoo.fr/*
+// @match        https://winprovence.odoo.com/*
 // @match        http://winprovence.odoo.com/*
 // @updateURL    https://raw.githubusercontent.com/lax3is/Script-odoo/refs/heads/main/Bouton Traiter l'Appel Odoo.js
 // @downloadURL  https://raw.githubusercontent.com/lax3is/Script-odoo/refs/heads/main/Bouton Traiter l'Appel Odoo.js
@@ -2956,32 +2948,37 @@
                 el.dataset.styledCategory = '1';
             } catch (_) { /* no-op */ }
         }
-        function scanAndStyle(root) {
-            const scope = root && root.querySelectorAll
-                ? root
-                : document;
-            const candidates = scope.querySelectorAll('label, a, li, div, span');
-            candidates.forEach(tryStyleElement);
+        function scanAndStyle() {
+            const href = (window.location.href || '') + ' ' + (window.location.hash || '');
+            const scopes = [];
+            // Vue liste des tickets
+            if (href.includes('model=helpdesk.ticket') && href.includes('view_type=list')) {
+                const listScope = document.querySelector('.o_list_view, .o_list_renderer');
+                if (listScope) scopes.push(listScope);
+            }
+            // Vue formulaire ticket
+            if (typeof isHelpdeskTicketForm === 'function' ? isHelpdeskTicketForm() : (href.includes('model=helpdesk.ticket') && href.includes('view_type=form'))) {
+                const formScope = document.querySelector('.o_form_view');
+                if (formScope) scopes.push(formScope);
+            }
+            if (!scopes.length) return; // nulle part ailleurs
+            for (const scope of scopes) {
+                const candidates = scope.querySelectorAll('label, a, li, div, span');
+                candidates.forEach(tryStyleElement);
+            }
         }
-        // Premier passage après chargement
-        setTimeout(() => scanAndStyle(document), 500);
+        // Premier passage après chargement (limité aux vues list/form du ticket)
+        setTimeout(scanAndStyle, 500);
         // Observer pour capter l'apparition dynamique des lignes
         const observerCategories = new MutationObserver((mutations) => {
-            for (const m of mutations) {
-                if (m.addedNodes && m.addedNodes.length > 0) {
-                    m.addedNodes.forEach(n => {
-                        if (n.nodeType === 1) {
-                            scanAndStyle(n);
-                        }
-                    });
-                }
-            }
+            // Au moindre changement, re-scanne uniquement les zones autorisées
+            scanAndStyle();
         });
         try {
             observerCategories.observe(document.body, { childList: true, subtree: true });
         } catch (_) { /* ignore */ }
         // Vérification périodique douce
-        setInterval(() => scanAndStyle(document), 3000);
+        setInterval(scanAndStyle, 3000);
     })();
     // === FIN mise en forme catégories ciblées ===
 })();
