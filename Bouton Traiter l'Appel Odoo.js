@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.4.0
+// @version      2.4.1
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -2934,6 +2934,13 @@
                 )
             );
             if (isInDropdown) return;
+            // Exclure explicitement navbar, breadcrumb, panneaux de contrôle, recherche, etc.
+            const isInForbidden = !!(el.closest && el.closest(
+                '.o_control_panel, .o_control_panel_breadcrumbs, .o_breadcrumb, header, ' +
+                '.o_searchview, .o_cp_searchview, .o_cp_sidebar, .o_main_navbar, ' +
+                '.o_graph_view, .o_pivot_view, .o_kanban_view'
+            ));
+            if (isInForbidden) return;
             // Éviter les gros conteneurs
             const raw = (el.innerText || el.textContent || '').trim();
             if (!raw || raw.length > 64) return;
@@ -2960,6 +2967,20 @@
                 el.dataset.styledCategory = '1';
             } catch (_) { /* no-op */ }
         }
+        function removeCategoryStyle(el){
+            try {
+                if (!el || !el.dataset || el.dataset.styledCategory !== '1') return;
+                el.style.backgroundColor = '';
+                el.style.border = '';
+                el.style.borderRadius = '';
+                el.style.padding = '';
+                el.style.display = '';
+                el.style.fontWeight = '';
+                const tag = el.querySelector('.category-emoji-tag');
+                if (tag) tag.remove();
+                delete el.dataset.styledCategory;
+            } catch(_) { /* ignore */ }
+        }
         function scanAndStyle() {
             const href = (window.location.href || '') + ' ' + (window.location.hash || '');
             const scopes = [];
@@ -2978,6 +2999,14 @@
                 const candidates = scope.querySelectorAll('label, a, li, div, span');
                 candidates.forEach(tryStyleElement);
             }
+            // Nettoyage des zones interdites si quelque chose a été stylé précédemment
+            const forbiddenRoots = document.querySelectorAll(
+                '.o_control_panel, .o_control_panel_breadcrumbs, .o_breadcrumb, header, ' +
+                '.o_searchview, .o_cp_searchview, .o_cp_sidebar, .o_main_navbar'
+            );
+            forbiddenRoots.forEach(root => {
+                root.querySelectorAll('[data-styled-category="1"]').forEach(removeCategoryStyle);
+            });
         }
         // Premier passage après chargement (limité aux vues list/form du ticket)
         setTimeout(scanAndStyle, 500);
