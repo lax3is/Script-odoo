@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Bouton Traiter l'Appel Odoo -DEV
+// @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.4.3
+// @version      2.4.4
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        *://*/web*
@@ -730,7 +730,7 @@
 			], ['relation','string']]) || {};
 			const hwRelation = fields && fields.material_reason_tag_ids && fields.material_reason_tag_ids.relation;
 			const swRelation = fields && fields.software_reason_tag_ids && fields.software_reason_tag_ids.relation;
-			const result = { hardware: null, software: null };
+			const result = { hardware: null, software: null, hwModel: hwRelation || null, swModel: swRelation || null };
 			if (hwRelation) {
 				const recs = await odooRpc(hwRelation, 'search_read', [[], ['name'], 0, 2000, 'name asc']) || [];
 				result.hardware = recs.map(r => String(r.name || '').trim()).filter(Boolean);
@@ -742,7 +742,7 @@
 			return result;
 		} catch (e) {
 			console.warn('Impossible de lire les raisons dynamiques via RPC:', e);
-			return { hardware: null, software: null };
+			return { hardware: null, software: null, hwModel: null, swModel: null };
 		}
 	}
 
@@ -1180,7 +1180,8 @@
 			submitLocked = true;
 			submitBtn.disabled = true;
 			// Empêcher toute réouverture planifiée
-			sessionStorage.removeItem('pendingReasonPanel');
+			try { sessionStorage.removeItem('pendingReasonPanel'); } catch(_) {}
+			try { reasonPanelDialogWasOpen = false; reasonPanelOpenedForResolution = true; } catch(_) {}
 			const selectedHw = Array.from(panel.querySelectorAll('#odoo-reason-panel .col:nth-child(1) .chip input:checked'))
 				.map(i => i.value);
 			const selectedSw = Array.from(panel.querySelectorAll('#odoo-reason-panel .col:nth-child(2) .chip input:checked'))
@@ -1194,8 +1195,169 @@
 		});
 	}
 
-	async function renseignerEtiquettesDansTicket(hardwareLabels, softwareLabels) {
+    async function renseignerEtiquettesDansTicket(hardwareLabels, softwareLabels) {
+        // 0) Tentative UI d'abord (met à jour l'interface immédiatement)
+        try {
+            function wait(ms){ return new Promise(r => setTimeout(r, ms)); }
+            function normalizeText(s){
+                return (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g,' ').trim().toLowerCase();
+            }
+            function enterEditModeIfNeeded(){
+                try {
+                    const editBtn = document.querySelector('.o_form_button_edit, button[accesskey="e"]');
+                    const isReadonly = !!document.querySelector('.o_form_view.o_readonly_modifier');
+                    if (isReadonly && editBtn) editBtn.click();
+                } catch(_) {}
+            }
+            function findTagInputByFieldName(fieldName) {
+                let input =
+                    document.querySelector(`input[id*="${fieldName}"].o-autocomplete--input`) ||
+                    document.querySelector(`.o_field_widget[name="${fieldName}"] input.o-autocomplete--input`) ||
+                    document.querySelector(`.o_field_many2many_tags[name="${fieldName}"] input.o-autocomplete--input`);
+                if (!input) {
+                    const guess = fieldName.includes('material') ? 'raison matériel' : 'raison logiciel';
+                    const nodes = Array.from(document.querySelectorAll('label, .o_horizontal_separator, .o_form_label, span, div'))
+                        .filter(n => (n.textContent || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase() === guess);
+                    if (nodes.length) {
+                        const container = nodes[0].closest('.o_field_widget') || nodes[0].parentElement;
+                        if (container) input = container.querySelector('input.o-autocomplete--input');
+                    }
+                }
+                return input || null;
+            }
+            async function addAllUI(fieldName, labels){
+                const input = findTagInputByFieldName(fieldName);
+                if (!input || !labels || !labels.length) return 0;
+                enterEditModeIfNeeded();
+                const widget = input.closest('.o_field_many2many_tags') || input.closest('.o_field_widget') || document;
+                let added = 0;
+                for (const label of labels){
+                    const existing = Array.from(widget.querySelectorAll('.o_tag, .badge, .o_m2m_tag_color, .o_tag_color'))
+                        .map(e => normalizeText(e.textContent));
+                    if (existing.includes(normalizeText(label))) continue;
+                    let attempts = 0;
+                    let done = false;
+                    while (!done && attempts < 3){
+                        attempts++;
+                        input.focus();
+                        input.value = '';
+                        input.dispatchEvent(new Event('input', {bubbles:true}));
+                        await wait(30);
+                        input.value = label;
+                        input.dispatchEvent(new Event('input', {bubbles:true}));
+                        await wait(300);
+                        let optionCliquee = false;
+                        try {
+                            const dropdown = document.querySelector('.o-autocomplete--dropdown, .ui-autocomplete, .o-dropdown--menu');
+                            if (dropdown) {
+                                const opts = Array.from(dropdown.querySelectorAll('[role="option"], .ui-menu-item, li, div')).filter(n => n && n.textContent);
+                                let match = opts.find(n => normalizeText(n.textContent) === normalizeText(label));
+                                if (!match) match = opts.find(n => normalizeText(n.textContent).includes(normalizeText(label)));
+                                if (match) {
+                                    match.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+                                    match.click();
+                                    optionCliquee = true;
+                                }
+                            }
+                        } catch(_) {}
+                        if (!optionCliquee){
+                            input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true}));
+                        }
+                        await wait(160);
+                        const now = Array.from(widget.querySelectorAll('.o_tag, .badge, .o_m2m_tag_color, .o_tag_color')).map(e => normalizeText(e.textContent));
+                        done = now.includes(normalizeText(label));
+                    }
+                    if (done) added++;
+                }
+                return added;
+            }
+            const addedHw = await addAllUI('material_reason_tag_ids', hardwareLabels || []);
+            const addedSw = await addAllUI('software_reason_tag_ids', softwareLabels || []);
+            if ((addedHw + addedSw) > 0){
+                const saveBtn = document.querySelector('.o_form_button_save, button[data-hotkey="s"]');
+                if (saveBtn) { saveBtn.click(); await wait(900); }
+                return; // Succès via UI, on s'arrête ici
+            }
+        } catch(_) {}
+        // 1) Chemin serveur: mise à jour via RPC (si UI n'a rien ajouté)
+		try {
+			const ticketId = obtenirTicketId && obtenirTicketId();
+			if (ticketId) {
+				const dyn = await fetchReasonListsFromOdoo();
+				const hwModel = dyn.hwModel;
+				const swModel = dyn.swModel;
+				// Résoudre les IDs par nom (exact, puis fallback ilike)
+				async function resolveIds(model, labels) {
+					if (!model || !labels || labels.length === 0) return [];
+					const unique = Array.from(new Set(labels.map(s => String(s).trim()).filter(Boolean)));
+					// Tentative de match exacts en un seul appel
+					let res = await odooRpc(model, 'search_read', [[['name', 'in', unique]] , ['id','name'], 0, unique.length, 'name asc']) || [];
+					const foundNames = new Set(res.map(r => String(r.name)));
+					// Fallback par libellé restant avec ilike (un par un pour plus de précision)
+					for (const lbl of unique) {
+						if (!foundNames.has(lbl)) {
+							const alt = await odooRpc(model, 'search_read', [[['name', 'ilike', lbl]] , ['id','name'], 0, 1, 'id asc']) || [];
+							if (alt.length) {
+								res = res.concat(alt);
+								foundNames.add(alt[0].name);
+							}
+						}
+					}
+					// Optionnel: création si non trouvé (désactivé par prudence)
+					return Array.from(new Set(res.map(r => r.id))).filter(n => Number.isInteger(n));
+				}
+				const hwIds = await resolveIds(hwModel, hardwareLabels);
+				const swIds = await resolveIds(swModel, softwareLabels);
+				// Si aucune ID trouvée alors qu'on a coché des valeurs, basculer en fallback DOM
+				if ((hardwareLabels && hardwareLabels.length && hwIds.length === 0) ||
+					(softwareLabels && softwareLabels.length && swIds.length === 0)) {
+					throw new Error('Aucun ID correspondant trouvé, fallback DOM');
+				}
+				// Lire l'existant pour faire une union et éviter toute suppression accidentelle
+				const current = await odooRpc('helpdesk.ticket', 'read', [[Number(ticketId)], ['material_reason_tag_ids','software_reason_tag_ids']]) || [];
+				const curHw = (current[0] && Array.isArray(current[0].material_reason_tag_ids)) ? current[0].material_reason_tag_ids : [];
+				const curSw = (current[0] && Array.isArray(current[0].software_reason_tag_ids)) ? current[0].software_reason_tag_ids : [];
+				const union = (a,b) => Array.from(new Set([...(a||[]), ...(b||[])].map(n => Number(n)).filter(n => Number.isInteger(n))));
+				const newHw = union(curHw, hwIds);
+				const newSw = union(curSw, swIds);
+				const vals = {};
+				let needWrite = false;
+				if (hwIds.length && JSON.stringify(newHw) !== JSON.stringify(curHw)) {
+					vals['material_reason_tag_ids'] = [[6,0,newHw]];
+					needWrite = true;
+				}
+				if (swIds.length && JSON.stringify(newSw) !== JSON.stringify(curSw)) {
+					vals['software_reason_tag_ids'] = [[6,0,newSw]];
+					needWrite = true;
+				}
+				if (needWrite) {
+					const ok = await odooRpc('helpdesk.ticket', 'write', [[Number(ticketId)], vals], {});
+					if (!ok) throw new Error('Echec write helpdesk.ticket');
+					// Vérifier que les valeurs sont bien posées
+					const verify = await odooRpc('helpdesk.ticket', 'read', [[Number(ticketId)], ['material_reason_tag_ids','software_reason_tag_ids']]) || [];
+					const vHw = (verify[0] && Array.isArray(verify[0].material_reason_tag_ids)) ? verify[0].material_reason_tag_ids : [];
+					const vSw = (verify[0] && Array.isArray(verify[0].software_reason_tag_ids)) ? verify[0].software_reason_tag_ids : [];
+					const containsAll = (have, want) => (want||[]).every(id => have.includes(id));
+					if ((hwIds.length && !containsAll(vHw, hwIds)) || (swIds.length && !containsAll(vSw, swIds))) {
+						throw new Error('Vérification KO après write, fallback DOM');
+					}
+				}
+				// petit délai pour laisser Odoo recharger les composants
+				await new Promise(r => setTimeout(r, 350));
+				return; // Succès via RPC → ne pas passer par le DOM
+			}
+		} catch (e) {
+			console.warn('Echec update via RPC, fallback DOM:', e);
+		}
+		// 2) Fallback DOM (ancien comportement)
 		// Helpers robustes pour trouver les inputs Odoo
+		function enterEditModeIfNeeded(){
+			try {
+				const editBtn = document.querySelector('.o_form_button_edit, button[accesskey="e"]');
+				const isReadonly = !!document.querySelector('.o_form_view.o_readonly_modifier');
+				if (isReadonly && editBtn) editBtn.click();
+			} catch(_) {}
+		}
 		function findTagInputByFieldName(fieldName) {
 			let input =
 				document.querySelector(`input[id*="${fieldName}"].o-autocomplete--input`) ||
@@ -1214,52 +1376,69 @@
 			return input || null;
 		}
 		function wait(ms){ return new Promise(r => setTimeout(r, ms)); }
+		function normalizeText(s){
+			return (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g,' ').trim().toLowerCase();
+		}
 		async function addTagsToField(fieldName, labels) {
 			if (!labels || labels.length === 0) return;
 			const input = findTagInputByFieldName(fieldName);
 			if (!input) return;
-			const normalize = (s) => (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g,' ').trim().toLowerCase();
+			enterEditModeIfNeeded();
 			const widget = input.closest('.o_field_many2many_tags') || input.closest('.o_field_widget') || document;
 			input.scrollIntoView({behavior:'smooth', block:'center'});
 			await wait(120);
 			for (const label of labels) {
 				// Sauter si déjà présent
 				const existing = Array.from(widget.querySelectorAll('.o_tag, .badge, .o_m2m_tag_color, .o_tag_color'))
-					.map(e => normalize(e.textContent));
-				if (existing.includes(normalize(label))) {
+					.map(e => normalizeText(e.textContent));
+				if (existing.includes(normalizeText(label))) {
 					continue;
 				}
-				input.focus();
-				input.value = '';
-				input.dispatchEvent(new Event('input', {bubbles: true}));
-				await wait(40);
-				input.value = label;
-				input.dispatchEvent(new Event('input', {bubbles: true}));
-				// Attendre l'autocomplete puis sélectionner l'option existante si elle apparaît
-				await wait(300);
-				let optionCliquee = false;
-				try {
-					const dropdown = document.querySelector('.o-autocomplete--dropdown, .ui-autocomplete, .o-dropdown--menu');
-					if (dropdown) {
-						const options = Array.from(dropdown.querySelectorAll('[role="option"], .ui-menu-item, li, div'))
-							.filter(n => n && n.textContent && normalize(n.textContent) === normalize(label));
-						const match = options[0];
-						if (match) {
-							match.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
-							match.click();
-							optionCliquee = true;
+				let attempts = 0;
+				let done = false;
+				while (!done && attempts < 3) {
+					attempts++;
+					input.focus();
+					input.value = '';
+					input.dispatchEvent(new Event('input', {bubbles: true}));
+					await wait(30);
+					input.value = label;
+					input.dispatchEvent(new Event('input', {bubbles: true}));
+					await wait(320);
+					let optionCliquee = false;
+					try {
+						const dropdown = document.querySelector('.o-autocomplete--dropdown, .ui-autocomplete, .o-dropdown--menu');
+						if (dropdown) {
+							// match exact puis partiel
+							const opts = Array.from(dropdown.querySelectorAll('[role="option"], .ui-menu-item, li, div'))
+								.filter(n => n && n.textContent);
+							let match = opts.find(n => normalizeText(n.textContent) === normalizeText(label));
+							if (!match) match = opts.find(n => normalizeText(n.textContent).includes(normalizeText(label)));
+							if (match) {
+								match.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+								match.click();
+								optionCliquee = true;
+							}
 						}
+					} catch(_) {}
+					// Si aucune suggestion cliquée, valider avec Enter
+					if (!optionCliquee) {
+						input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true}));
 					}
-				} catch(_) {}
-				// Si aucune suggestion exacte, valider avec Enter (créera si nécessaire)
-				if (!optionCliquee) {
-					input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true}));
+					await wait(180);
+					// Re-vérifier présence
+					const now = Array.from(widget.querySelectorAll('.o_tag, .badge, .o_m2m_tag_color, .o_tag_color')).map(e => normalizeText(e.textContent));
+					done = now.includes(normalizeText(label));
 				}
-				await wait(160);
 			}
 		}
 		await addTagsToField('material_reason_tag_ids', hardwareLabels);
 		await addTagsToField('software_reason_tag_ids', softwareLabels);
+		// Sauvegarde explicite (si fallback DOM)
+		try {
+			const saveBtn = document.querySelector('.o_form_button_save, button[data-hotkey="s"]');
+			if (saveBtn) { saveBtn.click(); await new Promise(r=>setTimeout(r, 900)); }
+		} catch(_) {}
 	}
 
     // Fonction pour modifier le style du bouton de clôture
