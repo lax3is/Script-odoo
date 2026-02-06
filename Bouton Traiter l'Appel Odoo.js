@@ -1,9 +1,12 @@
 // ==UserScript==
-// @name         Bouton Traiter l'Appel Odoo
+// @name         Bouton Traiter l'Appel Odoo -DEV
 // @namespace    http://tampermonkey.net/
-// @version      2.4.2
+// @version      2.4.3
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
+// @match        *://*/web*
+// @match        https://winprovence.odoo.com/*
+// @match        http://winprovence.odoo.com/*
 // @match        https://winprovence.odoo.com/*
 // @match        http://winprovence.odoo.com/*
 // @match        https://*/web*
@@ -809,8 +812,8 @@
 		const panel = document.createElement('div');
 		panel.id = 'odoo-reason-panel';
 		panel.style.cssText = `
-			width: min(960px, 92vw);
-			max-height: 86vh;
+			width: min(1024px, 96vw);
+			max-height: 90vh;
 			border-radius: 14px;
 			overflow: hidden;
 			box-shadow: 0 20px 50px rgba(0,0,0,0.35);
@@ -895,6 +898,10 @@
 			display: grid;
 			grid-template-columns: 1fr 1fr;
 			gap: 0;
+			/* Assure que le contenu scrolle et que le footer reste visible */
+			flex: 1 1 auto;
+			min-height: 0;
+			overflow: auto;
 		}
 		#odoo-reason-panel .col {
 			padding: 14px 16px;
@@ -913,7 +920,7 @@
 		}
 		#odoo-reason-panel .list {
 			display: grid;
-			grid-template-columns: 1fr 1fr;
+			grid-template-columns: repeat(2, minmax(220px, 1fr));
 			gap: 8px;
 		}
 		#odoo-reason-panel .chip {
@@ -949,6 +956,22 @@
 			align-items: center;
 			gap: 10px;
 			border-top: 1px solid var(--chip-border);
+			flex: 0 0 auto;
+		}
+		/* Responsive */
+		@media (max-width: 1200px) {
+			#odoo-reason-panel { width: min(960px, 96vw); }
+			#odoo-reason-panel .list { grid-template-columns: repeat(2, minmax(200px, 1fr)); }
+		}
+		@media (max-width: 900px) {
+			#odoo-reason-panel { width: 96vw; max-height: 92vh; }
+			#odoo-reason-panel .body { grid-template-columns: 1fr; }
+			#odoo-reason-panel .col { border-right: 0; border-top: 1px solid var(--chip-border); }
+			#odoo-reason-panel .list { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+		}
+		@media (max-width: 560px) {
+			#odoo-reason-panel .list { grid-template-columns: 1fr; }
+			#odoo-reason-panel .chip { padding: 8px 10px; }
 		}
 		#odoo-reason-panel .btn {
 			padding: 10px 16px;
@@ -1036,12 +1059,21 @@
 		const skipBtn = document.createElement('button');
 		skipBtn.className = 'btn ghost';
 		skipBtn.textContent = "Pas d'étiquette";
+		// Bouton d'envoi mail Windows 10 (chatter)
+		const spacer = document.createElement('div');
+		spacer.style.flex = '1';
+		const sendMailBtn = document.createElement('button');
+		sendMailBtn.className = 'btn ghost';
+		sendMailBtn.textContent = 'Envoyer mail Postes Windows10';
+		sendMailBtn.title = 'Envoie un message client (chatter) à partir de ce ticket';
 		const submitBtn = document.createElement('button');
 		submitBtn.className = 'btn primary';
 		submitBtn.textContent = 'Valider';
 		submitBtn.disabled = true;
 		submitBtn.style.display = 'none';
 		footer.appendChild(skipBtn);
+		footer.appendChild(spacer);
+		footer.appendChild(sendMailBtn);
 		footer.appendChild(submitBtn);
 
 		panel.appendChild(header);
@@ -1076,6 +1108,55 @@
 			cb.addEventListener('change', updateSubmitVisibility);
 		});
 		updateSubmitVisibility();
+
+		// Envoi via chatter (message_post) – un seul destinataire: client du ticket
+		async function envoyerMailWindows10() {
+			const ticketId = obtenirTicketId && obtenirTicketId();
+			if (!ticketId) throw new Error("Ticket introuvable");
+			const t = await odooRpc('helpdesk.ticket', 'read', [[Number(ticketId)], ['partner_id']]);
+			const partnerId = Array.isArray(t) && t[0] && Array.isArray(t[0].partner_id) ? t[0].partner_id[0] : null;
+			if (!partnerId) throw new Error("Client du ticket introuvable");
+			const p = await odooRpc('res.partner', 'read', [[Number(partnerId)], ['email','name']]);
+			const email = p && p[0] && p[0].email ? String(p[0].email).trim() : '';
+			if (!email) throw new Error("Le client n'a pas d'adresse e-mail");
+			const subject = "[IMPORTANT] Mise en conformité de votre parc informatique";
+			const bodyHtml = `
+				<p>Madame, Monsieur,</p>
+				<p>Lors de notre récente intervention sur votre système, nous avons constaté que plusieurs postes de votre officine fonctionnent encore sous Windows 10.</p>
+				<p>Nous vous informons que Microsoft a arrêté la maintenance de ce système. Par conséquent :</p>
+				<ul>
+					<li><b>Sécurité</b> : Votre matériel n'est plus protégé contre les nouvelles cyberattaques (arrêt des mises à jour).</li>
+					<li><b>Conformité</b> : L’utilisation d’un système non sécurisé n'est plus conforme aux exigences du RGPD.</li>
+				</ul>
+				<p>Afin de sécuriser votre activité, nous vous proposons un audit complet de votre système informatique. Cet état des lieux permettra de planifier la mise à jour ou le remplacement de vos postes en toute sérénité.</p>
+				<p>Souhaitez-vous que nous vous contactions pour fixer un rendez-vous ?</p>
+				<p>Cordialement,<br/>L'équipe Support Hotline</p>
+			`;
+			const res = await odooRpc('helpdesk.ticket', 'message_post', [[Number(ticketId)]], {
+				body: `<p><b>${subject}</b></p>${bodyHtml}`,
+				subject: subject,
+				message_type: 'comment',
+				subtype_xmlid: 'mail.mt_comment',
+				email_add_signature: true,
+				partner_ids: [Number(partnerId)]
+			});
+			return !!res;
+		}
+
+		sendMailBtn.addEventListener('click', async () => {
+			if (sendMailBtn.disabled) return;
+			const old = sendMailBtn.textContent;
+			sendMailBtn.disabled = true;
+			sendMailBtn.textContent = 'Envoi en cours…';
+			try {
+				const ok = await envoyerMailWindows10();
+				sendMailBtn.textContent = ok ? 'Mail envoyé ✔' : 'Erreur envoi';
+			} catch (e) {
+				console.warn('Envoi mail Windows10 échoué:', e);
+				sendMailBtn.textContent = 'Erreur envoi';
+			}
+			setTimeout(()=>{ sendMailBtn.textContent = old; sendMailBtn.disabled = false; }, 2200);
+		});
 
 		themeBtn.addEventListener('click', () => {
 			const isLight = panel.classList.toggle('theme-light');
