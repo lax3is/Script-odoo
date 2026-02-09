@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.4.4
+// @version      2.4.5
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        *://*/web*
@@ -678,10 +678,14 @@
 	function ouvrirPanneauEtiquettesApresCloture() {
 		try {
 			// Éviter simplement les doublons pendant l'affichage courant
-			if (document.getElementById('odoo-reason-overlay')) return;
-			ouvrirPanneauEtiquettes();
+		if (document.getElementById('odoo-reason-overlay')) return;
+		// Éviter les ouvertures concurrentes
+		if (window.__reasonPanelOpening) return;
+		window.__reasonPanelOpening = true;
+		ouvrirPanneauEtiquettes();
 		} catch (e) {
 			console.warn('Erreur ouverture panneau étiquettes:', e);
+		window.__reasonPanelOpening = false;
 		}
 	}
 
@@ -697,7 +701,7 @@
 					return;
 				}
 				// Déjà visible => terminer et nettoyer
-				if (document.getElementById('odoo-reason-overlay')) {
+				if (document.getElementById('odoo-reason-overlay') || window.__reasonPanelOpening) {
 					sessionStorage.removeItem('pendingReasonPanel');
 					return;
 				}
@@ -750,6 +754,10 @@
 	let reasonPanelWatcherId = null;
 	let reasonPanelDialogWasOpen = false;
 	let reasonPanelOpenedForResolution = false;
+	// Mutex global anti-doublon d'ouverture
+	if (typeof window.__reasonPanelOpening === 'undefined') {
+		window.__reasonPanelOpening = false;
+	}
 	function startReasonPanelWatcher() {
 		if (reasonPanelWatcherId) return;
 		reasonPanelWatcherId = setInterval(() => {
@@ -1080,6 +1088,8 @@
 		panel.appendChild(body);
 		panel.appendChild(footer);
 		overlay.appendChild(panel);
+		// Verrou anti-doublon visible
+		try { window.__reasonPanelOpening = true; } catch(_) {}
 		document.body.appendChild(overlay);
 
 		// Appliquer le thème initial
@@ -1166,11 +1176,13 @@
 		closeBtn.addEventListener('click', () => {
 			// Empêcher toute réouverture planifiée
 			sessionStorage.removeItem('pendingReasonPanel');
+			try { window.__reasonPanelOpening = false; } catch(_) {}
 			document.body.removeChild(overlay);
 		});
 		skipBtn.addEventListener('click', () => {
 			// Empêcher toute réouverture planifiée
 			sessionStorage.removeItem('pendingReasonPanel');
+			try { window.__reasonPanelOpening = false; } catch(_) {}
 			document.body.removeChild(overlay);
 		});
 
@@ -1191,6 +1203,7 @@
 			} catch (e) {
 				console.warn('Erreur remplissage étiquettes:', e);
 			}
+			try { window.__reasonPanelOpening = false; } catch(_) {}
 			document.body.removeChild(overlay);
 		});
 	}
@@ -1260,9 +1273,7 @@
                                 }
                             }
                         } catch(_) {}
-                        if (!optionCliquee){
-                            input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true}));
-                        }
+                        // Ne pas créer de nouvelle étiquette via Enter: on évite les doublons
                         await wait(160);
                         const now = Array.from(widget.querySelectorAll('.o_tag, .badge, .o_m2m_tag_color, .o_tag_color')).map(e => normalizeText(e.textContent));
                         done = now.includes(normalizeText(label));
@@ -1421,10 +1432,7 @@
 							}
 						}
 					} catch(_) {}
-					// Si aucune suggestion cliquée, valider avec Enter
-					if (!optionCliquee) {
-						input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true}));
-					}
+					// Ne pas créer de nouvelle étiquette via Enter: on évite les doublons
 					await wait(180);
 					// Re-vérifier présence
 					const now = Array.from(widget.querySelectorAll('.o_tag, .badge, .o_m2m_tag_color, .o_tag_color')).map(e => normalizeText(e.textContent));
