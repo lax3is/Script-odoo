@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      2.4.5
+// @version      2.4.7
 // @description  Ajoute un bouton "Traiter l'appel" avec texte clignotant
 // @author       Alexis.sair
 // @match        *://*/web*
@@ -1215,6 +1215,36 @@
             function normalizeText(s){
                 return (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g,' ').trim().toLowerCase();
             }
+            function normalizeOptionText(s){
+                return normalizeText(s).replace(/\s*\(\d+\)\s*$/,'').replace(/^["'`]+|["'`]+$/g,'').trim();
+            }
+            function isCreateOption(text){
+                const t = normalizeOptionText(text);
+                return /^(creer|create)\b/.test(t);
+            }
+            function dedupeLabels(labels){
+                const seen = new Set();
+                const out = [];
+                for (const raw of (labels || [])) {
+                    const lbl = String(raw || '').trim();
+                    if (!lbl) continue;
+                    const key = normalizeOptionText(lbl);
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    out.push(lbl);
+                }
+                return out;
+            }
+            function pickExistingOption(dropdown, label){
+                const target = normalizeOptionText(label);
+                const opts = Array.from(dropdown.querySelectorAll('[role="option"], .ui-menu-item, li, div'))
+                    .filter(n => n && n.textContent);
+                return opts.find(n => {
+                    const txt = n.textContent || '';
+                    if (isCreateOption(txt)) return false;
+                    return normalizeOptionText(txt) === target;
+                }) || null;
+            }
             function enterEditModeIfNeeded(){
                 try {
                     const editBtn = document.querySelector('.o_form_button_edit, button[accesskey="e"]');
@@ -1244,7 +1274,7 @@
                 enterEditModeIfNeeded();
                 const widget = input.closest('.o_field_many2many_tags') || input.closest('.o_field_widget') || document;
                 let added = 0;
-                for (const label of labels){
+                for (const label of dedupeLabels(labels)){
                     const existing = Array.from(widget.querySelectorAll('.o_tag, .badge, .o_m2m_tag_color, .o_tag_color'))
                         .map(e => normalizeText(e.textContent));
                     if (existing.includes(normalizeText(label))) continue;
@@ -1263,9 +1293,7 @@
                         try {
                             const dropdown = document.querySelector('.o-autocomplete--dropdown, .ui-autocomplete, .o-dropdown--menu');
                             if (dropdown) {
-                                const opts = Array.from(dropdown.querySelectorAll('[role="option"], .ui-menu-item, li, div')).filter(n => n && n.textContent);
-                                let match = opts.find(n => normalizeText(n.textContent) === normalizeText(label));
-                                if (!match) match = opts.find(n => normalizeText(n.textContent).includes(normalizeText(label)));
+                                const match = pickExistingOption(dropdown, label);
                                 if (match) {
                                     match.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
                                     match.click();
@@ -1390,6 +1418,36 @@
 		function normalizeText(s){
 			return (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g,' ').trim().toLowerCase();
 		}
+		function normalizeOptionText(s){
+			return normalizeText(s).replace(/\s*\(\d+\)\s*$/,'').replace(/^["'`]+|["'`]+$/g,'').trim();
+		}
+		function isCreateOption(text){
+			const t = normalizeOptionText(text);
+			return /^(creer|create)\b/.test(t);
+		}
+		function dedupeLabels(labels){
+			const seen = new Set();
+			const out = [];
+			for (const raw of (labels || [])) {
+				const lbl = String(raw || '').trim();
+				if (!lbl) continue;
+				const key = normalizeOptionText(lbl);
+				if (seen.has(key)) continue;
+				seen.add(key);
+				out.push(lbl);
+			}
+			return out;
+		}
+		function pickExistingOption(dropdown, label){
+			const target = normalizeOptionText(label);
+			const opts = Array.from(dropdown.querySelectorAll('[role="option"], .ui-menu-item, li, div'))
+				.filter(n => n && n.textContent);
+			return opts.find(n => {
+				const txt = n.textContent || '';
+				if (isCreateOption(txt)) return false;
+				return normalizeOptionText(txt) === target;
+			}) || null;
+		}
 		async function addTagsToField(fieldName, labels) {
 			if (!labels || labels.length === 0) return;
 			const input = findTagInputByFieldName(fieldName);
@@ -1398,7 +1456,7 @@
 			const widget = input.closest('.o_field_many2many_tags') || input.closest('.o_field_widget') || document;
 			input.scrollIntoView({behavior:'smooth', block:'center'});
 			await wait(120);
-			for (const label of labels) {
+			for (const label of dedupeLabels(labels)) {
 				// Sauter si déjà présent
 				const existing = Array.from(widget.querySelectorAll('.o_tag, .badge, .o_m2m_tag_color, .o_tag_color'))
 					.map(e => normalizeText(e.textContent));
@@ -1420,11 +1478,7 @@
 					try {
 						const dropdown = document.querySelector('.o-autocomplete--dropdown, .ui-autocomplete, .o-dropdown--menu');
 						if (dropdown) {
-							// match exact puis partiel
-							const opts = Array.from(dropdown.querySelectorAll('[role="option"], .ui-menu-item, li, div'))
-								.filter(n => n && n.textContent);
-							let match = opts.find(n => normalizeText(n.textContent) === normalizeText(label));
-							if (!match) match = opts.find(n => normalizeText(n.textContent).includes(normalizeText(label)));
+							const match = pickExistingOption(dropdown, label);
 							if (match) {
 								match.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
 								match.click();
