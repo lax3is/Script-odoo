@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      3.3.0
+// @version      3.3.1
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -310,17 +310,19 @@
                 '.o_statusbar_status.o_active span'
             ]);
 
+            // Note interne = champ request_answer (confirmé sur ton instance)
             const internal_note = readFirstText([
+                '.o_field_widget[name="request_answer"] textarea',
+                '.o_field_widget[name="request_answer"] div.note-editable',
+                '.o_field_widget[name="request_answer"] .note-editable',
+                'textarea[name="request_answer"]'
+            ]);
+
+            const client_note = readFirstText([
                 '.o_field_widget[name="description"] textarea',
                 '.o_field_widget[name="description"] div.note-editable',
                 '.o_field_widget[name="description"] .note-editable',
                 'textarea[name="description"]',
-                '.o_field_widget[name="internal_note"] textarea',
-                '.o_field_widget[name="internal_note"] div.note-editable',
-                'textarea[name="internal_note"]'
-            ]);
-
-            const client_note = readFirstText([
                 '.o_field_widget[name="partner_note"] textarea',
                 '.o_field_widget[name="partner_note"] div.note-editable',
                 '.o_field_widget[name="customer_note"] textarea',
@@ -989,7 +991,7 @@
         .clear-assign-button {
             background: none; border: none; color: #dc3545;
             cursor: pointer; font-size: 14px; padding: 0;
-            position: absolute; right: -36px; top: 50%;
+            position: absolute; right: 34px; top: 50%;
             transform: translateY(-50%); z-index: 2; line-height: 1;
         }
         /* === INDICATEUR EN COURS — dans le formulaire === */
@@ -1672,8 +1674,13 @@
         btn.dataset.reasonPanelHooked = '1';
         btn.addEventListener('click', () => {
             const ticketId = getTicketIdFromPage();
-            if (ticketId) sessionStorage.setItem('pendingReasonPanelAfterClosure', '1');
-            else sessionStorage.removeItem('pendingReasonPanelAfterClosure');
+            if (ticketId) {
+                sessionStorage.setItem('pendingReasonPanelAfterClosure', '1');
+                sessionStorage.setItem('pendingReasonTicketId', String(ticketId));
+                _reasonPanelTicketId = String(ticketId);
+            } else {
+                sessionStorage.removeItem('pendingReasonPanelAfterClosure');
+            }
             // Ne pas ouvrir le panneau tout de suite : la séquence stop/timesheet peut re-rendre l'écran.
             sessionStorage.removeItem('pendingReasonPanel');
         });
@@ -1690,6 +1697,8 @@
                 if (!ticketId) return;
 
                 sessionStorage.setItem('pendingTimerStopAfterClosure', String(ticketId));
+                sessionStorage.setItem('pendingReasonTicketId', String(ticketId));
+                _reasonPanelTicketId = String(ticketId);
 
                 setTimeout(() => {
                     if (!document.getElementById('odoo-reason-overlay')) {
@@ -1774,11 +1783,17 @@
     // BOUTON DÉSASSIGNATION (croix)
     // =========================================================
     function addClearAssignButton() {
-        const input = document.querySelector('input[name="user_id"], .o_field_many2one[name="user_id"] input');
-        if (!input) return;
-        const existing = input.parentNode.querySelector('.clear-assign-button');
-        if (existing) { if (!input.value) existing.remove(); return; }
-        if (!input.value) return;
+        const field = document.querySelector('.o_field_many2one[name="user_id"], .o_field_widget[name="user_id"]');
+        if (!field) return;
+        const input = field.querySelector('input');
+        const assignedTxt = (
+            (field.querySelector('.o_form_uri')?.textContent || '') ||
+            (field.querySelector('span')?.textContent || '') ||
+            (input?.value || '')
+        ).trim();
+        const existing = field.querySelector('.clear-assign-button');
+        if (existing) { if (!assignedTxt) existing.remove(); return; }
+        if (!assignedTxt) return;
 
         const btn = document.createElement('button');
         btn.className = 'clear-assign-button';
@@ -1794,16 +1809,18 @@
                 await odooWrite('helpdesk.ticket', Number(ticketId), { user_id: false });
                 await wait(300);
             }
-            input.value = '';
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            input.dispatchEvent(new Event('change', { bubbles: true }));
+            if (input) {
+                input.value = '';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            }
             await wait(200);
             const saveBtn = document.querySelector('.o_form_button_save, button[data-hotkey="s"]');
             if (saveBtn) saveBtn.click();
         });
 
-        input.parentNode.style.position = 'relative';
-        input.parentNode.appendChild(btn);
+        field.style.position = 'relative';
+        field.appendChild(btn);
     }
 
 
@@ -1812,10 +1829,13 @@
     // =========================================================
     let _reasonPanelOpen = false;
     let _reasonPanelDone = false; // une seule ouverture par clôture
+    let _reasonPanelTicketId = null;
 
     function scheduleReasonPanel(retryMs = 400, maxTries = 15) {
         if (_reasonPanelOpen || _reasonPanelDone) return;
         if (document.getElementById('odoo-reason-overlay')) return;
+        _reasonPanelTicketId = getTicketIdFromPage() || sessionStorage.getItem('pendingReasonTicketId') || sessionStorage.getItem('pendingTimerStopAfterClosure') || _reasonPanelTicketId;
+        if (_reasonPanelTicketId) sessionStorage.setItem('pendingReasonTicketId', String(_reasonPanelTicketId));
         sessionStorage.setItem('pendingReasonPanel', '1');
         let tries = 0;
         const attempt = () => {
@@ -1861,19 +1881,30 @@
         return { HARDWARE, SOFTWARE, hwRel, swRel };
     }
 
+    function normalizeReasonName(s) {
+        return String(s || '')
+            .toLowerCase()
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/[\u2019']/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
     async function openReasonPanel() {
         if (_reasonPanelOpen || _reasonPanelDone || document.getElementById('odoo-reason-overlay')) return;
         _reasonPanelOpen = true;
-        _reasonPanelDone = true;
 
-        const { HARDWARE, SOFTWARE } = await fetchReasonLists();
-        const themeKey = 'reasonPanelTheme';
-        const savedTheme = localStorage.getItem(themeKey) || 'dark';
+        let styleEl = null;
+        let overlay = null;
+        try {
+            const { HARDWARE, SOFTWARE } = await fetchReasonLists();
+            const themeKey = 'reasonPanelTheme';
+            const savedTheme = localStorage.getItem(themeKey) || 'dark';
 
-        // Styles du panneau
-        const styleEl = document.createElement('style');
-        styleEl.id = 'odoo-reason-style';
-        styleEl.textContent = `
+            // Styles du panneau
+            styleEl = document.createElement('style');
+            styleEl.id = 'odoo-reason-style';
+            styleEl.textContent = `
         #odoo-reason-panel {
             --bg:#0f1115; --elev:#151823; --text:#e6e8ee; --muted:#a8b0c2;
             --accent:#00d0b6; --accent-2:#3b82f6; --danger:#ef4444; --success:#22c55e;
@@ -1909,129 +1940,254 @@
             #odoo-reason-panel .body { grid-template-columns:1fr; }
             #odoo-reason-panel .list { grid-template-columns:1fr; }
         }
-        `;
-        document.head.appendChild(styleEl);
+            `;
+            document.head.appendChild(styleEl);
 
-        const overlay = document.createElement('div');
-        overlay.id = 'odoo-reason-overlay';
-        overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);';
+            overlay = document.createElement('div');
+            overlay.id = 'odoo-reason-overlay';
+            overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);';
 
-        const panel = document.createElement('div');
-        panel.id = 'odoo-reason-panel';
-        if (savedTheme === 'light') panel.classList.add('theme-light');
+            const panel = document.createElement('div');
+            panel.id = 'odoo-reason-panel';
+            if (savedTheme === 'light') panel.classList.add('theme-light');
 
-        // Header
-        const hdr = document.createElement('div'); hdr.className = 'hdr';
-        const title = document.createElement('div'); title.className = 'title'; title.textContent = 'Sélection des raisons (Matériel / Logiciel)';
-        const themeBtn = document.createElement('button'); themeBtn.className = 'theme-toggle'; themeBtn.textContent = savedTheme === 'dark' ? 'Thème clair' : 'Thème sombre';
-        const closeBtn = document.createElement('button'); closeBtn.className = 'close-btn'; closeBtn.textContent = '×';
-        hdr.appendChild(title); hdr.appendChild(themeBtn); hdr.appendChild(closeBtn);
+            // Header
+            const hdr = document.createElement('div'); hdr.className = 'hdr';
+            const title = document.createElement('div'); title.className = 'title'; title.textContent = 'Sélection des raisons (Matériel / Logiciel)';
+            const themeBtn = document.createElement('button'); themeBtn.className = 'theme-toggle'; themeBtn.textContent = savedTheme === 'dark' ? 'Thème clair' : 'Thème sombre';
+            const closeBtn = document.createElement('button'); closeBtn.className = 'close-btn'; closeBtn.textContent = '×';
+            hdr.appendChild(title); hdr.appendChild(themeBtn); hdr.appendChild(closeBtn);
 
-        // Body
-        const body = document.createElement('div'); body.className = 'body';
+            // Body
+            const body = document.createElement('div'); body.className = 'body';
 
-        function buildCol(titleText, items, prefix, type) {
-            const col = document.createElement('div'); col.className = 'col';
-            const ttl = document.createElement('div'); ttl.className = 'col-title'; ttl.textContent = titleText;
-            const list = document.createElement('div'); list.className = 'list';
-            items.slice().sort((a,b) => a.name.localeCompare(b.name,'fr',{sensitivity:'base',ignorePunctuation:true})).forEach((item, idx) => {
-                const chip = document.createElement('label');
-                chip.className = 'chip' + (type === 'software' ? ' chip--software' : '');
-                const cb = document.createElement('input'); cb.type = 'checkbox';
-                // Stocker l'ID si disponible, sinon le nom (fallback)
-                cb.value = item.id ? String(item.id) : item.name;
-                cb.dataset.tagName = item.name;
-                cb.dataset.tagId = item.id ? String(item.id) : '';
-                cb.id = `${prefix}-${idx}`;
-                const span = document.createElement('span'); span.textContent = item.name;
-                chip.appendChild(cb); chip.appendChild(span);
-                list.appendChild(chip);
+            function buildCol(titleText, items, prefix, type) {
+                const col = document.createElement('div'); col.className = 'col';
+                const ttl = document.createElement('div'); ttl.className = 'col-title'; ttl.textContent = titleText;
+                const list = document.createElement('div'); list.className = 'list';
+                items.slice().sort((a,b) => a.name.localeCompare(b.name,'fr',{sensitivity:'base',ignorePunctuation:true})).forEach((item, idx) => {
+                    const chip = document.createElement('label');
+                    chip.className = 'chip' + (type === 'software' ? ' chip--software' : '');
+                    const cb = document.createElement('input'); cb.type = 'checkbox';
+                    // Stocker l'ID si disponible, sinon le nom (fallback)
+                    cb.value = item.id ? String(item.id) : item.name;
+                    cb.dataset.tagName = item.name;
+                    cb.dataset.tagId = item.id ? String(item.id) : '';
+                    cb.id = `${prefix}-${idx}`;
+                    const span = document.createElement('span'); span.textContent = item.name;
+                    chip.appendChild(cb); chip.appendChild(span);
+                    list.appendChild(chip);
+                });
+                col.appendChild(ttl); col.appendChild(list);
+                return col;
+            }
+
+            body.appendChild(buildCol('🔧 Raisons matériel', HARDWARE, 'hw', 'hardware'));
+            body.appendChild(buildCol('📖 Raisons logiciel', SOFTWARE, 'sw', 'software'));
+
+            // Footer
+            const ftr = document.createElement('div'); ftr.className = 'ftr';
+            const skipBtn = document.createElement('button'); skipBtn.type = 'button'; skipBtn.className = 'btn ghost'; skipBtn.textContent = "Pas d'étiquette";
+            const submitBtn = document.createElement('button'); submitBtn.type = 'button'; submitBtn.className = 'btn primary'; submitBtn.textContent = 'Valider'; submitBtn.disabled = true; submitBtn.style.display = 'none';
+            ftr.appendChild(skipBtn); ftr.appendChild(submitBtn);
+
+            panel.appendChild(hdr); panel.appendChild(body); panel.appendChild(ftr);
+            overlay.appendChild(panel);
+            document.body.appendChild(overlay);
+            _reasonPanelDone = true;
+
+            // Interactions
+            const allChips = panel.querySelectorAll('.chip');
+            const updateSubmit = () => {
+                const n = panel.querySelectorAll('.chip input:checked').length;
+                submitBtn.disabled = n === 0; submitBtn.style.display = n === 0 ? 'none' : 'inline-block';
+                allChips.forEach(c => c.classList.toggle('selected', c.querySelector('input').checked));
+            };
+            allChips.forEach(chip => {
+                chip.addEventListener('click', e => {
+                    if (!(e.target instanceof HTMLInputElement)) { e.preventDefault(); const cb = chip.querySelector('input'); cb.checked = !cb.checked; }
+                    updateSubmit();
+                });
+                chip.querySelector('input').addEventListener('change', updateSubmit);
             });
-            col.appendChild(ttl); col.appendChild(list);
-            return col;
-        }
+            updateSubmit();
 
-        body.appendChild(buildCol('🔧 Raisons matériel', HARDWARE, 'hw', 'hardware'));
-        body.appendChild(buildCol('📖 Raisons logiciel', SOFTWARE, 'sw', 'software'));
-
-        // Footer
-        const ftr = document.createElement('div'); ftr.className = 'ftr';
-        const skipBtn = document.createElement('button'); skipBtn.className = 'btn ghost'; skipBtn.textContent = "Pas d'étiquette";
-        const submitBtn = document.createElement('button'); submitBtn.className = 'btn primary'; submitBtn.textContent = 'Valider'; submitBtn.disabled = true; submitBtn.style.display = 'none';
-        ftr.appendChild(skipBtn); ftr.appendChild(submitBtn);
-
-        panel.appendChild(hdr); panel.appendChild(body); panel.appendChild(ftr);
-        overlay.appendChild(panel);
-        document.body.appendChild(overlay);
-
-        // Interactions
-        const allChips = panel.querySelectorAll('.chip');
-        const updateSubmit = () => {
-            const n = panel.querySelectorAll('.chip input:checked').length;
-            submitBtn.disabled = n === 0; submitBtn.style.display = n === 0 ? 'none' : 'inline-block';
-            allChips.forEach(c => c.classList.toggle('selected', c.querySelector('input').checked));
-        };
-        allChips.forEach(chip => {
-            chip.addEventListener('click', e => {
-                if (!(e.target instanceof HTMLInputElement)) { e.preventDefault(); const cb = chip.querySelector('input'); cb.checked = !cb.checked; }
-                updateSubmit();
+            themeBtn.addEventListener('click', () => {
+                const isLight = panel.classList.toggle('theme-light');
+                localStorage.setItem(themeKey, isLight ? 'light' : 'dark');
+                themeBtn.textContent = isLight ? 'Thème sombre' : 'Thème clair';
             });
-            chip.querySelector('input').addEventListener('change', updateSubmit);
-        });
-        updateSubmit();
 
-        themeBtn.addEventListener('click', () => {
-            const isLight = panel.classList.toggle('theme-light');
-            localStorage.setItem(themeKey, isLight ? 'light' : 'dark');
-            themeBtn.textContent = isLight ? 'Thème sombre' : 'Thème clair';
-        });
+            const closePanel = () => {
+                _reasonPanelOpen = false;
+                sessionStorage.removeItem('pendingReasonPanel');
+                sessionStorage.removeItem('pendingReasonTicketId');
+                _reasonPanelTicketId = null;
+                overlay.remove();
+                styleEl.remove();
+            };
+            closeBtn.addEventListener('click', () => { closePanel(); });
+            skipBtn.addEventListener('click', () => { closePanel(); });
 
-        const closePanel = () => {
+            let submitLocked = false;
+            submitBtn.addEventListener('click', async () => {
+                if (submitLocked) return;
+                submitLocked = true; submitBtn.disabled = true;
+                sessionStorage.removeItem('pendingReasonPanel');
+                // Récupérer les IDs (ou noms si pas d'ID) des cases cochées
+                const cols = Array.from(panel.querySelectorAll('.col'));
+                const hwChecked = Array.from((cols[0] || panel).querySelectorAll('.chip input:checked'));
+                const swChecked = Array.from((cols[1] || panel).querySelectorAll('.chip input:checked'));
+                const hwIds = hwChecked.filter(i => i.dataset.tagId).map(i => Number(i.dataset.tagId));
+                const swIds = swChecked.filter(i => i.dataset.tagId).map(i => Number(i.dataset.tagId));
+                const hwNames = hwChecked.filter(i => !i.dataset.tagId).map(i => i.dataset.tagName);
+                const swNames = swChecked.filter(i => !i.dataset.tagId).map(i => i.dataset.tagName);
+                try {
+                    const targetTicketId = _reasonPanelTicketId || sessionStorage.getItem('pendingReasonTicketId') || getTicketIdFromPage();
+                    const ok = await applyTagsToTicket(hwIds, swIds, hwNames, swNames, targetTicketId);
+                    if (!ok) {
+                        submitLocked = false;
+                        submitBtn.disabled = false;
+                        alert("Aucune étiquette n'a pu être appliquée. Vérifiez vos droits Odoo ou la configuration des raisons.");
+                        return;
+                    }
+                    closePanel();
+                } catch (e) {
+                    console.warn('[Tags] Erreur:', e);
+                    submitLocked = false;
+                    submitBtn.disabled = false;
+                    alert("Erreur lors de la validation des raisons. Réessayez.");
+                }
+            });
+        } catch (e) {
+            console.warn('[ReasonPanel] Erreur ouverture:', e);
+            _reasonPanelDone = false;
+            if (overlay) overlay.remove();
+            if (styleEl) styleEl.remove();
+        } finally {
             _reasonPanelOpen = false;
-            sessionStorage.removeItem('pendingReasonPanel');
-            overlay.remove();
-            styleEl.remove();
-        };
-        closeBtn.addEventListener('click', () => { closePanel(); });
-        skipBtn.addEventListener('click', () => { closePanel(); });
-
-        let submitLocked = false;
-        submitBtn.addEventListener('click', async () => {
-            if (submitLocked) return;
-            submitLocked = true; submitBtn.disabled = true;
-            sessionStorage.removeItem('pendingReasonPanel');
-            // Récupérer les IDs (ou noms si pas d'ID) des cases cochées
-            const hwChecked = Array.from(panel.querySelectorAll('.col:nth-child(1) .chip input:checked'));
-            const swChecked = Array.from(panel.querySelectorAll('.col:nth-child(2) .chip input:checked'));
-            const hwIds = hwChecked.filter(i => i.dataset.tagId).map(i => Number(i.dataset.tagId));
-            const swIds = swChecked.filter(i => i.dataset.tagId).map(i => Number(i.dataset.tagId));
-            const hwNames = hwChecked.filter(i => !i.dataset.tagId).map(i => i.dataset.tagName);
-            const swNames = swChecked.filter(i => !i.dataset.tagId).map(i => i.dataset.tagName);
-            try { await applyTagsToTicket(hwIds, swIds, hwNames, swNames); } catch (e) { console.warn('[Tags] Erreur:', e); }
-            closePanel();
-        });
+        }
     }
 
     // Applique les étiquettes via API Odoo — utilise les IDs directement (pas de création)
-    async function applyTagsToTicket(hwIds = [], swIds = [], hwNamesFallback = [], swNamesFallback = []) {
-        const ticketId = getTicketIdFromPage();
-        if (!ticketId) return;
+    async function resolveTagIdsByName(relModel, names = []) {
+        if (!relModel || !Array.isArray(names) || !names.length) return [];
+
+        const wantedRaw = names.map(n => String(n || '').trim()).filter(Boolean);
+        const wanted = new Set(wantedRaw.map(normalizeReasonName));
+        const ids = new Set();
+
+        // Tentative 1: lecture globale (rapide)
+        const all = await odooRpc(relModel, 'search_read', [[], ['id', 'name'], 0, 5000]) || [];
+        all.forEach(r => {
+            if (wanted.has(normalizeReasonName(r.name))) {
+                const n = Number(r.id);
+                if (Number.isFinite(n)) ids.add(n);
+            }
+        });
+        if (ids.size) return Array.from(ids);
+
+        // Tentative 2: name_search unitaire (souvent autorise meme si search_read est limite)
+        for (const name of wantedRaw) {
+            try {
+                const exact = await odooRpc(relModel, 'name_search', [name, [], 'ilike', 20]) || [];
+                const match = exact.find(r => wanted.has(normalizeReasonName(Array.isArray(r) ? r[1] : '')));
+                if (match && Array.isArray(match) && Number.isFinite(Number(match[0]))) {
+                    ids.add(Number(match[0]));
+                    continue;
+                }
+                const first = exact[0];
+                if (first && Array.isArray(first) && Number.isFinite(Number(first[0]))) {
+                    ids.add(Number(first[0]));
+                }
+            } catch (_) {}
+        }
+
+        return Array.from(ids);
+    }
+
+    function uniqNormNames(names = []) {
+        const out = [];
+        const seen = new Set();
+        for (const n of names) {
+            const raw = String(n || '').trim();
+            if (!raw) continue;
+            const key = normalizeReasonName(raw);
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            out.push(raw);
+        }
+        return out;
+    }
+
+    async function addMany2ManyTagsViaDom(fieldName, names = []) {
+        const wanted = uniqNormNames(names);
+        if (!wanted.length) return false;
+
+        const root = document.querySelector(`.o_field_many2many_tags[name="${fieldName}"], .o_field_widget[name="${fieldName}"]`);
+        if (!root) return false;
+
+        const existing = new Set(
+            Array.from(root.querySelectorAll('.o_tag, .badge, .o_tag_badge_text'))
+                .map(el => normalizeReasonName(el.textContent || ''))
+                .filter(Boolean)
+        );
+
+        const input = root.querySelector('input');
+        if (!(input instanceof HTMLInputElement)) return false;
+
+        let added = false;
+        for (const name of wanted) {
+            if (existing.has(normalizeReasonName(name))) continue;
+
+            input.focus();
+            input.value = name;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            await wait(180);
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+            input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+            await wait(220);
+
+            // Marquer "ajouté" si le tag apparait ou si la saisie a été consommée par le widget.
+            const now = new Set(
+                Array.from(root.querySelectorAll('.o_tag, .badge, .o_tag_badge_text'))
+                    .map(el => normalizeReasonName(el.textContent || ''))
+                    .filter(Boolean)
+            );
+            if (now.has(normalizeReasonName(name)) || String(input.value || '').trim() === '') {
+                added = true;
+                existing.add(normalizeReasonName(name));
+            }
+        }
+        return added;
+    }
+
+    async function applyTagsViaDom(hwNames = [], swNames = []) {
+        const hwOk = await addMany2ManyTagsViaDom('material_reason_tag_ids', hwNames);
+        const swOk = await addMany2ManyTagsViaDom('software_reason_tag_ids', swNames);
+        if (!hwOk && !swOk) return false;
+        await wait(150);
+        await saveForm();
+        return true;
+    }
+
+    async function applyTagsToTicket(hwIds = [], swIds = [], hwNamesFallback = [], swNamesFallback = [], targetTicketId = null) {
+        const ticketId = targetTicketId || sessionStorage.getItem('pendingReasonTicketId') || getTicketIdFromPage();
+        if (!ticketId) return false;
 
         // Si on n'a pas d'IDs (fallback noms), on cherche par nom sans créer
         if (!hwIds.length && hwNamesFallback.length) {
             const fields = await odooRpc('helpdesk.ticket', 'fields_get', [['material_reason_tag_ids'], ['relation']]) || {};
             const rel = fields.material_reason_tag_ids?.relation;
             if (rel) {
-                const recs = await odooRpc(rel, 'search_read', [[['name','in',hwNamesFallback]], ['id'], 0, 200]) || [];
-                hwIds = recs.map(r => r.id);
+                hwIds = await resolveTagIdsByName(rel, hwNamesFallback);
             }
         }
         if (!swIds.length && swNamesFallback.length) {
             const fields = await odooRpc('helpdesk.ticket', 'fields_get', [['software_reason_tag_ids'], ['relation']]) || {};
             const rel = fields.software_reason_tag_ids?.relation;
             if (rel) {
-                const recs = await odooRpc(rel, 'search_read', [[['name','in',swNamesFallback]], ['id'], 0, 200]) || [];
-                swIds = recs.map(r => r.id);
+                swIds = await resolveTagIdsByName(rel, swNamesFallback);
             }
         }
 
@@ -2039,9 +2195,16 @@
         // [4, id] = lier sans créer (many2many link)
         if (hwIds.length) vals.material_reason_tag_ids = hwIds.map(id => [4, id]);
         if (swIds.length) vals.software_reason_tag_ids = swIds.map(id => [4, id]);
-        if (!Object.keys(vals).length) return;
+        if (!Object.keys(vals).length) {
+            // Fallback non-admin : tenter via l'UI Odoo (many2many tags)
+            return applyTagsViaDom(hwNamesFallback, swNamesFallback);
+        }
 
-        await odooWrite('helpdesk.ticket', Number(ticketId), vals);
+        const writeOk = await odooWrite('helpdesk.ticket', Number(ticketId), vals);
+        if (!writeOk) {
+            // Fallback non-admin : certains profils ne peuvent pas write via API mais peuvent via le widget UI.
+            return applyTagsViaDom(hwNamesFallback, swNamesFallback);
+        }
         await wait(300);
         const saveBtn = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
         if (saveBtn) saveBtn.click();
@@ -2064,6 +2227,7 @@
         window.location.hash = currentHash + '&_r=' + Date.now();
         await wait(100);
         window.history.replaceState(null, '', window.location.pathname + window.location.search + currentHash);
+        return true;
     }
 
 
@@ -2149,18 +2313,12 @@
         const n = Number(count);
 
         const btn = document.createElement('button');
+        btn.type = 'button';
         btn.title = n > 0 ? `${n} ventes trouvées` : 'Aucune vente';
         btn.className = 'bd-btn' + (n > 0 ? '' : ' empty');
 
         btn.onclick = async () => {
             if (n <= 0) return;
-            const titleField = await detectSaleOrderTitleField();
-            const baseFields = ['name','state','date_order','amount_total','currency_id'];
-            if (titleField) baseFields.push(titleField);
-            const records = await odooRpc('sale.order', 'search_read', [
-                [['partner_id','in',partnerIds]], baseFields, 0, 20, 'date_order desc'
-            ]) || [];
-
             document.getElementById('popup-devis-odoobtn')?.remove();
             const pop = document.createElement('div');
             pop.id = 'popup-devis-odoobtn'; pop.className = 'popup-devis-odoobtn';
@@ -2169,6 +2327,17 @@
             const closeBtn = document.createElement('button'); closeBtn.textContent = 'Fermer'; closeBtn.onclick = () => pop.remove();
             hdr.appendChild(closeBtn);
             const ul = document.createElement('ul');
+            ul.innerHTML = '<li style="opacity:.85;padding:12px;">Chargement des ventes...</li>';
+            pop.appendChild(hdr); pop.appendChild(ul);
+            document.body.appendChild(pop);
+
+            const titleField = await detectSaleOrderTitleField();
+            const baseFields = ['name','state','date_order','amount_total','currency_id'];
+            if (titleField) baseFields.push(titleField);
+            const records = await odooRpc('sale.order', 'search_read', [
+                [['partner_id','in',partnerIds]], baseFields, 0, 20, 'date_order desc'
+            ]) || [];
+            ul.innerHTML = '';
             const stateMap = { draft:'Brouillon', sent:'Envoyé', sale:'Bon de commande', done:'Terminé', cancel:'Annulé' };
             records.forEach(r => {
                 const li = document.createElement('li');
@@ -2232,8 +2401,7 @@
                 });
                 ul.appendChild(li);
             });
-            pop.appendChild(hdr); pop.appendChild(ul);
-            document.body.appendChild(pop);
+            if (!records.length) ul.innerHTML = '<li style="opacity:.8;padding:12px;">Aucune vente à afficher</li>';
         };
 
         const inner = document.createElement('div'); inner.className = 'bd-inner';
@@ -2256,6 +2424,7 @@
     let openTicketsTimer = null;
     let autoPopupLastCode = '';
     let lastToastKey = '';
+    let _closeStageIdsCache = { ids: [], at: 0 };
 
     function formatDateFr(str) {
         if (!str) return '';
@@ -2270,10 +2439,14 @@
     }
 
     async function getCloseStageIds() {
+        if (_closeStageIdsCache.ids.length && Date.now() - _closeStageIdsCache.at < 5 * 60 * 1000) {
+            return _closeStageIdsCache.ids;
+        }
         const stages = await odooRpc('helpdesk.stage', 'search_read', [
             [['fold','=',true]], ['id'], 0, 100
         ]) || [];
-        return stages.map(s => s.id);
+        _closeStageIdsCache = { ids: stages.map(s => s.id), at: Date.now() };
+        return _closeStageIdsCache.ids;
     }
 
     function odooUtcNowMinusMinutes(min) {
@@ -2307,6 +2480,7 @@
         const n = Number(count);
 
         const btn = document.createElement('button');
+        btn.type = 'button';
         btn.className = 'to-btn' + (n > 0 ? ' alert' : '');
         btn.title = n > 0 ? `${n} ticket(s) ouvert(s)` : 'Aucun doublon';
         btn.onclick = () => { if (n > 0) showOpenTicketsPopup(code, domain); };
@@ -2773,7 +2947,9 @@
             lastUrl = cur;
             _reasonPanelDone = false;
             _reasonPanelOpen = false;
+            _reasonPanelTicketId = null;
             sessionStorage.removeItem('pendingReasonPanel');
+            sessionStorage.removeItem('pendingReasonTicketId');
             _assistanceCache.clear();
             _assistanceTagIds = null;            // Plusieurs tentatives pour s'assurer que le DOM Odoo est prêt
             setTimeout(runAll, 400);
@@ -2792,8 +2968,8 @@
     setInterval(addClearAssignButton, 5000);
     setInterval(styleCloseButton, 3000);
     setInterval(scanRdvRappels, 2000);
-    setInterval(scheduleDevisUpdate, 8000);
-    setInterval(scheduleOpenTicketsUpdate, 8000);
+    setInterval(scheduleDevisUpdate, 5000);
+    setInterval(scheduleOpenTicketsUpdate, 3000);
 
     // Démarrage
     sessionStorage.removeItem('pendingReasonPanel'); // éviter ouverture fantôme au reload
