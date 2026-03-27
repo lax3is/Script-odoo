@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      3.3.1
+// @version      3.3.2
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -172,20 +172,33 @@
         return false;
     }
 
-    // Sauvegarde fiable : bouton DOM en priorité, fallback Ctrl+S simulé
+    // Sauvegarde fiable : attend que le bouton soit dispo, réessaie jusqu'à 3 fois
     async function saveForm() {
-        const saveBtn = document.querySelector(
-            'button.o_form_button_save, button[data-hotkey="s"], .o_form_button_save'
-        );
+        // Attendre que le bouton save soit présent et actif (max 3s)
+        let saveBtn = null;
+        for (let i = 0; i < 15; i++) {
+            saveBtn = document.querySelector('button.o_form_button_save, button[data-hotkey="s"], .o_form_button_save');
+            if (saveBtn && !saveBtn.disabled) break;
+            await wait(200);
+            saveBtn = null;
+        }
+
         if (saveBtn && !saveBtn.disabled) {
             saveBtn.click();
-            await wait(300);
+            await wait(400);
+            // Vérifier que le bouton a disparu (formulaire sauvegardé) — sinon réessayer
+            for (let retry = 0; retry < 3; retry++) {
+                const stillDirty = document.querySelector('button.o_form_button_save:not([disabled]), button[data-hotkey="s"]:not([disabled])');
+                if (!stillDirty) break; // sauvegardé
+                await wait(400);
+                stillDirty.click();
+            }
         } else {
             // Fallback : simuler Ctrl+S
             document.dispatchEvent(new KeyboardEvent('keydown', {
                 key: 's', code: 'KeyS', ctrlKey: true, bubbles: true, cancelable: true
             }));
-            await wait(300);
+            await wait(500);
         }
     }
 
@@ -1470,46 +1483,44 @@
                 });
                 if (confirmBtn) {
                     confirmBtn.click();
-                    await wait(800);
+                    await wait(400);
                     return true;
                 }
             }
-            await wait(250);
+            await wait(150);
         }
         return false;
     }
 
     async function manualStopTimerFallback(ticketId) {
         dispatchAltShortcut('z', 'KeyZ');
-        await wait(400);
+        await wait(200);
 
         let dialog = null;
         for (let i = 0; i < 8; i++) {
             dialog = document.querySelector('.o_timer_dialog, .modal.show, .o_dialog');
             if (dialog) break;
-            await wait(250);
+            await wait(150);
         }
 
-        if (dialog) {
-            await wait(800);
-        }
+        if (dialog) await wait(400);
 
         dispatchAltShortcut('q', 'KeyQ');
-        await wait(500);
+        await wait(300);
 
         if (document.querySelector('.o_timer_dialog, .modal.show, .o_dialog')) {
             dispatchAltShortcut('q', 'KeyQ');
-            await wait(500);
+            await wait(300);
         }
 
         const saveBtn = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
         if (saveBtn && !saveBtn.disabled) {
             saveBtn.click();
-            await wait(400);
+            await wait(250);
         }
 
         dispatchAltShortcut('q', 'KeyQ');
-        await wait(400);
+        await wait(250);
 
         return waitForTimerStopped(ticketId, 5000);
     }
@@ -1526,10 +1537,10 @@
                     }
                 }
 
-                await wait(500);
-                await autoConfirmTimesheetDialog(5000);
+                await wait(300);
+                await autoConfirmTimesheetDialog(4000);
 
-                const stopped = await waitForTimerStopped(ticketId, 5000);
+                const stopped = await waitForTimerStopped(ticketId, 4000);
                 if (stopped) return true;
             } catch (e) {
                 console.warn('[Clôture] Echec méthode stop', method, e);
@@ -1585,42 +1596,41 @@
         const domSt = domTimerState();
         if (domSt === 'stopped' || domSt === 'unknown') return false;
 
-        // Ancien script : Alt+Z pour ouvrir la fiche de temps, puis Alt+Q pour fermer/sauver
         simulerRaccourciTimer();
-        await wait(300);
+        await wait(150);
 
         let ficheTemps = null;
         let tentatives = 0;
-        while (!ficheTemps && tentatives < 3) {
+        while (!ficheTemps && tentatives < 4) {
             ficheTemps = document.querySelector('.o_timer_dialog');
             if (!ficheTemps) {
-                await wait(250);
+                await wait(150);
                 tentatives++;
             }
         }
 
-        if (ficheTemps) await wait(1000);
+        if (ficheTemps) await wait(400);
 
         simulerRaccourciStop();
-        await wait(400);
+        await wait(250);
 
         if (document.querySelector('.o_timer_dialog')) {
             simulerRaccourciStop();
-            await wait(400);
+            await wait(250);
         }
 
-        // Sauvegarde (si Odoo affiche encore un bouton save)
+        // Sauvegarde si bouton présent
         const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
         if (btnEnregistrer && !btnEnregistrer.disabled) {
             btnEnregistrer.click();
-            await wait(300);
+            await wait(200);
         }
 
         // Dernier Q de sécurité
         simulerRaccourciStop();
-        await wait(600);
+        await wait(300);
 
-        const stopped = await waitForDomTimerState('stopped', 8000);
+        const stopped = await waitForDomTimerState('stopped', 6000);
         if (stopped) {
             saveState(ticketId, 'stopped');
             return true;
@@ -1854,10 +1864,13 @@
                 sessionStorage.removeItem('pendingReasonPanel');
             }
         };
-        setTimeout(attempt, 200);
+        setTimeout(attempt, 100);
     }
 
+    let _reasonListsCache = null;
+
     async function fetchReasonLists() {
+        if (_reasonListsCache) return _reasonListsCache;
         // Retourne { HARDWARE: [{id, name}], SOFTWARE: [{id, name}], hwRel, swRel }
         // Fallback noms si l'API échoue
         const HW_FALLBACK = ['TMH/TMJ','Imprimante A4','SSV','TPE','Serveur','Scanner Documents','Terminal D\'inventaire','Etiquettes électronique','Lecteur code barre','Ecran','Caméras','Imprimante etiquettes','Poste Client','FAX','Reseau','Borne file d\'attente','BAD','Robot','Antivirus','Borne de prix','Monnayeur','PAX','Onduleur'];
@@ -1878,7 +1891,8 @@
                 if (recs.length) SOFTWARE = recs.map(r => ({ id: r.id, name: String(r.name||'').trim() })).filter(r => r.name);
             }
         } catch (_) {}
-        return { HARDWARE, SOFTWARE, hwRel, swRel };
+        _reasonListsCache = { HARDWARE, SOFTWARE, hwRel, swRel };
+        return _reasonListsCache;
     }
 
     function normalizeReasonName(s) {
@@ -2885,6 +2899,8 @@
         scheduleOpenTicketsUpdate(100);
         applyInternetBlink();
         scanCategoryStyles();
+        // Précharger les listes raisons dès qu'on est sur un ticket
+        if (isTicketPage() && !_reasonListsCache) fetchReasonLists().catch(() => {});
     }
 
     // Observer DOM mutations — relance runAll quand le DOM change significativement
