@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      3.4.0
+// @version      3.4.2
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -1865,6 +1865,13 @@
         if (_reasonPanelOpen || _reasonPanelDone) return;
         if (document.getElementById('odoo-reason-overlay')) return;
 
+        // Vérifier si le panneau a déjà été complété pour ce ticket
+        const currentTicketId = getTicketIdFromPage();
+        if (currentTicketId && sessionStorage.getItem(`reasonPanelCompleted_${currentTicketId}`) === '1') {
+            console.log('[ReasonPanel] Panneau déjà complété pour ce ticket, skip schedule');
+            return;
+        }
+
         // Si le panneau est protégé (ouvert immédiatement au clic), ne pas le programmer
         if (sessionStorage.getItem('reasonPanelForceOpen') === '1') return;
 
@@ -1879,8 +1886,13 @@
                 return;
             }
             if (sessionStorage.getItem('pendingReasonPanel') !== '1') return;
-            // Vérifier à nouveau si le panneau est protégé
+            // Vérifier à nouveau si le panneau est protégé ou déjà complété
             if (sessionStorage.getItem('reasonPanelForceOpen') === '1') {
+                sessionStorage.removeItem('pendingReasonPanel');
+                return;
+            }
+            const ticketId = getTicketIdFromPage();
+            if (ticketId && sessionStorage.getItem(`reasonPanelCompleted_${ticketId}`) === '1') {
                 sessionStorage.removeItem('pendingReasonPanel');
                 return;
             }
@@ -1936,10 +1948,16 @@
     async function openReasonPanel() {
         if (_reasonPanelOpen || document.getElementById('odoo-reason-overlay')) return;
 
+        // Vérifier si le panneau a déjà été complété pour ce ticket
+        const currentTicketId = getTicketIdFromPage();
+        if (currentTicketId && sessionStorage.getItem(`reasonPanelCompleted_${currentTicketId}`) === '1') {
+            console.log('[ReasonPanel] Panneau déjà complété pour ce ticket, skip');
+            return;
+        }
+
         // Vérifier si le panneau est protégé contre les resets
         const isProtected = sessionStorage.getItem('reasonPanelForceOpen') === '1';
         const protectedTicketId = sessionStorage.getItem('reasonPanelProtectedTicketId');
-        const currentTicketId = getTicketIdFromPage();
 
         // Si le panneau est protégé et on est sur le bon ticket, ignorer _reasonPanelDone
         if (!isProtected && _reasonPanelDone) return;
@@ -2091,6 +2109,13 @@
             submitBtn.addEventListener('click', async () => {
                 if (submitLocked) return;
                 submitLocked = true; submitBtn.disabled = true;
+                
+                // Marquer définitivement que le panneau a été traité pour ce ticket
+                const currentTicketId = _reasonPanelTicketId || sessionStorage.getItem('pendingReasonTicketId') || getTicketIdFromPage();
+                if (currentTicketId) {
+                    sessionStorage.setItem(`reasonPanelCompleted_${currentTicketId}`, '1');
+                }
+                
                 sessionStorage.removeItem('pendingReasonPanel');
                 // Récupérer les IDs (ou noms si pas d'ID) des cases cochées
                 const cols = Array.from(panel.querySelectorAll('.col'));
@@ -2112,6 +2137,8 @@
                     // Nettoyer les flags de protection après validation réussie
                     sessionStorage.removeItem('reasonPanelForceOpen');
                     sessionStorage.removeItem('reasonPanelProtectedTicketId');
+                    // Empêcher définitivement la réouverture pour ce ticket
+                    _reasonPanelDone = true;
                     closePanel();
                 } catch (e) {
                     console.warn('[Tags] Erreur:', e);
@@ -3016,6 +3043,14 @@
             sessionStorage.removeItem('pendingReasonTicketId');
             sessionStorage.removeItem('reasonPanelForceOpen');
             sessionStorage.removeItem('reasonPanelProtectedTicketId');
+            
+            // Nettoyer les anciens flags de completion (garder seulement les 10 plus récents)
+            const completionKeys = Object.keys(sessionStorage).filter(key => key.startsWith('reasonPanelCompleted_'));
+            if (completionKeys.length > 10) {
+                completionKeys.slice(0, completionKeys.length - 10).forEach(key => {
+                    sessionStorage.removeItem(key);
+                });
+            }
             _assistanceCache.clear();
             _assistanceTagIds = null;            // Plusieurs tentatives pour s'assurer que le DOM Odoo est prêt
             setTimeout(runAll, 400);
