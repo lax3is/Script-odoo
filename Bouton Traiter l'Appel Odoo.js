@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      3.3.2
+// @version      3.4.0
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -1688,10 +1688,30 @@
                 sessionStorage.setItem('pendingReasonPanelAfterClosure', '1');
                 sessionStorage.setItem('pendingReasonTicketId', String(ticketId));
                 _reasonPanelTicketId = String(ticketId);
+
+                // Protection contre les resets : marquer que le panneau doit rester ouvert
+                sessionStorage.setItem('reasonPanelForceOpen', '1');
+                sessionStorage.setItem('reasonPanelProtectedTicketId', String(ticketId));
+
+                // Ouvrir immédiatement le panneau des raisons
+                setTimeout(() => {
+                    if (!_reasonPanelOpen && !document.getElementById('odoo-reason-overlay')) {
+                        // Reset temporaire du flag _reasonPanelDone pour permettre l'ouverture
+                        const wasReasonPanelDone = _reasonPanelDone;
+                        _reasonPanelDone = false;
+                        openReasonPanel();
+                        // Si l'ouverture a échoué, restaurer l'état précédent
+                        if (!document.getElementById('odoo-reason-overlay')) {
+                            _reasonPanelDone = wasReasonPanelDone;
+                        }
+                    }
+                }, 50);
             } else {
                 sessionStorage.removeItem('pendingReasonPanelAfterClosure');
+                sessionStorage.removeItem('reasonPanelForceOpen');
+                sessionStorage.removeItem('reasonPanelProtectedTicketId');
             }
-            // Ne pas ouvrir le panneau tout de suite : la séquence stop/timesheet peut re-rendre l'écran.
+            // Ne pas ouvrir le panneau via la méthode normale
             sessionStorage.removeItem('pendingReasonPanel');
         });
     }
@@ -1844,6 +1864,10 @@
     function scheduleReasonPanel(retryMs = 400, maxTries = 15) {
         if (_reasonPanelOpen || _reasonPanelDone) return;
         if (document.getElementById('odoo-reason-overlay')) return;
+
+        // Si le panneau est protégé (ouvert immédiatement au clic), ne pas le programmer
+        if (sessionStorage.getItem('reasonPanelForceOpen') === '1') return;
+
         _reasonPanelTicketId = getTicketIdFromPage() || sessionStorage.getItem('pendingReasonTicketId') || sessionStorage.getItem('pendingTimerStopAfterClosure') || _reasonPanelTicketId;
         if (_reasonPanelTicketId) sessionStorage.setItem('pendingReasonTicketId', String(_reasonPanelTicketId));
         sessionStorage.setItem('pendingReasonPanel', '1');
@@ -1855,6 +1879,11 @@
                 return;
             }
             if (sessionStorage.getItem('pendingReasonPanel') !== '1') return;
+            // Vérifier à nouveau si le panneau est protégé
+            if (sessionStorage.getItem('reasonPanelForceOpen') === '1') {
+                sessionStorage.removeItem('pendingReasonPanel');
+                return;
+            }
             tries++;
             openReasonPanel();
             if (!document.getElementById('odoo-reason-overlay')) {
@@ -1905,7 +1934,19 @@
     }
 
     async function openReasonPanel() {
-        if (_reasonPanelOpen || _reasonPanelDone || document.getElementById('odoo-reason-overlay')) return;
+        if (_reasonPanelOpen || document.getElementById('odoo-reason-overlay')) return;
+
+        // Vérifier si le panneau est protégé contre les resets
+        const isProtected = sessionStorage.getItem('reasonPanelForceOpen') === '1';
+        const protectedTicketId = sessionStorage.getItem('reasonPanelProtectedTicketId');
+        const currentTicketId = getTicketIdFromPage();
+
+        // Si le panneau est protégé et on est sur le bon ticket, ignorer _reasonPanelDone
+        if (!isProtected && _reasonPanelDone) return;
+
+        // Si on est sur un ticket différent de celui protégé, respecter _reasonPanelDone
+        if (isProtected && protectedTicketId && currentTicketId && protectedTicketId !== currentTicketId && _reasonPanelDone) return;
+
         _reasonPanelOpen = true;
 
         let styleEl = null;
@@ -2036,6 +2077,9 @@
                 _reasonPanelOpen = false;
                 sessionStorage.removeItem('pendingReasonPanel');
                 sessionStorage.removeItem('pendingReasonTicketId');
+                // Nettoyer les flags de protection
+                sessionStorage.removeItem('reasonPanelForceOpen');
+                sessionStorage.removeItem('reasonPanelProtectedTicketId');
                 _reasonPanelTicketId = null;
                 overlay.remove();
                 styleEl.remove();
@@ -2065,6 +2109,9 @@
                         alert("Aucune étiquette n'a pu être appliquée. Vérifiez vos droits Odoo ou la configuration des raisons.");
                         return;
                     }
+                    // Nettoyer les flags de protection après validation réussie
+                    sessionStorage.removeItem('reasonPanelForceOpen');
+                    sessionStorage.removeItem('reasonPanelProtectedTicketId');
                     closePanel();
                 } catch (e) {
                     console.warn('[Tags] Erreur:', e);
@@ -2964,8 +3011,11 @@
             _reasonPanelDone = false;
             _reasonPanelOpen = false;
             _reasonPanelTicketId = null;
+            // Nettoyer tous les flags de session liés au panneau des raisons
             sessionStorage.removeItem('pendingReasonPanel');
             sessionStorage.removeItem('pendingReasonTicketId');
+            sessionStorage.removeItem('reasonPanelForceOpen');
+            sessionStorage.removeItem('reasonPanelProtectedTicketId');
             _assistanceCache.clear();
             _assistanceTagIds = null;            // Plusieurs tentatives pour s'assurer que le DOM Odoo est prêt
             setTimeout(runAll, 400);
