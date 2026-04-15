@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      3.4.2
-// @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV
+// @version      3.5.0
+// @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
 // @match        http://winprovence.odoo.com/*
@@ -13,7 +13,15 @@
 // @updateURL    https://raw.githubusercontent.com/lax3is/Script-odoo/refs/heads/main/Bouton%20Traiter%20l'Appel%20Odoo.js
 // @downloadURL  https://raw.githubusercontent.com/lax3is/Script-odoo/refs/heads/main/Bouton%20Traiter%20l'Appel%20Odoo.js
 // @grant        GM_xmlhttpRequest
+// @grant        GM_addStyle
+// @grant        GM_setValue
+// @grant        GM_getValue
 // @connect      hotline.sippharma.fr
+// @connect      winprovence.odoo.com
+// @connect      *.odoo.com
+// @connect      winprovence.fr
+// @connect      *.winprovence.fr
+// @connect      winprovence.odoo.fr
 // ==/UserScript==
 
 (function () {
@@ -127,6 +135,15 @@
         timerStoppedForTicket: null, // ticket dont le timer vient d'être arrêté
         timerStoppedAt: 0            // timestamp de l'arrêt
     };
+
+    // =========================================================
+    // ÉTAT HISTORIQUE ET PRODUITS CLIENTS
+    // =========================================================
+    let historyAdded = false;
+    let historyButtonAdded = false;
+    let productsAdded = false;
+    let productsButtonAdded = false;
+    let isProcessingNavigation = false;
 
     function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -859,6 +876,343 @@
         ]);
     }
 
+    // =========================================================
+    // FONCTIONS HISTORIQUE ET PRODUITS CLIENTS
+    // =========================================================
+
+    // Fonction pour sauvegarder l'état de l'historique
+    function saveHistoryState(isVisible) {
+        try {
+            localStorage.setItem('ticketHistory_visible', isVisible ? 'true' : 'false');
+        } catch (error) {
+            console.error('[ODOO-EXT] Erreur lors de la sauvegarde de l\'état:', error);
+        }
+    }
+
+    // Fonction pour récupérer l'état de l'historique
+    function getHistoryState() {
+        try {
+            const state = localStorage.getItem('ticketHistory_visible');
+            return state === 'true';
+        } catch (error) {
+            console.error('[ODOO-EXT] Erreur lors de la récupération de l\'état:', error);
+            return false;
+        }
+    }
+
+    // Fonction pour sauvegarder l'état d'affichage des produits
+    function saveProductsState(isVisible) {
+        try {
+            localStorage.setItem('productsHistory_visible', isVisible ? 'true' : 'false');
+        } catch (error) {
+            console.error('[ODOO-EXT] Erreur lors de la sauvegarde de l\'état des produits:', error);
+        }
+    }
+
+    // Fonction pour récupérer l'état d'affichage des produits
+    function getProductsState() {
+        try {
+            const state = localStorage.getItem('productsHistory_visible');
+            return state === 'true';
+        } catch (error) {
+            console.error('[ODOO-EXT] Erreur lors de la récupération de l\'état des produits:', error);
+            return false;
+        }
+    }
+
+    // Fonction pour obtenir l'ID selon le modèle présent dans l'URL
+    async function getIdToProcess() {
+        try {
+            console.log('[HISTORY] URL complète:', window.location.href);
+            console.log('[HISTORY] Hash:', window.location.hash);
+
+            // Essayer différentes méthodes pour parser l'URL Odoo
+            let params, model, id;
+
+            // Méthode 1: URLSearchParams sur le hash
+            if (window.location.hash) {
+                params = new URLSearchParams(window.location.hash.slice(1));
+                model = params.get("model");
+                id = params.get("id");
+                console.log('[HISTORY] Méthode 1 - Model:', model, 'ID:', id);
+            }
+
+            // Méthode 2: Parser manuellement l'URL Odoo
+            if (!model || !id) {
+                const urlMatch = window.location.href.match(/[#&]model=([^&]+).*[#&]id=(\d+)/);
+                if (urlMatch) {
+                    model = urlMatch[1];
+                    id = urlMatch[2];
+                    console.log('[HISTORY] Méthode 2 - Model:', model, 'ID:', id);
+                }
+            }
+
+            // Méthode 3: Utiliser l'API Odoo pour obtenir l'ID actuel
+            if (!model || !id) {
+                try {
+                    if (window.odoo && window.odoo.env && window.odoo.env.services && window.odoo.env.services.action) {
+                        const actionService = window.odoo.env.services.action;
+                        if (actionService.currentController && actionService.currentController.props) {
+                            const props = actionService.currentController.props;
+                            model = props.resModel;
+                            id = props.resId;
+                            console.log('[HISTORY] Méthode 3 - Model:', model, 'ID:', id);
+                        }
+                    }
+                } catch (e) {
+                    console.log('[HISTORY] Méthode 3 échouée:', e);
+                }
+            }
+
+            if (!model || !id) {
+                console.log('[HISTORY] Impossible de déterminer le modèle et l\'ID');
+                return null;
+            }
+
+            console.log('[HISTORY] Modèle détecté:', model, 'ID:', id);
+
+            if (model === "res.partner") {
+                console.log('[HISTORY] Retour direct de l\'ID partenaire:', id);
+                return id;
+            } else if (model === "helpdesk.ticket") {
+                console.log('[HISTORY] Récupération du partenaire depuis le ticket:', id);
+                const ticketDetails = await odooRead('helpdesk.ticket', Number(id), ['partner_id']);
+                console.log('[HISTORY] Détails du ticket:', ticketDetails);
+                if (ticketDetails && ticketDetails.partner_id) {
+                    console.log('[HISTORY] Partner ID trouvé:', ticketDetails.partner_id[0]);
+                    return ticketDetails.partner_id[0];
+                }
+                return null;
+            } else if (model === "sale.order") {
+                console.log('[HISTORY] Récupération du partenaire depuis la commande:', id);
+                const orderDetails = await odooRead('sale.order', Number(id), ['partner_id']);
+                console.log('[HISTORY] Détails de la commande:', orderDetails);
+                if (orderDetails && orderDetails.partner_id) {
+                    console.log('[HISTORY] Partner ID trouvé:', orderDetails.partner_id[0]);
+                    return orderDetails.partner_id[0];
+                }
+                return null;
+            }
+
+            console.log('[HISTORY] Modèle non supporté:', model);
+            return null;
+        } catch (error) {
+            console.error('[HISTORY] Erreur dans getIdToProcess:', error);
+            return null;
+        }
+    }
+
+    // Fonction pour vérifier si l'URL correspond aux patterns autorisés
+    function isValidUrlForHistory() {
+        const hash = window.location.hash;
+        const isTicketPage = hash.includes("model=helpdesk.ticket") && hash.includes("view_type=form");
+        const isPartnerPage = hash.includes("model=res.partner") && hash.includes("view_type=form");
+        const isSaleOrderPage = hash.includes("model=sale.order") && hash.includes("view_type=form");
+        return isTicketPage || isPartnerPage || isSaleOrderPage;
+    }
+
+    // Fonction pour récupérer les tickets d'un client
+    async function fetchClientTickets() {
+        try {
+            console.log('[HISTORY] Début de fetchClientTickets');
+            const partnerId = await getIdToProcess();
+            console.log('[HISTORY] Partner ID récupéré:', partnerId);
+
+            if (!partnerId) {
+                console.log('[HISTORY] Aucun partner ID trouvé');
+                return null;
+            }
+
+            console.log('[HISTORY] Recherche des tickets pour le partner:', partnerId);
+
+            const tickets = await odooRpc('helpdesk.ticket', 'web_search_read', [], {
+                offset: 0,
+                limit: 0,
+                order: "create_date DESC, priority DESC, id ASC",
+                domain: [["partner_id", "=", parseInt(partnerId)]],
+                fields: [
+                    "name", "priority", "create_date", "close_date", "team_id",
+                    "user_id", "stage_id", "request_answer", "description"
+                ]
+            });
+
+            console.log('[HISTORY] Résultat de la recherche de tickets:', tickets);
+
+            if (tickets && tickets.records) {
+                console.log('[HISTORY] Nombre de tickets trouvés:', tickets.records.length);
+            } else {
+                console.log('[HISTORY] Aucun ticket dans la réponse ou format inattendu');
+            }
+
+            return tickets;
+        } catch (error) {
+            console.error('[HISTORY] Erreur lors de la récupération des tickets:', error);
+            return null;
+        }
+    }
+
+    // Fonction pour récupérer les produits d'un client via traçabilité
+    async function fetchClientProducts() {
+        try {
+            console.log('[PRODUCTS] Début de fetchClientProducts');
+            const partnerId = await getIdToProcess();
+            console.log('[PRODUCTS] Partner ID récupéré:', partnerId);
+
+            if (!partnerId) {
+                console.log('[PRODUCTS] Aucun partner ID trouvé');
+                return null;
+            }
+
+            console.log('[PRODUCTS] Récupération des produits pour le partner:', partnerId);
+
+            // Utilisation de l'API de traçabilité
+            const payload = {
+                "id": 38,
+                "jsonrpc": "2.0",
+                "method": "call",
+                "params": {
+                    "args": [{
+                        "lang": "fr_FR",
+                        "tz": "Europe/Paris",
+                        "uid": 493,
+                        "allowed_company_ids": [1],
+                        "active_id": parseInt(partnerId),
+                        "model": "res.partner",
+                        "ttype": false,
+                        "auto_unfold": false,
+                        "lot_name": false
+                    }],
+                    "model": "stock.traceability.report",
+                    "method": "get_html",
+                    "kwargs": {
+                        "context": {
+                            "lang": "fr_FR",
+                            "tz": "Europe/Paris",
+                            "uid": 493,
+                            "allowed_company_ids": [1]
+                        }
+                    }
+                }
+            };
+
+            console.log('[PRODUCTS] Payload de la requête:', payload);
+
+            const response = await fetch(_ru() + '/web/dataset/call_kw/stock.traceability.report/get_html', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Authorization': _authHeader()
+                },
+                credentials: 'include',
+                body: JSON.stringify(payload)
+            });
+
+            console.log('[PRODUCTS] Réponse HTTP status:', response.status);
+
+            const data = await response.json();
+            console.log('[PRODUCTS] Données reçues:', data);
+
+            if (!data || !data.result || !data.result.html) {
+                console.log('[PRODUCTS] Pas de HTML dans la réponse');
+                return null;
+            }
+
+            // Parser le HTML pour extraire les informations
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(data.result.html, 'text/html');
+            const rows = doc.querySelectorAll('tr[data-id]');
+            console.log('[PRODUCTS] Nombre de lignes trouvées dans le HTML:', rows.length);
+
+            // Regrouper les produits par référence
+            const groupedProducts = {};
+            Array.from(rows).forEach((row, index) => {
+                const cells = row.querySelectorAll('td');
+                console.log('[PRODUCTS] Ligne', index, '- Nombre de cellules:', cells.length);
+
+                if (cells.length >= 7) {
+                    const reference = cells[0].textContent.trim();
+                    const productCell = cells[1].textContent.trim();
+                    const productMatch = productCell.match(/\[(.*?)\]\s*(.*)/);
+                    const productCode = productMatch ? productMatch[1] : '';
+                    const productName = productMatch ? productMatch[2] : productCell;
+                    const date = cells[2].textContent.trim();
+                    const lot = cells[3].textContent.trim();
+                    const quantity = cells[6].textContent.trim();
+
+                    console.log('[PRODUCTS] Produit trouvé:', { reference, productCode, productName, date, lot, quantity });
+
+                    if (reference.startsWith('SORTIE') || reference.startsWith('EXPEDITIONS')) {
+                        const isExpress = reference.includes('EXPRESS');
+                        if (!groupedProducts[reference]) {
+                            groupedProducts[reference] = {
+                                date: date,
+                                isExpress: isExpress,
+                                products: {}
+                            };
+                        }
+
+                        const productKey = `${productCode}-${productName}`;
+                        if (!groupedProducts[reference].products[productKey]) {
+                            groupedProducts[reference].products[productKey] = {
+                                code: productCode,
+                                name: productName,
+                                lots: [],
+                                totalQuantity: 0
+                            };
+                        }
+
+                        if (lot) {
+                            groupedProducts[reference].products[productKey].lots.push(lot);
+                        }
+                        groupedProducts[reference].products[productKey].totalQuantity += parseFloat(quantity) || 0;
+                    }
+                }
+            });
+
+            console.log('[PRODUCTS] Produits groupés:', groupedProducts);
+
+            // Transformer les données
+            const products = {
+                result: {
+                    records: Object.entries(groupedProducts).flatMap(([reference, group]) =>
+                        Object.values(group.products).map(product => ({
+                            name: product.name,
+                            default_code: product.code,
+                            type: group.isExpress ? 'express' : 'normal',
+                            create_date: group.date,
+                            description: `Référence: ${reference}\nLots: ${product.lots.join(', ')}\nQuantité: ${product.totalQuantity}`,
+                            categ_id: [null, 'Produit client']
+                        }))
+                    )
+                }
+            };
+
+            console.log('[PRODUCTS] Produits transformés:', products);
+            console.log('[PRODUCTS] Nombre de produits finaux:', products.result.records.length);
+
+            return products;
+        } catch (error) {
+            console.error('[PRODUCTS] Erreur lors de la récupération des produits:', error);
+            return null;
+        }
+    }
+
+    // Fonction pour initialiser le thème
+    function initializeTheme() {
+        const savedTheme = localStorage.getItem('odoo-history-theme');
+        if (savedTheme === 'dark') {
+            document.body.classList.add('dark-theme');
+        }
+    }
+
+    // Fonction pour ouvrir un ticket dans un nouvel onglet
+    function openTicketInNewTab(ticketId) {
+        const baseUrl = window.location.origin;
+        const ticketUrl = `${baseUrl}/web#id=${ticketId}&model=helpdesk.ticket&view_type=form&action=368`;
+        window.open(ticketUrl, '_blank');
+    }
+
     // Vérifie si le timer est en cours via API
     async function apiGetTimerState(ticketId) {
         const info = await odooRead('helpdesk.ticket', Number(ticketId), ['is_timer_running', 'timer_start']);
@@ -983,6 +1337,483 @@
             70%      { box-shadow: 0 0 0 6px rgba(37,99,235,0); }
         }
         #btn-inserer-initiales { background: #17b6b2 !important; color: #fff !important; }
+
+        /* === BOUTONS HISTORIQUE ET PRODUITS === */
+        #showHistoryButton, #showProductsButton {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 15px;
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            box-shadow: 0 2px 8px rgba(0,160,157,0.3);
+            transition: all 0.3s ease;
+            margin-right: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        #showHistoryButton:hover, #showProductsButton:hover {
+            background: linear-gradient(135deg, #008F8C 0%, #007F7D 100%);
+            box-shadow: 0 4px 12px rgba(0,160,157,0.4);
+            transform: translateY(-2px);
+        }
+        #showHistoryButton:active, #showProductsButton:active {
+            transform: translateY(0px);
+            box-shadow: 0 2px 6px rgba(0,160,157,0.3);
+        }
+        #showHistoryButton i, #showProductsButton i {
+            font-size: 14px;
+        }
+        #showHistoryButton::before, #showProductsButton::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0) 100%);
+            border-radius: 8px;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        #showHistoryButton:hover::before, #showProductsButton:hover::before {
+            opacity: 1;
+        }
+
+        /* === CONTENEURS HISTORIQUE ET PRODUITS === */
+        #zone_historique_tickets, #zone_produits_client {
+            border: 1px solid #e0e0e0;
+            padding: 20px;
+            margin: 20px 0;
+            background-color: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            height: 70vh;
+            min-height: 500px;
+            max-height: 800px;
+            overflow: hidden;
+            display: none;
+            flex-direction: column;
+            color: #333333;
+            position: relative;
+            resize: vertical;
+        }
+        #zone_historique_tickets.visible, #zone_produits_client.visible {
+            display: flex !important;
+        }
+
+        /* === BOUTON THÈME SOMBRE === */
+        .theme-toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: 15px;
+        }
+        .theme-toggle-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 2px solid #e0e0e0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #ffffff;
+            color: #666666;
+        }
+        .theme-toggle-btn:hover {
+            transform: scale(1.1);
+            border-color: #00A09D;
+            color: #00A09D;
+        }
+        .theme-toggle-btn.active {
+            background: #00A09D;
+            color: white;
+            border-color: #00A09D;
+        }
+
+        /* === THÈME SOMBRE === */
+        .dark-theme #zone_historique_tickets,
+        .dark-theme #zone_produits_client {
+            background-color: #1f2937;
+            border-color: #374151;
+            color: #e5e7eb;
+        }
+        .dark-theme .historique-header,
+        .dark-theme .produits-header {
+            background: #1f2937;
+            border-bottom-color: #374151;
+            color: #e5e7eb;
+        }
+        .dark-theme .historique-header-left,
+        .dark-theme .produits-header-left {
+            color: #60a5fa;
+        }
+        .dark-theme .ticket-item,
+        .dark-theme .product-item {
+            background-color: #1f2937;
+            border-color: #374151;
+            color: #e5e7eb;
+        }
+        .dark-theme .ticket-item:hover,
+        .dark-theme .product-item:hover {
+            background-color: #2d3748;
+        }
+        .dark-theme .ticket-title,
+        .dark-theme .product-title {
+            color: #f3f4f6 !important;
+        }
+        .dark-theme .ticket-date,
+        .dark-theme .product-date {
+            color: #d1d5db !important;
+        }
+        .dark-theme .ticket-assignee {
+            color: #d1d5db !important;
+        }
+        .dark-theme .ticket-description,
+        .dark-theme .product-description {
+            color: #e5e7eb !important;
+        }
+        .dark-theme .filter-input {
+            background-color: #374151;
+            border-color: #4b5563;
+            color: #e5e7eb;
+        }
+        .dark-theme .filter-input::placeholder {
+            color: #9ca3af;
+        }
+        .dark-theme .no-tickets,
+        .dark-theme .no-products {
+            color: #9ca3af;
+        }
+
+        /* === STATUTS EN THÈME SOMBRE === */
+        .dark-theme .ticket-status.nouveau { background: #1e3a8a; color: #93c5fd; }
+        .dark-theme .ticket-status.en-cours { background: #92400e; color: #fbbf24; }
+        .dark-theme .ticket-status.en-attente { background: #581c87; color: #c084fc; }
+        .dark-theme .ticket-status.resolu { background: #14532d; color: #86efac; }
+        .dark-theme .ticket-status.ferme { background: #374151; color: #d1d5db; }
+        .dark-theme .ticket-status.annule { background: #7f1d1d; color: #fca5a5; }
+
+        /* === ÉQUIPES EN THÈME SOMBRE === */
+        .dark-theme .ticket-team[data-team="Logiciel"] {
+            background: rgba(76, 175, 80, 0.2);
+            color: #81c784;
+        }
+        .dark-theme .ticket-team[data-team="Materiel"] {
+            background: rgba(33, 150, 243, 0.2);
+            color: #64b5f6;
+        }
+        .dark-theme .ticket-team[data-team="RMA"] {
+            background: rgba(255, 152, 0, 0.2);
+            color: #ffb74d;
+        }
+        .dark-theme .ticket-team[data-team="MaterielN2"] {
+            background: rgba(156, 39, 176, 0.2);
+            color: #ba68c8;
+        }
+        .dark-theme .ticket-team[data-team="MailSAV"] {
+            background: rgba(233, 30, 99, 0.2);
+            color: #f06292;
+        }
+        .dark-theme .ticket-team[data-team="Winteam"] {
+            background: rgba(0, 188, 212, 0.2);
+            color: #4dd0e1;
+        }
+
+        /* === EN-TÊTES === */
+        .historique-header, .produits-header {
+            position: sticky;
+            top: 0;
+            background: #ffffff;
+            z-index: 10;
+            padding-bottom: 15px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+            color: #333333;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .historique-header-left, .produits-header-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            font-weight: 700;
+            font-size: 16px;
+            color: #00A09D;
+        }
+        .historique-header-right, .produits-header-right {
+            flex: 1;
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        /* === LISTES === */
+        #ticketsList, #productsList {
+            overflow-y: auto;
+            flex: 1;
+            padding-right: 10px;
+        }
+        #ticketsList::-webkit-scrollbar, #productsList::-webkit-scrollbar {
+            width: 8px;
+        }
+        #ticketsList::-webkit-scrollbar-track, #productsList::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        #ticketsList::-webkit-scrollbar-thumb, #productsList::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 4px;
+        }
+
+        /* === ÉLÉMENTS TICKET AVEC COULEURS PAR ÉQUIPE === */
+        .ticket-item {
+            padding: 16px;
+            background-color: #ffffff;
+            margin-bottom: 12px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+            color: #333333;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+        .ticket-item::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: #6B7280;
+        }
+        .ticket-item:hover {
+            background-color: #f8f9fa;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        /* Couleurs par équipe */
+        .ticket-item[data-team="Logiciel"]::before { background: #4CAF50; }
+        .ticket-item[data-team="Materiel"]::before { background: #2196F3; }
+        .ticket-item[data-team="RMA"]::before { background: #FF9800; }
+        .ticket-item[data-team="MaterielN2"]::before { background: #9C27B0; }
+        .ticket-item[data-team="MailSAV"]::before { background: #E91E63; }
+        .ticket-item[data-team="Winteam"]::before { background: #00BCD4; }
+
+        .ticket-item[data-team="Logiciel"]:hover {
+            box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+        }
+        .ticket-item[data-team="Materiel"]:hover {
+            box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
+        }
+        .ticket-item[data-team="RMA"]:hover {
+            box-shadow: 0 4px 12px rgba(255, 152, 0, 0.3);
+        }
+        .ticket-item[data-team="MaterielN2"]:hover {
+            box-shadow: 0 4px 12px rgba(156, 39, 176, 0.3);
+        }
+        .ticket-item[data-team="MailSAV"]:hover {
+            box-shadow: 0 4px 12px rgba(233, 30, 99, 0.3);
+        }
+        .ticket-item[data-team="Winteam"]:hover {
+            box-shadow: 0 4px 12px rgba(0, 188, 212, 0.3);
+        }
+
+        .ticket-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+        .ticket-title {
+            font-weight: 600;
+            color: #333333;
+            font-size: 15px;
+            line-height: 1.4;
+            flex: 1;
+            margin-right: 15px;
+        }
+        .ticket-date {
+            color: #666666;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+        .ticket-info {
+            display: flex;
+            gap: 15px;
+            margin-top: 12px;
+            color: #333333;
+            font-size: 13px;
+            flex-wrap: wrap;
+        }
+
+        /* === STATUTS COLORÉS === */
+        .ticket-status {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .ticket-status.nouveau { background: #E3F2FD; color: #1976D2; }
+        .ticket-status.en-cours { background: #FFF3E0; color: #F57C00; }
+        .ticket-status.en-attente { background: #F3E5F5; color: #7B1FA2; }
+        .ticket-status.resolu { background: #E8F5E8; color: #388E3C; }
+        .ticket-status.ferme { background: #FAFAFA; color: #616161; }
+        .ticket-status.annule { background: #FFEBEE; color: #D32F2F; }
+
+        /* === ÉQUIPES COLORÉES === */
+        .ticket-team {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .ticket-team[data-team="Logiciel"] {
+            background: rgba(76, 175, 80, 0.1);
+            color: #4CAF50;
+        }
+        .ticket-team[data-team="Materiel"] {
+            background: rgba(33, 150, 243, 0.1);
+            color: #2196F3;
+        }
+        .ticket-team[data-team="RMA"] {
+            background: rgba(255, 152, 0, 0.1);
+            color: #FF9800;
+        }
+        .ticket-team[data-team="MaterielN2"] {
+            background: rgba(156, 39, 176, 0.1);
+            color: #9C27B0;
+        }
+        .ticket-team[data-team="MailSAV"] {
+            background: rgba(233, 30, 99, 0.1);
+            color: #E91E63;
+        }
+        .ticket-team[data-team="Winteam"] {
+            background: rgba(0, 188, 212, 0.1);
+            color: #00BCD4;
+        }
+
+        .ticket-assignee {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #666666;
+        }
+
+        /* === ÉLÉMENTS PRODUIT === */
+        .product-item {
+            padding: 16px;
+            background-color: #ffffff;
+            margin-bottom: 12px;
+            border: 1px solid #e0e0e0;
+            border-left: 4px solid #6B7280;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+            color: #333333;
+        }
+        .product-item:hover {
+            background-color: #f8f9fa;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(107, 114, 128, 0.2);
+        }
+        .product-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+        .product-title {
+            font-weight: 600;
+            color: #333333;
+            font-size: 15px;
+            line-height: 1.4;
+            flex: 1;
+            margin-right: 15px;
+        }
+        .product-date {
+            color: #666666;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+        .product-info {
+            display: flex;
+            gap: 15px;
+            margin-top: 12px;
+            color: #333333;
+            font-size: 13px;
+            flex-wrap: wrap;
+        }
+        .product-type {
+            background-color: #6B7280;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* === FILTRES === */
+        .ticket-filters, .product-filters {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .filter-input {
+            padding: 8px 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 13px;
+            background-color: #ffffff;
+            color: #333333;
+            transition: all 0.3s ease;
+            min-width: 150px;
+        }
+        .filter-input:focus {
+            outline: none;
+            border-color: #00A09D;
+            box-shadow: 0 0 0 3px rgba(0,160,157,0.1);
+        }
+        .filter-input::placeholder {
+            color: #999999;
+        }
+
+        /* === MESSAGES VIDES === */
+        .no-tickets, .no-products {
+            text-align: center;
+            padding: 40px 20px;
+            color: #666666;
+            font-style: italic;
+            font-size: 15px;
+        }
+
+        /* === CONTENEUR BOUTONS === */
+        .buttons-container {
+            margin: 20px 0 5px 0;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
         /* Bouton "ME L'ASSIGNER" natif Odoo — harmonisé, texte blanc */
         button[name="assign_ticket_to_self"] {
             height: 28px !important;
@@ -2109,13 +2940,13 @@
             submitBtn.addEventListener('click', async () => {
                 if (submitLocked) return;
                 submitLocked = true; submitBtn.disabled = true;
-                
+
                 // Marquer définitivement que le panneau a été traité pour ce ticket
                 const currentTicketId = _reasonPanelTicketId || sessionStorage.getItem('pendingReasonTicketId') || getTicketIdFromPage();
                 if (currentTicketId) {
                     sessionStorage.setItem(`reasonPanelCompleted_${currentTicketId}`, '1');
                 }
-                
+
                 sessionStorage.removeItem('pendingReasonPanel');
                 // Récupérer les IDs (ou noms si pas d'ID) des cases cochées
                 const cols = Array.from(panel.querySelectorAll('.col'));
@@ -2209,29 +3040,53 @@
     }
 
     async function addMany2ManyTagsViaDom(fieldName, names = []) {
+        console.log('[REASON] addMany2ManyTagsViaDom - Field:', fieldName, 'Names:', names);
+
         const wanted = uniqNormNames(names);
-        if (!wanted.length) return false;
+        if (!wanted.length) {
+            console.log('[REASON] Aucun nom à ajouter après normalisation');
+            return false;
+        }
 
         const root = document.querySelector(`.o_field_many2many_tags[name="${fieldName}"], .o_field_widget[name="${fieldName}"]`);
-        if (!root) return false;
+        console.log('[REASON] Root element trouvé:', !!root);
+
+        if (!root) {
+            console.error('[REASON] Impossible de trouver le champ:', fieldName);
+            return false;
+        }
 
         const existing = new Set(
             Array.from(root.querySelectorAll('.o_tag, .badge, .o_tag_badge_text'))
                 .map(el => normalizeReasonName(el.textContent || ''))
                 .filter(Boolean)
         );
+        console.log('[REASON] Étiquettes existantes:', Array.from(existing));
 
         const input = root.querySelector('input');
-        if (!(input instanceof HTMLInputElement)) return false;
+        console.log('[REASON] Input trouvé:', !!input, input instanceof HTMLInputElement);
+
+        if (!(input instanceof HTMLInputElement)) {
+            console.error('[REASON] Impossible de trouver l\'input pour le champ:', fieldName);
+            return false;
+        }
 
         let added = false;
         for (const name of wanted) {
-            if (existing.has(normalizeReasonName(name))) continue;
+            console.log('[REASON] Tentative d\'ajout de:', name);
 
+            if (existing.has(normalizeReasonName(name))) {
+                console.log('[REASON] Étiquette déjà présente:', name);
+                continue;
+            }
+
+            console.log('[REASON] Saisie de l\'étiquette:', name);
             input.focus();
             input.value = name;
             input.dispatchEvent(new Event('input', { bubbles: true }));
             await wait(180);
+
+            console.log('[REASON] Envoi de la touche Entrée');
             input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
             input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
             await wait(220);
@@ -2242,40 +3097,90 @@
                     .map(el => normalizeReasonName(el.textContent || ''))
                     .filter(Boolean)
             );
-            if (now.has(normalizeReasonName(name)) || String(input.value || '').trim() === '') {
+
+            const wasAdded = now.has(normalizeReasonName(name)) || String(input.value || '').trim() === '';
+            console.log('[REASON] Étiquette ajoutée:', name, '- Succès:', wasAdded);
+
+            if (wasAdded) {
                 added = true;
                 existing.add(normalizeReasonName(name));
             }
         }
+
+        console.log('[REASON] Résultat final addMany2ManyTagsViaDom:', added);
         return added;
     }
 
     async function applyTagsViaDom(hwNames = [], swNames = []) {
-        const hwOk = await addMany2ManyTagsViaDom('material_reason_tag_ids', hwNames);
-        const swOk = await addMany2ManyTagsViaDom('software_reason_tag_ids', swNames);
-        if (!hwOk && !swOk) return false;
+        console.log('[REASON] applyTagsViaDom - HW Names:', hwNames, 'SW Names:', swNames);
+
+        let hwOk = true;
+        let swOk = true;
+
+        if (hwNames.length > 0) {
+            console.log('[REASON] Application des étiquettes matériel via DOM...');
+            hwOk = await addMany2ManyTagsViaDom('material_reason_tag_ids', hwNames);
+            console.log('[REASON] Résultat étiquettes matériel:', hwOk);
+        }
+
+        if (swNames.length > 0) {
+            console.log('[REASON] Application des étiquettes logiciel via DOM...');
+            swOk = await addMany2ManyTagsViaDom('software_reason_tag_ids', swNames);
+            console.log('[REASON] Résultat étiquettes logiciel:', swOk);
+        }
+
+        if (!hwOk && !swOk) {
+            console.error('[REASON] Échec de l\'application des étiquettes via DOM');
+            return false;
+        }
+
+        console.log('[REASON] Sauvegarde du formulaire...');
         await wait(150);
         await saveForm();
+
+        console.log('[REASON] Application des étiquettes via DOM terminée');
         return true;
     }
 
     async function applyTagsToTicket(hwIds = [], swIds = [], hwNamesFallback = [], swNamesFallback = [], targetTicketId = null) {
         const ticketId = targetTicketId || sessionStorage.getItem('pendingReasonTicketId') || getTicketIdFromPage();
-        if (!ticketId) return false;
+        console.log('[REASON] applyTagsToTicket - Ticket ID:', ticketId);
+        console.log('[REASON] applyTagsToTicket - HW IDs:', hwIds, 'SW IDs:', swIds);
+        console.log('[REASON] applyTagsToTicket - HW Names:', hwNamesFallback, 'SW Names:', swNamesFallback);
+
+        if (!ticketId) {
+            console.error('[REASON] Aucun ticket ID trouvé');
+            return false;
+        }
 
         // Si on n'a pas d'IDs (fallback noms), on cherche par nom sans créer
         if (!hwIds.length && hwNamesFallback.length) {
-            const fields = await odooRpc('helpdesk.ticket', 'fields_get', [['material_reason_tag_ids'], ['relation']]) || {};
-            const rel = fields.material_reason_tag_ids?.relation;
-            if (rel) {
-                hwIds = await resolveTagIdsByName(rel, hwNamesFallback);
+            console.log('[REASON] Résolution des IDs matériel par nom...');
+            try {
+                const fields = await odooRpc('helpdesk.ticket', 'fields_get', [['material_reason_tag_ids'], ['relation']]) || {};
+                const rel = fields.material_reason_tag_ids?.relation;
+                console.log('[REASON] Relation matériel:', rel);
+                if (rel) {
+                    hwIds = await resolveTagIdsByName(rel, hwNamesFallback);
+                    console.log('[REASON] IDs matériel résolus:', hwIds);
+                }
+            } catch (error) {
+                console.error('[REASON] Erreur résolution IDs matériel:', error);
             }
         }
+
         if (!swIds.length && swNamesFallback.length) {
-            const fields = await odooRpc('helpdesk.ticket', 'fields_get', [['software_reason_tag_ids'], ['relation']]) || {};
-            const rel = fields.software_reason_tag_ids?.relation;
-            if (rel) {
-                swIds = await resolveTagIdsByName(rel, swNamesFallback);
+            console.log('[REASON] Résolution des IDs logiciel par nom...');
+            try {
+                const fields = await odooRpc('helpdesk.ticket', 'fields_get', [['software_reason_tag_ids'], ['relation']]) || {};
+                const rel = fields.software_reason_tag_ids?.relation;
+                console.log('[REASON] Relation logiciel:', rel);
+                if (rel) {
+                    swIds = await resolveTagIdsByName(rel, swNamesFallback);
+                    console.log('[REASON] IDs logiciel résolus:', swIds);
+                }
+            } catch (error) {
+                console.error('[REASON] Erreur résolution IDs logiciel:', error);
             }
         }
 
@@ -2283,39 +3188,72 @@
         // [4, id] = lier sans créer (many2many link)
         if (hwIds.length) vals.material_reason_tag_ids = hwIds.map(id => [4, id]);
         if (swIds.length) vals.software_reason_tag_ids = swIds.map(id => [4, id]);
+
+        console.log('[REASON] Valeurs à écrire:', vals);
+
         if (!Object.keys(vals).length) {
+            console.log('[REASON] Aucune valeur à écrire, fallback vers DOM');
             // Fallback non-admin : tenter via l'UI Odoo (many2many tags)
             return applyTagsViaDom(hwNamesFallback, swNamesFallback);
         }
 
-        const writeOk = await odooWrite('helpdesk.ticket', Number(ticketId), vals);
-        if (!writeOk) {
-            // Fallback non-admin : certains profils ne peuvent pas write via API mais peuvent via le widget UI.
+        console.log('[REASON] Tentative d\'écriture via API...');
+        try {
+            const writeOk = await odooWrite('helpdesk.ticket', Number(ticketId), vals);
+            console.log('[REASON] Résultat écriture API:', writeOk);
+
+            if (!writeOk) {
+                console.log('[REASON] Écriture API échouée, fallback vers DOM');
+                // Fallback non-admin : certains profils ne peuvent pas write via API mais peuvent via le widget UI.
+                return applyTagsViaDom(hwNamesFallback, swNamesFallback);
+            }
+
+            console.log('[REASON] Écriture API réussie, sauvegarde...');
+            await wait(300);
+            const saveBtn = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
+            if (saveBtn) {
+                console.log('[REASON] Clic sur le bouton sauvegarder');
+                saveBtn.click();
+            }
+
+            // Forcer le rechargement du formulaire pour afficher les tags sans F5
+            await wait(600);
+            try {
+                console.log('[REASON] Rechargement de la vue...');
+                // Méthode 1 : bouton discard puis reload (Odoo SPA)
+                const discardBtn = document.querySelector('button.o_form_button_discard, button[data-hotkey="j"]');
+                if (discardBtn) {
+                    console.log('[REASON] Clic sur discard');
+                    discardBtn.click();
+                    await wait(200);
+                }
+
+                // Méthode 2 : déclencher un reload via l'action manager Odoo
+                if (window.__owl__) {
+                    const env = window.__owl__?.apps?.values?.()?.next?.()?.value?.env;
+                    if (env?.services?.action) {
+                        console.log('[REASON] Restore via action manager');
+                        env.services.action.restore();
+                    }
+                }
+            } catch (reloadError) {
+                console.error('[REASON] Erreur lors du rechargement:', reloadError);
+            }
+
+            // Méthode 3 : reload de la vue courante via hashchange
+            const currentHash = window.location.hash;
+            window.location.hash = currentHash + '&_r=' + Date.now();
+            await wait(100);
+            window.history.replaceState(null, '', window.location.pathname + window.location.search + currentHash);
+
+            console.log('[REASON] Application des étiquettes terminée avec succès');
+            return true;
+
+        } catch (error) {
+            console.error('[REASON] Erreur lors de l\'écriture API:', error);
+            console.log('[REASON] Fallback vers DOM après erreur API');
             return applyTagsViaDom(hwNamesFallback, swNamesFallback);
         }
-        await wait(300);
-        const saveBtn = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
-        if (saveBtn) saveBtn.click();
-        // Forcer le rechargement du formulaire pour afficher les tags sans F5
-        await wait(600);
-        try {
-            // Méthode 1 : bouton discard puis reload (Odoo SPA)
-            const discardBtn = document.querySelector('button.o_form_button_discard, button[data-hotkey="j"]');
-            if (discardBtn) { discardBtn.click(); await wait(200); }
-            // Méthode 2 : déclencher un reload via l'action manager Odoo
-            if (window.__owl__) {
-                const env = window.__owl__?.apps?.values?.()?.next?.()?.value?.env;
-                if (env?.services?.action) {
-                    env.services.action.restore();
-                }
-            }
-        } catch (_) {}
-        // Méthode 3 : reload de la vue courante via hashchange
-        const currentHash = window.location.hash;
-        window.location.hash = currentHash + '&_r=' + Date.now();
-        await wait(100);
-        window.history.replaceState(null, '', window.location.pathname + window.location.search + currentHash);
-        return true;
     }
 
 
@@ -2643,21 +3581,6 @@
     // =========================================================
     let _alertSoundPlayed = false;
 
-    function jouerSonAlerte() {
-        try {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.connect(gain); gain.connect(ctx.destination);
-            osc.frequency.setValueAtTime(800, ctx.currentTime);
-            osc.frequency.setValueAtTime(1000, ctx.currentTime + 0.1);
-            osc.frequency.setValueAtTime(1200, ctx.currentTime + 0.2);
-            gain.gain.setValueAtTime(0.1, ctx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-            osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.3);
-        } catch (e) { /* audio non supporté */ }
-    }
-
     function updateTicketListAnimations() {
         if (!isTicketList()) return;
         document.querySelectorAll('.o_list_view .o_data_row').forEach(row => {
@@ -2690,8 +3613,8 @@
                     row.classList.add('ticket-bloquant');
                     row.style.border = '2px solid rgba(220,53,69,.8)';
                     row.style.borderRadius = '4px';
-                    // Son d'alerte une seule fois par session
-                    if (!_alertSoundPlayed) { _alertSoundPlayed = true; jouerSonAlerte(); }
+                    // Marquer comme alerté (sans son)
+                    _alertSoundPlayed = true;
                 }
             } else {
                 row.classList.remove('ticket-bloquant');
@@ -2958,6 +3881,684 @@
     }
 
     // =========================================================
+    // FONCTIONS HISTORIQUE ET PRODUITS CLIENTS - INTERFACE
+    // =========================================================
+
+    // Fonction pour formater la date
+    function formatDate(dateString) {
+        if (!dateString) return '';
+        const date = new Date(dateString);
+        if (isNaN(date.getTime())) return '';
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        return `${day}/${month}/${year}`;
+    }
+
+    // Fonction pour obtenir les infos de l'équipe
+    function getTeamInfo(teamData) {
+        const teamId = Array.isArray(teamData) ? teamData[0] : teamData;
+        const rawTeamName = Array.isArray(teamData) ? (teamData[1] || '') : '';
+        const normalizedTeamName = rawTeamName
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase();
+
+        console.log('[HISTORY] Team data:', { teamId, rawTeamName, normalizedTeamName });
+
+        // Correspondances basées sur les noms exacts d'Odoo
+        if (normalizedTeamName.includes('materiel n2')) {
+            return { icon: 'fa-wrench', class: 'MaterielN2', name: 'MaterielN2', label: 'Matériel N2' };
+        }
+        if (normalizedTeamName.includes('logiciel')) {
+            return { icon: 'fa-laptop', class: 'Logiciel', name: 'Logiciel', label: 'Logiciel' };
+        }
+        if (normalizedTeamName.includes('materiel') && !normalizedTeamName.includes('n2')) {
+            return { icon: 'fa-wrench', class: 'Materiel', name: 'Materiel', label: 'Matériel' };
+        }
+        if (normalizedTeamName.includes('rma') || normalizedTeamName.includes('sav')) {
+            return { icon: 'fa-exchange', class: 'RMA', name: 'RMA', label: 'RMA/SAV' };
+        }
+        if (normalizedTeamName.includes('mail sav')) {
+            return { icon: 'fa-envelope', class: 'MailSAV', name: 'MailSAV', label: 'Mail SAV' };
+        }
+        if (normalizedTeamName.includes('winteam')) {
+            return { icon: 'fa-star', class: 'Winteam', name: 'Winteam', label: 'Winteam' };
+        }
+
+        // Correspondances par ID (fallback)
+        switch(teamId) {
+            case 8:
+                return { icon: 'fa-laptop', class: 'Logiciel', name: 'Logiciel', label: 'Logiciel' };
+            case 1:
+                return { icon: 'fa-wrench', class: 'Materiel', name: 'Materiel', label: 'Matériel' };
+            case 9:
+                return { icon: 'fa-exchange', class: 'RMA', name: 'RMA', label: 'RMA/SAV' };
+            case 10:
+                return { icon: 'fa-wrench', class: 'MaterielN2', name: 'MaterielN2', label: 'Matériel N2' };
+            default:
+                // Utiliser le nom brut comme fallback
+                const cleanName = rawTeamName.replace(/[^a-zA-Z0-9]/g, '');
+                return {
+                    icon: 'fa-question',
+                    class: cleanName || 'Unknown',
+                    name: cleanName || 'Unknown',
+                    label: rawTeamName || 'Inconnu'
+                };
+        }
+    }
+
+    // Fonction pour traduire les stages et ajouter les classes CSS
+    function translateStage(stageName) {
+        const stageTranslations = {
+            'New': { text: 'Nouveau', class: 'nouveau' },
+            'In Progress': { text: 'En cours', class: 'en-cours' },
+            'Pending': { text: 'En attente', class: 'en-attente' },
+            'Solved': { text: 'Résolu', class: 'resolu' },
+            'Canceled': { text: 'Annulé', class: 'annule' },
+            'Cancelled': { text: 'Annulé', class: 'annule' },
+            'Closed': { text: 'Fermé', class: 'ferme' },
+            'Nouveau': { text: 'Nouveau', class: 'nouveau' },
+            'En cours': { text: 'En cours', class: 'en-cours' },
+            'En attente': { text: 'En attente', class: 'en-attente' },
+            'Résolu': { text: 'Résolu', class: 'resolu' },
+            'Annulé': { text: 'Annulé', class: 'annule' },
+            'Fermé': { text: 'Fermé', class: 'ferme' }
+        };
+
+        const result = stageTranslations[stageName];
+        if (result) {
+            return result;
+        }
+
+        // Fallback pour les statuts non reconnus
+        return { text: stageName, class: 'autre' };
+    }
+
+    // Fonction pour mettre à jour la liste des tickets
+    function updateTicketsList(tickets) {
+        const ticketsList = document.getElementById('ticketsList');
+        if (!ticketsList) {
+            console.log('[HISTORY] Element ticketsList non trouvé');
+            return;
+        }
+
+        console.log('[HISTORY] updateTicketsList appelée avec:', tickets);
+
+        // Gérer différents formats de réponse
+        let records = [];
+        if (tickets && tickets.records) {
+            records = tickets.records;
+        } else if (tickets && tickets.result && tickets.result.records) {
+            records = tickets.result.records;
+        } else if (Array.isArray(tickets)) {
+            records = tickets;
+        }
+
+        console.log('[HISTORY] Records extraits:', records);
+
+        if (!records || records.length === 0) {
+            ticketsList.innerHTML = '<div class="no-tickets">Aucun ticket trouvé</div>';
+            return;
+        }
+
+        const html = records.map(ticket => {
+            const teamInfo = getTeamInfo(ticket.team_id);
+            const stageInfo = translateStage(ticket.stage_id ? ticket.stage_id[1] : 'Inconnu');
+            const userName = ticket.user_id ? ticket.user_id[1] : 'Non assigné';
+
+            return `
+                <div class="ticket-item" data-team="${teamInfo.name}" data-ticket-id="${ticket.id}">
+                    <div class="ticket-header">
+                        <span class="ticket-title">${ticket.name || 'Sans titre'}</span>
+                        <span class="ticket-date">
+                            <i class="fa fa-calendar"></i> ${formatDate(ticket.create_date)}
+                            ${ticket.close_date ? `
+                                <i class="fa fa-arrow-right mx-1"></i>
+                                <i class="fa fa-calendar-check-o"></i> ${formatDate(ticket.close_date)}
+                            ` : ''}
+                        </span>
+                    </div>
+                    <div class="ticket-info">
+                        <div class="ticket-team" data-team="${teamInfo.name}">
+                            <i class="fa ${teamInfo.icon}"></i>
+                            ${teamInfo.label || teamInfo.name}
+                        </div>
+                        <div class="ticket-assignee">
+                            <i class="fa fa-user"></i>
+                            ${userName}
+                        </div>
+                        <span class="ticket-status ${stageInfo.class}">${stageInfo.text}</span>
+                    </div>
+                    ${ticket.description ? `
+                        <div class="ticket-description">
+                            <strong>Description:</strong><br>
+                            ${ticket.description}
+                        </div>
+                    ` : ''}
+                    ${ticket.request_answer ? `
+                        <div class="ticket-response">
+                            <div class="ticket-response-header">
+                                <i class="fa fa-comment"></i>
+                                <span>Note interne</span>
+                            </div>
+                            <div class="ticket-response-content">
+                                ${ticket.request_answer}
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }).join('');
+
+        ticketsList.innerHTML = html;
+
+        // Ajouter les événements de clic pour ouvrir les tickets
+        ticketsList.querySelectorAll('.ticket-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const ticketId = item.dataset.ticketId;
+                if (ticketId) {
+                    console.log('[HISTORY] Ouverture du ticket:', ticketId);
+                    openTicketInNewTab(ticketId);
+                }
+            });
+        });
+
+        // Ajouter un compteur de tickets
+        const headerElement = document.querySelector('.historique-header span');
+        if (headerElement) {
+            headerElement.textContent = `Historique des tickets (${records.length})`;
+        }
+
+        console.log('[HISTORY] Liste des tickets mise à jour avec', records.length, 'tickets');
+    }
+
+    // Fonction pour configurer les filtres de tickets
+    function setupTicketFilters() {
+        const searchInput = document.getElementById('ticketSearch');
+        const teamFilter = document.getElementById('teamFilter');
+
+        if (searchInput && teamFilter) {
+            const filterTickets = () => {
+                const searchTerm = searchInput.value.toLowerCase();
+                const selectedTeam = teamFilter.value;
+                const tickets = document.querySelectorAll('.ticket-item');
+
+                tickets.forEach(ticket => {
+                    // Rechercher dans le titre
+                    const title = ticket.querySelector('.ticket-title').textContent.toLowerCase();
+
+                    // Rechercher dans la description
+                    const descriptionElement = ticket.querySelector('.ticket-description');
+                    const description = descriptionElement ? descriptionElement.textContent.toLowerCase() : '';
+
+                    // Rechercher dans la note interne
+                    const responseElement = ticket.querySelector('.ticket-response-content');
+                    const response = responseElement ? responseElement.textContent.toLowerCase() : '';
+
+                    // Rechercher dans les informations du ticket (utilisateur, etc.)
+                    const assigneeElement = ticket.querySelector('.ticket-assignee');
+                    const assignee = assigneeElement ? assigneeElement.textContent.toLowerCase() : '';
+
+                    const team = ticket.dataset.team;
+
+                    // Vérifier si le terme de recherche est présent dans n'importe quel champ
+                    const matchesSearch = !searchTerm ||
+                        title.includes(searchTerm) ||
+                        description.includes(searchTerm) ||
+                        response.includes(searchTerm) ||
+                        assignee.includes(searchTerm);
+
+                    const matchesTeam = !selectedTeam || team === selectedTeam;
+
+                    ticket.style.display = matchesSearch && matchesTeam ? '' : 'none';
+                });
+
+                // Compter les tickets visibles
+                const visibleTickets = document.querySelectorAll('.ticket-item:not([style*="display: none"])');
+                const headerElement = document.querySelector('.historique-header span');
+                if (headerElement) {
+                    const totalTickets = document.querySelectorAll('.ticket-item').length;
+                    if (searchTerm || selectedTeam) {
+                        headerElement.textContent = `Historique des tickets (${visibleTickets.length}/${totalTickets})`;
+                    } else {
+                        headerElement.textContent = `Historique des tickets (${totalTickets})`;
+                    }
+                }
+            };
+
+            searchInput.addEventListener('input', filterTickets);
+            teamFilter.addEventListener('change', filterTickets);
+        }
+    }
+
+    // Fonction pour mettre à jour la liste des produits
+    function updateProductsList(products) {
+        const productsList = document.getElementById('productsList');
+        if (!productsList) return;
+
+        if (!products || !products.result || !products.result.records || products.result.records.length === 0) {
+            productsList.innerHTML = '<div class="no-products">Aucun produit trouvé</div>';
+            return;
+        }
+
+        const html = products.result.records.map(product => {
+            const type = product.type === 'express' ? 'Express' : 'Normal';
+            const typeClass = product.type === 'express' ? 'express-product' : 'normal-product';
+            const categName = product.categ_id ? product.categ_id[1] : 'Non catégorisé';
+
+            return `
+                <div class="product-item ${typeClass}" data-type="${product.type}">
+                    <div class="product-header">
+                        <span class="product-title">${product.name}</span>
+                        <span class="product-date">
+                            <i class="fa fa-calendar"></i> ${formatDate(product.create_date)}
+                        </span>
+                    </div>
+                    <div class="product-info">
+                        ${product.default_code ? `
+                            <div class="product-ref">
+                                <i class="fa fa-barcode"></i>
+                                Réf: ${product.default_code}
+                            </div>
+                        ` : ''}
+                        <div class="product-category">
+                            <i class="fa fa-tag"></i>
+                            ${categName}
+                        </div>
+                        <span class="product-type">${type}</span>
+                    </div>
+                    ${product.description ? `
+                        <div class="product-description">
+                            <strong>Description:</strong><br>
+                            ${product.description}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }).join('');
+
+        productsList.innerHTML = html;
+
+        // Ajouter un compteur de produits
+        const headerElement = document.querySelector('.produits-header span');
+        if (headerElement) {
+            headerElement.textContent = `Produits du client (${products.result.records.length})`;
+        }
+    }
+
+    // Fonction pour configurer les filtres de produits
+    function setupProductFilters() {
+        const searchInput = document.getElementById('productSearch');
+        const typeFilter = document.getElementById('typeFilter');
+
+        if (searchInput && typeFilter) {
+            const filterProducts = () => {
+                const searchTerm = searchInput.value.toLowerCase();
+                const selectedType = typeFilter.value;
+                const products = document.querySelectorAll('.product-item');
+
+                products.forEach(product => {
+                    // Rechercher dans le titre
+                    const title = product.querySelector('.product-title').textContent.toLowerCase();
+
+                    // Rechercher dans la description
+                    const descriptionElement = product.querySelector('.product-description');
+                    const description = descriptionElement ? descriptionElement.textContent.toLowerCase() : '';
+
+                    // Rechercher dans les informations du produit (référence, etc.)
+                    const infoElements = product.querySelectorAll('.product-info div');
+                    let allInfo = '';
+                    infoElements.forEach(info => {
+                        allInfo += info.textContent.toLowerCase() + ' ';
+                    });
+
+                    const type = product.dataset.type;
+
+                    // Vérifier si le terme de recherche est présent dans n'importe quel champ
+                    const matchesSearch = !searchTerm ||
+                        title.includes(searchTerm) ||
+                        description.includes(searchTerm) ||
+                        allInfo.includes(searchTerm);
+
+                    const matchesType = !selectedType || type === selectedType;
+
+                    product.style.display = matchesSearch && matchesType ? '' : 'none';
+                });
+
+                // Compter les produits visibles
+                const visibleProducts = document.querySelectorAll('.product-item:not([style*="display: none"])');
+                const headerElement = document.querySelector('.produits-header span');
+                if (headerElement) {
+                    const totalProducts = document.querySelectorAll('.product-item').length;
+                    if (searchTerm || selectedType) {
+                        headerElement.textContent = `Produits du client (${visibleProducts.length}/${totalProducts})`;
+                    } else {
+                        headerElement.textContent = `Produits du client (${totalProducts})`;
+                    }
+                }
+            };
+
+            searchInput.addEventListener('input', filterProducts);
+            typeFilter.addEventListener('change', filterProducts);
+        }
+    }
+
+    // Fonction pour ajouter l'historique des tickets
+    async function addTicketHistory() {
+        if (historyAdded) return;
+
+        const formSheet = document.querySelector('.o_form_sheet');
+        if (!formSheet) return;
+
+        const buttonContainer = document.querySelector('.buttons-container');
+        if (!buttonContainer) return;
+
+        // Créer la zone d'historique
+        const historyContainer = document.createElement('div');
+        historyContainer.id = 'zone_historique_tickets';
+        historyContainer.className = 'history-container';
+
+        historyContainer.innerHTML = `
+            <div class="historique-header">
+                <div class="historique-header-left">
+                    <span>Historique des tickets</span>
+                    <div class="theme-toggle-container">
+                        <button class="theme-toggle-btn" id="theme-toggle" title="Basculer le thème sombre">
+                            <i class="fa fa-moon-o"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="historique-header-right">
+                    <div class="ticket-filters">
+                        <input type="text" class="filter-input" placeholder="Rechercher (titre, description, notes, utilisateur)..." id="ticketSearch">
+                        <select class="filter-input" id="teamFilter">
+                            <option value="">Toutes les équipes</option>
+                            <option value="Logiciel">Logiciel</option>
+                            <option value="Materiel">Matériel</option>
+                            <option value="MaterielN2">Matériel N2</option>
+                            <option value="RMA">RMA/SAV</option>
+                            <option value="MailSAV">Mail SAV</option>
+                            <option value="Winteam">Winteam</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div id="ticketsList">
+                <div class="no-tickets">Chargement des tickets...</div>
+            </div>
+        `;
+
+        buttonContainer.insertAdjacentElement('afterend', historyContainer);
+
+        // Ajouter la logique du bouton de thème sombre
+        const themeToggle = document.getElementById('theme-toggle');
+        if (themeToggle) {
+            // Vérifier l'état actuel du thème
+            const isDark = localStorage.getItem('odoo-history-theme') === 'dark';
+            if (isDark) {
+                document.body.classList.add('dark-theme');
+                themeToggle.classList.add('active');
+                themeToggle.innerHTML = '<i class="fa fa-sun-o"></i>';
+            }
+
+            themeToggle.addEventListener('click', () => {
+                const isCurrentlyDark = document.body.classList.contains('dark-theme');
+
+                if (isCurrentlyDark) {
+                    // Passer en mode clair
+                    document.body.classList.remove('dark-theme');
+                    themeToggle.classList.remove('active');
+                    themeToggle.innerHTML = '<i class="fa fa-moon-o"></i>';
+                    localStorage.setItem('odoo-history-theme', 'light');
+                } else {
+                    // Passer en mode sombre
+                    document.body.classList.add('dark-theme');
+                    themeToggle.classList.add('active');
+                    themeToggle.innerHTML = '<i class="fa fa-sun-o"></i>';
+                    localStorage.setItem('odoo-history-theme', 'dark');
+                }
+            });
+        }
+
+        // Charger les tickets
+        const tickets = await fetchClientTickets();
+        if (tickets) {
+            updateTicketsList(tickets);
+        }
+
+        // Ajouter les gestionnaires d'événements pour les filtres
+        setupTicketFilters();
+
+        // Afficher selon l'état sauvegardé
+        const shouldBeVisible = getHistoryState();
+        if (shouldBeVisible) {
+            historyContainer.classList.add('visible');
+            const button = document.getElementById('showHistoryButton');
+            if (button) {
+                button.innerHTML = '<i class="fa fa-times"></i> Masquer l\'historique';
+            }
+        }
+
+        historyAdded = true;
+        return historyContainer;
+    }
+
+    // Fonction pour ajouter la section produits du client
+    async function addClientProducts() {
+        if (productsAdded) return;
+
+        const formSheet = document.querySelector('.o_form_sheet');
+        if (!formSheet) return;
+
+        const buttonContainer = document.querySelector('.buttons-container');
+        if (!buttonContainer) return;
+
+        // Créer la zone de produits
+        const productsContainer = document.createElement('div');
+        productsContainer.id = 'zone_produits_client';
+        productsContainer.className = 'products-container';
+
+        productsContainer.innerHTML = `
+            <div class="produits-header">
+                <div class="produits-header-left">
+                    <span>Produits du client</span>
+                </div>
+                <div class="produits-header-right">
+                    <div class="product-filters">
+                        <input type="text" class="filter-input" placeholder="Rechercher (nom, description, référence, SN)..." id="productSearch">
+                        <select class="filter-input" id="typeFilter">
+                            <option value="">Tous les types</option>
+                            <option value="normal">Normal</option>
+                            <option value="express">Express</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div id="productsList">
+                <div class="no-products">Chargement des produits...</div>
+            </div>
+        `;
+
+        buttonContainer.insertAdjacentElement('afterend', productsContainer);
+
+        // Charger les produits
+        const products = await fetchClientProducts();
+        if (products) {
+            updateProductsList(products);
+        }
+
+        // Ajouter les gestionnaires d'événements pour les filtres
+        setupProductFilters();
+
+        // Afficher selon l'état sauvegardé
+        const shouldBeVisible = getProductsState();
+        if (shouldBeVisible) {
+            productsContainer.classList.add('visible');
+            const button = document.getElementById('showProductsButton');
+            if (button) {
+                button.innerHTML = '<i class="fa fa-times"></i> Masquer les produits';
+            }
+        }
+
+        productsAdded = true;
+        return productsContainer;
+    }
+
+    // Fonction pour ajouter les boutons d'historique et de produits
+    function addHistoryAndProductsButtons() {
+        if (!isValidUrlForHistory()) return;
+        if (historyButtonAdded && productsButtonAdded) return;
+
+        const formSheet = document.querySelector('.o_form_sheet');
+        if (!formSheet) return;
+
+        // Vérifier si le conteneur de boutons existe déjà
+        let buttonContainer = document.querySelector('.buttons-container');
+
+        // Créer le conteneur pour les boutons s'il n'existe pas
+        if (!buttonContainer) {
+            buttonContainer = document.createElement('div');
+            buttonContainer.className = 'buttons-container';
+            formSheet.appendChild(buttonContainer);
+        }
+
+        // Ajouter le bouton d'historique
+        if (!historyButtonAdded && !document.getElementById('showHistoryButton')) {
+            const historyButton = document.createElement('button');
+            historyButton.id = 'showHistoryButton';
+            historyButton.innerHTML = '<i class="fa fa-history"></i> Historique des tickets';
+            historyButton.title = 'Afficher/masquer l\'historique des tickets';
+
+            historyButton.addEventListener('click', function() {
+                let historyContainer = document.getElementById('zone_historique_tickets');
+
+                if (historyContainer) {
+                    historyContainer.classList.toggle('visible');
+                    const isVisible = historyContainer.classList.contains('visible');
+                    saveHistoryState(isVisible);
+
+                    if (isVisible) {
+                        historyButton.innerHTML = '<i class="fa fa-times"></i> Masquer l\'historique';
+                    } else {
+                        historyButton.innerHTML = '<i class="fa fa-history"></i> Historique des tickets';
+                    }
+                } else {
+                    addTicketHistory().then((newContainer) => {
+                        if (newContainer) {
+                            newContainer.classList.add('visible');
+                            saveHistoryState(true);
+                            historyButton.innerHTML = '<i class="fa fa-times"></i> Masquer l\'historique';
+                        }
+                    });
+                }
+            });
+
+            buttonContainer.appendChild(historyButton);
+            historyButtonAdded = true;
+        }
+
+        // Ajouter le bouton des produits
+        if (!productsButtonAdded && !document.getElementById('showProductsButton')) {
+            const productsButton = document.createElement('button');
+            productsButton.id = 'showProductsButton';
+            productsButton.innerHTML = '<i class="fa fa-cubes"></i> Produits du client';
+            productsButton.title = 'Afficher/masquer les produits du client';
+
+            productsButton.addEventListener('click', function() {
+                let productsContainer = document.getElementById('zone_produits_client');
+
+                if (productsContainer) {
+                    const wasVisible = productsContainer.classList.contains('visible');
+
+                    if (wasVisible) {
+                        productsContainer.classList.remove('visible');
+                        productsButton.innerHTML = '<i class="fa fa-cubes"></i> Produits du client';
+                        saveProductsState(false);
+                    } else {
+                        productsContainer.classList.add('visible');
+                        productsButton.innerHTML = '<i class="fa fa-times"></i> Masquer les produits';
+                        saveProductsState(true);
+                    }
+                } else {
+                    addClientProducts().then((newContainer) => {
+                        if (newContainer) {
+                            newContainer.classList.add('visible');
+                            saveProductsState(true);
+                            productsButton.innerHTML = '<i class="fa fa-times"></i> Masquer les produits';
+                        }
+                    });
+                }
+            });
+
+            buttonContainer.appendChild(productsButton);
+            productsButtonAdded = true;
+        }
+    }
+
+    // Fonction pour gérer la navigation et réinitialiser les états
+    function handleHistoryNavigation() {
+        if (isProcessingNavigation) return;
+
+        try {
+            isProcessingNavigation = true;
+
+            // Réinitialiser les états pour s'assurer que tout est bien recréé
+            historyAdded = false;
+            historyButtonAdded = false;
+            productsAdded = false;
+            productsButtonAdded = false;
+
+            // Supprimer les conteneurs existants pour éviter les doublons
+            const existingHistory = document.getElementById('zone_historique_tickets');
+            if (existingHistory) {
+                existingHistory.remove();
+            }
+
+            const existingProducts = document.getElementById('zone_produits_client');
+            if (existingProducts) {
+                existingProducts.remove();
+            }
+
+            // Supprimer les boutons existants
+            const existingHistoryButton = document.getElementById('showHistoryButton');
+            if (existingHistoryButton) {
+                existingHistoryButton.remove();
+            }
+
+            const existingProductsButton = document.getElementById('showProductsButton');
+            if (existingProductsButton) {
+                existingProductsButton.remove();
+            }
+
+            // Ajouter les boutons immédiatement
+            setTimeout(() => {
+                addHistoryAndProductsButtons();
+
+                // Si l'état est sauvegardé comme visible, créer immédiatement l'historique et les produits
+                if (getHistoryState()) {
+                    const historyButton = document.getElementById('showHistoryButton');
+                    if (historyButton) {
+                        historyButton.click();
+                    }
+                }
+
+                if (getProductsState()) {
+                    const productsButton = document.getElementById('showProductsButton');
+                    if (productsButton) {
+                        productsButton.click();
+                    }
+                }
+            }, 500);
+
+        } finally {
+            setTimeout(() => {
+                isProcessingNavigation = false;
+            }, 1000);
+        }
+    }
+
+    // =========================================================
     // OBSERVER PRINCIPAL + INITIALISATION
     // =========================================================
     let lastUrl = window.location.href;
@@ -2967,12 +4568,14 @@
         styleCloseButton();
         addInitialesButton();
         addClearAssignButton();
+        addHistoryAndProductsButtons(); // Nouvelle fonction pour l'historique et les produits
         hookDeleteAuditClicks();
         hookOdooDeleteRpcAudit();
         scheduleDevisUpdate(100);
         scheduleOpenTicketsUpdate(100);
         applyInternetBlink();
         scanCategoryStyles();
+        initializeTheme(); // Initialiser le thème
         // Précharger les listes raisons dès qu'on est sur un ticket
         if (isTicketPage() && !_reasonListsCache) fetchReasonLists().catch(() => {});
     }
@@ -3043,7 +4646,7 @@
             sessionStorage.removeItem('pendingReasonTicketId');
             sessionStorage.removeItem('reasonPanelForceOpen');
             sessionStorage.removeItem('reasonPanelProtectedTicketId');
-            
+
             // Nettoyer les anciens flags de completion (garder seulement les 10 plus récents)
             const completionKeys = Object.keys(sessionStorage).filter(key => key.startsWith('reasonPanelCompleted_'));
             if (completionKeys.length > 10) {
@@ -3052,7 +4655,12 @@
                 });
             }
             _assistanceCache.clear();
-            _assistanceTagIds = null;            // Plusieurs tentatives pour s'assurer que le DOM Odoo est prêt
+            _assistanceTagIds = null;
+
+            // Gérer la navigation pour l'historique et les produits
+            handleHistoryNavigation();
+
+            // Plusieurs tentatives pour s'assurer que le DOM Odoo est prêt
             setTimeout(runAll, 400);
             setTimeout(runAll, 900);
             setTimeout(runAll, 1800);
@@ -3104,4 +4712,1063 @@
         setTimeout(applyPrioritaireBadges, 1200);
     });
 
-})();
+    // =========================================================
+    // WIDGET POINTEUSE EMPLOYÉS
+    // =========================================================
+   // =========================================================
+// WIDGET POINTEUSE EMPLOYÉS - VERSION AMÉLIORÉE
+// =========================================================
+// Widget de gestion de présence
+
+const PRESENCE_API_URL = 'https://hotline.sippharma.fr/odoospeek/portal/api/timeclock_ingest.php';
+const PRESENCE_API_KEY = 'spk_1_2E6RrG4l2gQ6j1o0vQxV3p9mN8yAqK5lVZ3c4rB1uS7dT9wX0yZ2a';
+
+// État de la présence
+let presenceState = {
+    lastAction: localStorage.getItem('tm_last_clock_action') || null,
+    lastActionTime: parseInt(localStorage.getItem('tm_last_clock_time')) || 0,
+    endTime: localStorage.getItem('tm_planned_end_time') || null,
+    reminderShown: false,
+    blinkInterval: null
+};
+
+function createPresenceWidget() {
+    // Vérifier si le widget existe déjà
+    if (document.getElementById('tm-presence-widget')) return;
+
+    const widget = document.createElement('div');
+    widget.id = 'tm-presence-widget';
+    widget.innerHTML = `
+        <div id="tm-presence-btn" title="Gestion de présence">
+            <div class="tm-status-indicator" id="tm-status-indicator"></div>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+        </div>
+        <div id="tm-presence-panel" style="display:none">
+            <div class="tm-panel-header">
+                <span class="tm-panel-title">Gestion de présence</span>
+            </div>
+
+            <!-- Boutons d'action avec labels -->
+            <div class="tm-actions-row">
+                <button class="tm-action-btn-small tm-action-in" data-action="clock_in">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <path d="M9 11l3 3L22 4"></path>
+                        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+                    </svg>
+                    <span class="tm-action-label">Dispo</span>
+                </button>
+                <button class="tm-action-btn-small tm-action-out" data-action="clock_out">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <path d="M18 6L6 18M6 6l12 12"></path>
+                    </svg>
+                    <span class="tm-action-label">Absent</span>
+                </button>
+                <button class="tm-action-btn-small tm-action-pause" data-action="break_start">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="10" y1="15" x2="10" y2="9"></line>
+                        <line x1="14" y1="15" x2="14" y2="9"></line>
+                    </svg>
+                    <span class="tm-action-label">Pause</span>
+                </button>
+                <button class="tm-action-btn-small tm-action-resume" data-action="break_end">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polygon points="10 8 16 12 10 16 10 8"></polygon>
+                    </svg>
+                    <span class="tm-action-label">Reprise</span>
+                </button>
+            </div>
+
+            <div id="tm-presence-status" class="tm-status"></div>
+
+            <!-- Liste des utilisateurs -->
+            <div class="tm-presence-section-title">Équipe</div>
+            <div id="tm-presence-inline" class="tm-presence-inline">
+                <div class="tm-presence-loading-inline">Chargement...</div>
+            </div>
+        </div>
+
+        <!-- Modal de rappel -->
+        <div id="tm-reminder-modal" style="display:none">
+            <div class="tm-reminder-content">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#00A09D" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                <div class="tm-reminder-title">N'oubliez pas de mettre à jour votre statut!</div>
+                <div class="tm-reminder-text">Vous êtes connecté depuis plus de 10 minutes</div>
+                <button id="tm-reminder-close" class="tm-reminder-btn">J'ai compris</button>
+            </div>
+        </div>
+
+        <!-- Modal heure de fin -->
+        <div id="tm-endtime-modal" style="display:none">
+            <div class="tm-endtime-content">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#00A09D" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                <div class="tm-endtime-title">À quelle heure terminez-vous ?</div>
+                <div class="tm-endtime-text">Optionnel - Pour vous rappeler de changer votre statut</div>
+                <input type="time" id="tm-endtime-input" class="tm-endtime-input" />
+                <div class="tm-endtime-buttons">
+                    <button id="tm-endtime-skip" class="tm-endtime-btn-skip">Passer</button>
+                    <button id="tm-endtime-save" class="tm-endtime-btn-save">Enregistrer</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(widget);
+
+    // Toggle panel
+    const btn = document.getElementById('tm-presence-btn');
+    const panel = document.getElementById('tm-presence-panel');
+
+    btn.addEventListener('click', () => {
+        const isVisible = panel.style.display !== 'none';
+        panel.style.display = isVisible ? 'none' : 'block';
+        if (!isVisible) {
+            // Charger automatiquement les présences à l'ouverture
+            loadPresenceInPanel();
+        }
+    });
+
+    // Initialiser le témoin lumineux au chargement
+    if (presenceState.lastAction) {
+        updateStatusIndicator(presenceState.lastAction);
+    }
+
+    // Fermer le panel si on clique en dehors
+    document.addEventListener('click', (e) => {
+        const widget = document.getElementById('tm-presence-widget');
+        if (widget && !widget.contains(e.target)) {
+            panel.style.display = 'none';
+        }
+    });
+
+    // Gérer les clics sur les boutons de pointage
+    document.querySelectorAll('.tm-action-btn-small').forEach(button => {
+        button.addEventListener('click', async () => {
+            const action = button.getAttribute('data-action');
+
+            // Si c'est une arrivée, demander l'heure de fin d'abord
+            if (action === 'clock_in') {
+                showEndTimeModal();
+            } else {
+                await sendPresenceAction(action);
+            }
+        });
+    });
+
+    // Fermer le modal de rappel
+    document.getElementById('tm-reminder-close').addEventListener('click', () => {
+        closeReminderModal();
+    });
+
+    // Modal heure de fin - Passer
+    document.getElementById('tm-endtime-skip').addEventListener('click', async () => {
+        closeEndTimeModal();
+        await sendPresenceAction('clock_in');
+    });
+
+    // Modal heure de fin - Enregistrer
+    document.getElementById('tm-endtime-save').addEventListener('click', async () => {
+        const endTime = document.getElementById('tm-endtime-input').value;
+        if (endTime) {
+            presenceState.endTime = endTime;
+            localStorage.setItem('tm_planned_end_time', endTime);
+        }
+        closeEndTimeModal();
+        await sendPresenceAction('clock_in');
+    });
+
+    // Démarrer la vérification du rappel
+    startReminderCheck();
+}
+
+async function sendPresenceAction(actionType) {
+    try {
+        // Récupérer les infos utilisateur Odoo
+        const userName = getOdooCurrentUserName() || 'Utilisateur';
+        const userEmail = (window.odoo && odoo.session_info && odoo.session_info.email) || '';
+        const userId = (window.odoo && odoo.session_info && odoo.session_info.uid) || null;
+
+        showStatus('Envoi en cours...', '#00A09D');
+
+        // Créer un timestamp en heure locale (pas UTC)
+        const now = new Date();
+        const localTimestamp = now.getFullYear() + '-' +
+            String(now.getMonth() + 1).padStart(2, '0') + '-' +
+            String(now.getDate()).padStart(2, '0') + ' ' +
+            String(now.getHours()).padStart(2, '0') + ':' +
+            String(now.getMinutes()).padStart(2, '0') + ':' +
+            String(now.getSeconds()).padStart(2, '0');
+
+        const formData = new URLSearchParams({
+            api_key: PRESENCE_API_KEY,
+            employee_name: userName,
+            employee_email: userEmail,
+            action_type: actionType,
+            timestamp: localTimestamp,
+            odoo_user_id: userId || '',
+            machine_name: navigator.userAgent,
+            notes: presenceState.endTime ? `Fin prévue: ${presenceState.endTime}` : ''
+        });
+
+        // Utiliser GM_xmlhttpRequest au lieu de fetch pour éviter les problèmes CORS
+        const result = await new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: PRESENCE_API_URL,
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Api-Key': PRESENCE_API_KEY
+                },
+                data: formData.toString(),
+                onload: function(response) {
+                    try {
+                        const data = JSON.parse(response.responseText);
+                        resolve(data);
+                    } catch (e) {
+                        reject(new Error('Erreur de parsing JSON'));
+                    }
+                },
+                onerror: function(error) {
+                    reject(new Error('Erreur réseau'));
+                }
+            });
+        });
+
+        if (result.ok) {
+            // Sauvegarder l'action
+            presenceState.lastAction = actionType;
+            presenceState.lastActionTime = Date.now();
+            localStorage.setItem('tm_last_clock_action', actionType);
+            localStorage.setItem('tm_last_clock_time', Date.now().toString());
+
+            // Arrêter le clignotement et réinitialiser le rappel
+            stopBlinking();
+            presenceState.reminderShown = false;
+
+            // Mettre à jour le témoin lumineux
+            updateStatusIndicator(actionType);
+
+            const labels = {
+                'clock_in': '✅ Statut: Disponible',
+                'clock_out': '✅ Statut: Non disponible',
+                'break_start': '✅ Statut: En pause',
+                'break_end': '✅ Statut: Disponible'
+            };
+            showStatus(labels[actionType] || '✅ Enregistré', '#28a745');
+
+            // Recharger la liste des présences
+            setTimeout(() => loadPresenceInPanel(), 500);
+        } else {
+            throw new Error(result.error || 'Erreur inconnue');
+        }
+    } catch (error) {
+        console.error('[Présence] Erreur:', error);
+        showStatus('❌ Erreur: ' + error.message, '#dc2626');
+    }
+}
+
+function showStatus(message, color) {
+    const statusEl = document.getElementById('tm-presence-status');
+    if (statusEl) {
+        statusEl.textContent = message;
+        statusEl.style.color = color;
+
+        setTimeout(() => {
+            statusEl.textContent = '';
+        }, 3000);
+    }
+}
+
+function startReminderCheck() {
+    // Vérifier toutes les minutes
+    setInterval(() => {
+        const now = Date.now();
+        const tenMinutes = 10 * 60 * 1000;
+
+        // Vérifier si l'heure de fin est dépassée
+        if (presenceState.endTime && presenceState.lastAction === 'clock_in') {
+            const currentTime = new Date();
+            const [endHour, endMinute] = presenceState.endTime.split(':').map(Number);
+            const endTimeToday = new Date();
+            endTimeToday.setHours(endHour, endMinute, 0, 0);
+
+            // Si l'heure de fin est dépassée, passer en non dispo automatiquement
+            if (currentTime >= endTimeToday) {
+                console.log('[Présence] Heure de fin dépassée, passage en non dispo automatique');
+                sendPresenceAction('clock_out');
+                presenceState.endTime = null;
+                localStorage.removeItem('tm_planned_end_time');
+                return;
+            }
+        }
+
+        // Si pas d'action ET pas encore montré le rappel
+        // OU si dernière action il y a plus de 10 min ET pas encore montré le rappel
+        if (!presenceState.lastAction && !presenceState.reminderShown) {
+            if (now - presenceState.lastActionTime > tenMinutes || presenceState.lastActionTime === 0) {
+                showReminderModal();
+                startBlinking();
+                presenceState.reminderShown = true;
+            }
+        }
+    }, 60000); // Vérifier toutes les minutes
+}
+
+function showReminderModal() {
+    const modal = document.getElementById('tm-reminder-modal');
+    if (modal) {
+        modal.style.display = 'flex';
+    }
+}
+
+function closeReminderModal() {
+    const modal = document.getElementById('tm-reminder-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+function startBlinking() {
+    const btn = document.getElementById('tm-presence-btn');
+    if (!btn || presenceState.blinkInterval) return;
+
+    btn.classList.add('tm-blink-warning');
+}
+
+function stopBlinking() {
+    const btn = document.getElementById('tm-presence-btn');
+    if (btn) {
+        btn.classList.remove('tm-blink-warning');
+    }
+}
+
+function updateStatusIndicator(actionType) {
+    const indicator = document.getElementById('tm-status-indicator');
+    if (!indicator) return;
+
+    // Retirer toutes les classes de statut
+    indicator.classList.remove('tm-indicator-online', 'tm-indicator-offline', 'tm-indicator-pause');
+
+    // Ajouter la classe appropriée
+    switch (actionType) {
+        case 'clock_in':
+        case 'break_end':
+            indicator.classList.add('tm-indicator-online');
+            break;
+        case 'clock_out':
+            indicator.classList.add('tm-indicator-offline');
+            break;
+        case 'break_start':
+            indicator.classList.add('tm-indicator-pause');
+            break;
+    }
+}
+
+async function loadPresenceInPanel() {
+    const listEl = document.getElementById('tm-presence-inline');
+
+    listEl.innerHTML = '<div class="tm-presence-loading-inline">Chargement...</div>';
+
+    try {
+        // Utiliser GM_xmlhttpRequest au lieu de fetch
+        const result = await new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: PRESENCE_API_URL.replace('timeclock_ingest.php', 'timeclock_presence.php') + '?api_key=' + PRESENCE_API_KEY,
+                headers: {
+                    'X-Api-Key': PRESENCE_API_KEY
+                },
+                onload: function(response) {
+                    try {
+                        const data = JSON.parse(response.responseText);
+                        resolve(data);
+                    } catch (e) {
+                        reject(new Error('Erreur de parsing JSON'));
+                    }
+                },
+                onerror: function(error) {
+                    reject(new Error('Erreur réseau'));
+                }
+            });
+        });
+
+        if (result.ok && result.presence) {
+            displayPresenceInline(result.presence);
+        } else {
+            listEl.innerHTML = '<div class="tm-presence-error-inline">Erreur de chargement</div>';
+        }
+    } catch (error) {
+        console.error('[Présence] Erreur chargement présences:', error);
+        listEl.innerHTML = '<div class="tm-presence-error-inline">Erreur de chargement</div>';
+    }
+}
+
+function displayPresenceInline(presence) {
+    const listEl = document.getElementById('tm-presence-inline');
+
+    const present = presence.present || [];
+    const onBreak = presence.on_break || [];
+    const absent = presence.absent || [];
+
+    let html = '';
+
+    // Afficher les présents (disponibles)
+    if (present.length > 0) {
+        present.forEach(person => {
+            html += `
+                <div class="tm-presence-item-inline">
+                    <span class="tm-presence-dot-online"></span>
+                    <span class="tm-presence-name-inline">${person.name}</span>
+                    <span class="tm-presence-status-inline tm-status-online">Disponible</span>
+                </div>
+            `;
+        });
+    }
+
+    // Afficher les en pause
+    if (onBreak.length > 0) {
+        onBreak.forEach(person => {
+            html += `
+                <div class="tm-presence-item-inline">
+                    <span class="tm-presence-dot-pause"></span>
+                    <span class="tm-presence-name-inline">${person.name}</span>
+                    <span class="tm-presence-status-inline tm-status-pause">En pause</span>
+                </div>
+            `;
+        });
+    }
+
+    // Afficher les non disponibles
+    if (absent.length > 0) {
+        absent.forEach(person => {
+            html += `
+                <div class="tm-presence-item-inline">
+                    <span class="tm-presence-dot-offline"></span>
+                    <span class="tm-presence-name-inline">${person.name}</span>
+                    <span class="tm-presence-status-inline tm-status-offline">Non dispo</span>
+                </div>
+            `;
+        });
+    }
+
+    if (!html) {
+        html = '<div class="tm-presence-empty-inline">Aucune donnée disponible</div>';
+    }
+
+    listEl.innerHTML = html;
+}
+
+function showEndTimeModal() {
+    const modal = document.getElementById('tm-endtime-modal');
+    const input = document.getElementById('tm-endtime-input');
+
+    // Pré-remplir avec l'heure sauvegardée ou suggérer 17:30
+    if (presenceState.endTime) {
+        input.value = presenceState.endTime;
+    } else {
+        input.value = '17:30';
+    }
+
+    if (modal) {
+        modal.style.display = 'flex';
+        // Focus sur l'input après un court délai pour l'animation
+        setTimeout(() => input.focus(), 300);
+    }
+}
+
+function closeEndTimeModal() {
+    const modal = document.getElementById('tm-endtime-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// Styles pour le widget moderne
+GM_addStyle(`
+    /* Widget container */
+    #tm-presence-widget {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 99999;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    /* Bouton principal */
+    #tm-presence-btn {
+        width: 56px;
+        height: 56px;
+        background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        box-shadow: 0 8px 24px rgba(0,160,157,0.3);
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        color: white;
+        position: relative;
+    }
+
+    #tm-presence-btn:hover {
+        transform: scale(1.05);
+        box-shadow: 0 12px 32px rgba(0,160,157,0.4);
+    }
+
+    #tm-presence-btn.tm-blink-warning {
+        animation: blinkOrange 2s ease-in-out infinite;
+    }
+
+    @keyframes blinkOrange {
+        0%, 100% {
+            background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
+            box-shadow: 0 8px 24px rgba(0,160,157,0.3);
+        }
+        50% {
+            background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+            box-shadow: 0 8px 24px rgba(255,152,0,0.4);
+        }
+    }
+
+    /* Panel encore plus transparent */
+    #tm-presence-panel {
+        position: absolute;
+        bottom: 72px;
+        right: 0;
+        background: rgba(255, 255, 255, 0.75);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border-radius: 16px;
+        padding: 18px;
+        box-shadow: 0 12px 48px rgba(0,0,0,0.15);
+        min-width: 300px;
+        animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    @keyframes slideUp {
+        from {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    /* Header du panel */
+    .tm-panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+    }
+
+    .tm-panel-title {
+        font-size: 16px;
+        font-weight: 700;
+        color: #1a1a1a;
+    }
+
+    /* Témoin lumineux en haut à gauche, dépassant du bouton */
+    .tm-status-indicator {
+        position: absolute;
+        top: -2px;
+        left: -2px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        box-shadow: 0 0 4px rgba(0,0,0,0.3);
+        z-index: 1;
+    }
+
+    .tm-indicator-online {
+        background: #10b981;
+        animation: pulseGreen 2s ease-in-out infinite;
+    }
+
+    .tm-indicator-offline {
+        background: #ef4444;
+        box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+    }
+
+    .tm-indicator-pause {
+        background: #f59e0b;
+        animation: pulseOrange 2s ease-in-out infinite;
+    }
+
+    @keyframes pulseGreen {
+        0%, 100% {
+            opacity: 1;
+            box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 8px rgba(16, 185, 129, 0.6);
+        }
+        50% {
+            opacity: 0.7;
+            box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 12px rgba(16, 185, 129, 0.8);
+        }
+    }
+
+    @keyframes pulseOrange {
+        0%, 100% {
+            opacity: 1;
+            box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 8px rgba(245, 158, 11, 0.6);
+        }
+        50% {
+            opacity: 0.7;
+            box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 12px rgba(245, 158, 11, 0.8);
+        }
+    }
+
+    /* Boutons d'actions avec labels */
+    .tm-actions-row {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+        justify-content: space-between;
+    }
+
+    .tm-action-btn-small {
+        background: rgba(248, 249, 250, 0.5);
+        border: 2px solid transparent;
+        border-radius: 10px;
+        padding: 10px 8px;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        transition: all 0.2s;
+        flex: 1;
+        min-width: 0;
+    }
+
+    .tm-action-btn-small:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+
+    .tm-action-btn-small svg {
+        display: block;
+        flex-shrink: 0;
+        stroke: #9ca3af;
+        transition: stroke 0.2s;
+    }
+
+    .tm-action-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: #9ca3af;
+        white-space: nowrap;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        transition: color 0.2s;
+    }
+
+    .tm-action-in:hover {
+        background: rgba(209, 250, 229, 0.9);
+        border-color: #10b981;
+    }
+
+    .tm-action-in:hover svg {
+        stroke: #10b981;
+    }
+
+    .tm-action-in:hover .tm-action-label {
+        color: #10b981;
+    }
+
+    .tm-action-out:hover {
+        background: rgba(254, 226, 226, 0.9);
+        border-color: #ef4444;
+    }
+
+    .tm-action-out:hover svg {
+        stroke: #ef4444;
+    }
+
+    .tm-action-out:hover .tm-action-label {
+        color: #ef4444;
+    }
+
+    .tm-action-pause:hover {
+        background: rgba(254, 243, 199, 0.9);
+        border-color: #f59e0b;
+    }
+
+    .tm-action-pause:hover svg {
+        stroke: #f59e0b;
+    }
+
+    .tm-action-pause:hover .tm-action-label {
+        color: #f59e0b;
+    }
+
+    .tm-action-resume:hover {
+        background: rgba(219, 234, 254, 0.9);
+        border-color: #3b82f6;
+    }
+
+    .tm-action-resume:hover svg {
+        stroke: #3b82f6;
+    }
+
+    .tm-action-resume:hover .tm-action-label {
+        color: #3b82f6;
+    }
+
+    /* Status */
+    .tm-status {
+        text-align: center;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 6px;
+        border-radius: 8px;
+        min-height: 18px;
+        margin-bottom: 12px;
+    }
+
+    /* Section titre présences */
+    .tm-presence-section-title {
+        font-size: 11px;
+        font-weight: 700;
+        color: #666;
+        margin-bottom: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    /* Liste de présence encore plus transparente avec scrollbar stylée */
+    .tm-presence-inline {
+        max-height: 280px;
+        overflow-y: auto;
+        background: rgba(248, 249, 250, 0.3);
+        border-radius: 10px;
+        padding: 10px;
+    }
+
+    /* Scrollbar personnalisée pour Webkit (Chrome, Safari, Edge) */
+    .tm-presence-inline::-webkit-scrollbar {
+        width: 6px;
+    }
+
+    .tm-presence-inline::-webkit-scrollbar-track {
+        background: rgba(0, 0, 0, 0.05);
+        border-radius: 10px;
+    }
+
+    .tm-presence-inline::-webkit-scrollbar-thumb {
+        background: rgba(0, 160, 157, 0.4);
+        border-radius: 10px;
+        transition: background 0.2s;
+    }
+
+    .tm-presence-inline::-webkit-scrollbar-thumb:hover {
+        background: rgba(0, 160, 157, 0.6);
+    }
+
+    /* Scrollbar pour Firefox */
+    .tm-presence-inline {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(0, 160, 157, 0.4) rgba(0, 0, 0, 0.05);
+    }
+
+    .tm-presence-loading-inline,
+    .tm-presence-error-inline,
+    .tm-presence-empty-inline {
+        text-align: center;
+        padding: 16px;
+        color: #999;
+        font-size: 12px;
+    }
+
+    .tm-presence-item-inline {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        background: rgba(255, 255, 255, 0.5);
+        border-radius: 8px;
+        margin-bottom: 6px;
+        transition: all 0.2s;
+    }
+
+    .tm-presence-item-inline:hover {
+        transform: translateX(4px);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        background: rgba(255, 255, 255, 0.75);
+    }
+
+    .tm-presence-item-inline:last-child {
+        margin-bottom: 0;
+    }
+
+    .tm-presence-dot-online {
+        width: 8px;
+        height: 8px;
+        background: #10b981;
+        border-radius: 50%;
+        flex-shrink: 0;
+        animation: pulse 2s ease-in-out infinite;
+    }
+
+    .tm-presence-dot-pause {
+        width: 8px;
+        height: 8px;
+        background: #f59e0b;
+        border-radius: 50%;
+        flex-shrink: 0;
+        animation: pulse 2s ease-in-out infinite;
+    }
+
+    .tm-presence-dot-offline {
+        width: 8px;
+        height: 8px;
+        background: #ef4444;
+        border-radius: 50%;
+        flex-shrink: 0;
+        animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+        0%, 100% {
+            opacity: 1;
+            transform: scale(1);
+        }
+        50% {
+            opacity: 0.6;
+            transform: scale(1.1);
+        }
+    }
+
+    .tm-presence-name-inline {
+        flex: 1;
+        font-weight: 600;
+        font-size: 12px;
+        color: #333;
+    }
+
+    .tm-presence-status-inline {
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }
+
+    .tm-status-online {
+        color: #10b981;
+    }
+
+    .tm-status-pause {
+        color: #f59e0b;
+    }
+
+    .tm-status-offline {
+        color: #ef4444;
+    }
+    /* Modal de rappel */
+    #tm-reminder-modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0,0,0,0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100000;
+        animation: fadeIn 0.3s;
+        backdrop-filter: blur(4px);
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+    }
+
+    .tm-reminder-content {
+        background: white;
+        border-radius: 20px;
+        padding: 36px;
+        text-align: center;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        animation: scaleIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        max-width: 380px;
+    }
+
+    @keyframes scaleIn {
+        from {
+            opacity: 0;
+            transform: scale(0.9);
+        }
+        to {
+            opacity: 1;
+            transform: scale(1);
+        }
+    }
+
+    .tm-reminder-content svg {
+        margin: 0 auto 20px;
+        display: block;
+    }
+
+    .tm-reminder-title {
+        font-size: 22px;
+        font-weight: 700;
+        color: #1a1a1a;
+        margin-bottom: 10px;
+    }
+
+    .tm-reminder-text {
+        font-size: 14px;
+        color: #666;
+        margin-bottom: 20px;
+    }
+
+    .tm-reminder-btn {
+        padding: 12px 28px;
+        background: #00A09D;
+        color: white;
+        border: none;
+        border-radius: 10px;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 14px;
+        transition: all 0.2s;
+    }
+
+    .tm-reminder-btn:hover {
+        background: #008F8C;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0,160,157,0.3);
+    }
+
+    /* Modal heure de fin */
+    #tm-endtime-modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0,0,0,0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100001;
+        animation: fadeIn 0.3s;
+        backdrop-filter: blur(4px);
+    }
+
+    .tm-endtime-content {
+        background: white;
+        border-radius: 20px;
+        padding: 36px;
+        text-align: center;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        animation: scaleIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        max-width: 380px;
+        width: 90%;
+    }
+
+    .tm-endtime-content svg {
+        margin: 0 auto 20px;
+        display: block;
+    }
+
+    .tm-endtime-title {
+        font-size: 20px;
+        font-weight: 700;
+        color: #1a1a1a;
+        margin-bottom: 6px;
+    }
+
+    .tm-endtime-text {
+        font-size: 13px;
+        color: #666;
+        margin-bottom: 20px;
+    }
+
+    .tm-endtime-input {
+        width: 100%;
+        padding: 14px;
+        font-size: 22px;
+        text-align: center;
+        border: 2px solid #e0e0e0;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        font-family: 'SF Mono', Monaco, monospace;
+        transition: all 0.2s;
+    }
+
+    .tm-endtime-input:focus {
+        outline: none;
+        border-color: #00A09D;
+        box-shadow: 0 0 0 4px rgba(0,160,157,0.1);
+    }
+
+    .tm-endtime-buttons {
+        display: flex;
+        gap: 10px;
+    }
+
+    .tm-endtime-btn-skip,
+    .tm-endtime-btn-save {
+        flex: 1;
+        padding: 12px 20px;
+        border: none;
+        border-radius: 10px;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 14px;
+        transition: all 0.2s;
+    }
+
+    .tm-endtime-btn-skip {
+        background: #f0f0f0;
+        color: #666;
+    }
+
+    .tm-endtime-btn-skip:hover {
+        background: #e0e0e0;
+        color: #333;
+    }
+
+    .tm-endtime-btn-save {
+        background: #00A09D;
+        color: white;
+    }
+
+    .tm-endtime-btn-save:hover {
+        background: #008F8C;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0,160,157,0.3);
+    }
+`);
+
+// Créer le widget au chargement
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', createPresenceWidget);
+} else {
+    createPresenceWidget();
+}
+
+// Recréer le widget si nécessaire (navigation SPA)
+setInterval(() => {
+    if (!document.getElementById('tm-presence-widget')) {
+        createPresenceWidget();
+    }
+}, 2000);
+
+})(); // Fermeture de la fonction principale
