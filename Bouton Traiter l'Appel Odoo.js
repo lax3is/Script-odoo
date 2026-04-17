@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      3.6.0
+// @version      3.6.1
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -4731,7 +4731,8 @@ let presenceState = {
     reminderShown: false,
     blinkInterval: null,
     disableReminder: localStorage.getItem('tm_disable_reminder') === 'true',
-    lastResetDate: localStorage.getItem('tm_last_reset_date') || ''
+    lastResetDate: localStorage.getItem('tm_last_reset_date') || '',
+    lastPresenceSnapshot: {} // Pour détecter les changements
 };
 
 // Vérifier si on doit réinitialiser (nouveau jour)
@@ -4747,6 +4748,92 @@ function checkDailyReset() {
 
         // Ne pas réinitialiser disableReminder car c'est un choix permanent de l'utilisateur
     }
+}
+
+// Démarrer la surveillance des changements de présence
+function startPresenceMonitoring() {
+    // Vérifier toutes les 30 secondes
+    setInterval(async () => {
+        try {
+            const result = await new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: PRESENCE_API_URL.replace('timeclock_ingest.php', 'timeclock_presence.php') + '?api_key=' + PRESENCE_API_KEY,
+                    headers: {
+                        'X-Api-Key': PRESENCE_API_KEY
+                    },
+                    onload: function(response) {
+                        try {
+                            const data = JSON.parse(response.responseText);
+                            resolve(data);
+                        } catch (e) {
+                            reject(new Error('Erreur de parsing JSON'));
+                        }
+                    },
+                    onerror: function(error) {
+                        reject(new Error('Erreur réseau'));
+                    }
+                });
+            });
+
+            if (result.ok && result.presence) {
+                checkPresenceChanges(result.presence);
+            }
+        } catch (error) {
+            console.error('[Présence] Erreur monitoring:', error);
+        }
+    }, 30000); // Toutes les 30 secondes
+}
+
+// Détecter les changements de statut
+function checkPresenceChanges(presence) {
+    const currentUserName = getOdooCurrentUserName() || 'Utilisateur';
+    const allUsers = {};
+
+    // Construire un snapshot de tous les utilisateurs avec leur statut
+    (presence.present || []).forEach(p => {
+        allUsers[p.name] = { status: 'online', time: p.last_action_time };
+    });
+    (presence.on_break || []).forEach(p => {
+        allUsers[p.name] = { status: 'pause', time: p.last_action_time };
+    });
+    (presence.absent || []).forEach(p => {
+        allUsers[p.name] = { status: 'offline', time: p.last_action_time };
+    });
+
+    // Comparer avec le snapshot précédent
+    Object.keys(allUsers).forEach(userName => {
+        // Ne pas notifier pour soi-même
+        if (userName === currentUserName) return;
+
+        const currentStatus = allUsers[userName].status;
+        const previousStatus = presenceState.lastPresenceSnapshot[userName]?.status;
+
+        // Si le statut a changé
+        if (previousStatus && previousStatus !== currentStatus) {
+            // Mapper le statut vers une action pour la notification
+            let actionType = '';
+            switch (currentStatus) {
+                case 'online':
+                    actionType = previousStatus === 'pause' ? 'break_end' : 'clock_in';
+                    break;
+                case 'offline':
+                    actionType = 'clock_out';
+                    break;
+                case 'pause':
+                    actionType = 'break_start';
+                    break;
+            }
+
+            if (actionType) {
+                console.log(`[Présence] ${userName} : ${previousStatus} → ${currentStatus}`);
+                showPresenceToast(actionType, userName);
+            }
+        }
+    });
+
+    // Sauvegarder le snapshot actuel
+    presenceState.lastPresenceSnapshot = allUsers;
 }
 
 function createPresenceWidget() {
@@ -4918,6 +5005,9 @@ function createPresenceWidget() {
 
     // Démarrer la vérification du rappel
     startReminderCheck();
+
+    // Démarrer la surveillance des changements de présence
+    startPresenceMonitoring();
 }
 
 async function sendPresenceAction(actionType) {
