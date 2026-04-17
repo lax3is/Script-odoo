@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      3.6.1
+// @version      3.6.5
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -879,7 +879,7 @@
     // =========================================================
     // FONCTIONS HISTORIQUE ET PRODUITS CLIENTS
     // =========================================================
-
+    
     // Fonction pour sauvegarder l'état de l'historique
     function saveHistoryState(isVisible) {
         try {
@@ -925,10 +925,10 @@
         try {
             console.log('[HISTORY] URL complète:', window.location.href);
             console.log('[HISTORY] Hash:', window.location.hash);
-
+            
             // Essayer différentes méthodes pour parser l'URL Odoo
             let params, model, id;
-
+            
             // Méthode 1: URLSearchParams sur le hash
             if (window.location.hash) {
                 params = new URLSearchParams(window.location.hash.slice(1));
@@ -936,7 +936,7 @@
                 id = params.get("id");
                 console.log('[HISTORY] Méthode 1 - Model:', model, 'ID:', id);
             }
-
+            
             // Méthode 2: Parser manuellement l'URL Odoo
             if (!model || !id) {
                 const urlMatch = window.location.href.match(/[#&]model=([^&]+).*[#&]id=(\d+)/);
@@ -946,7 +946,7 @@
                     console.log('[HISTORY] Méthode 2 - Model:', model, 'ID:', id);
                 }
             }
-
+            
             // Méthode 3: Utiliser l'API Odoo pour obtenir l'ID actuel
             if (!model || !id) {
                 try {
@@ -963,7 +963,7 @@
                     console.log('[HISTORY] Méthode 3 échouée:', e);
                 }
             }
-
+            
             if (!model || !id) {
                 console.log('[HISTORY] Impossible de déterminer le modèle et l\'ID');
                 return null;
@@ -993,7 +993,7 @@
                 }
                 return null;
             }
-
+            
             console.log('[HISTORY] Modèle non supporté:', model);
             return null;
         } catch (error) {
@@ -1017,14 +1017,14 @@
             console.log('[HISTORY] Début de fetchClientTickets');
             const partnerId = await getIdToProcess();
             console.log('[HISTORY] Partner ID récupéré:', partnerId);
-
+            
             if (!partnerId) {
                 console.log('[HISTORY] Aucun partner ID trouvé');
                 return null;
             }
 
             console.log('[HISTORY] Recherche des tickets pour le partner:', partnerId);
-
+            
             const tickets = await odooRpc('helpdesk.ticket', 'web_search_read', [], {
                 offset: 0,
                 limit: 0,
@@ -1037,7 +1037,7 @@
             });
 
             console.log('[HISTORY] Résultat de la recherche de tickets:', tickets);
-
+            
             if (tickets && tickets.records) {
                 console.log('[HISTORY] Nombre de tickets trouvés:', tickets.records.length);
             } else {
@@ -1057,7 +1057,7 @@
             console.log('[PRODUCTS] Début de fetchClientProducts');
             const partnerId = await getIdToProcess();
             console.log('[PRODUCTS] Partner ID récupéré:', partnerId);
-
+            
             if (!partnerId) {
                 console.log('[PRODUCTS] Aucun partner ID trouvé');
                 return null;
@@ -1129,7 +1129,7 @@
             Array.from(rows).forEach((row, index) => {
                 const cells = row.querySelectorAll('td');
                 console.log('[PRODUCTS] Ligne', index, '- Nombre de cellules:', cells.length);
-
+                
                 if (cells.length >= 7) {
                     const reference = cells[0].textContent.trim();
                     const productCell = cells[1].textContent.trim();
@@ -1337,7 +1337,7 @@
             70%      { box-shadow: 0 0 0 6px rgba(37,99,235,0); }
         }
         #btn-inserer-initiales { background: #17b6b2 !important; color: #fff !important; }
-
+        
         /* === BOUTONS HISTORIQUE ET PRODUITS === */
         #showHistoryButton, #showProductsButton {
             position: relative;
@@ -1441,13 +1441,13 @@
         }
 
         /* === THÈME SOMBRE === */
-        .dark-theme #zone_historique_tickets,
+        .dark-theme #zone_historique_tickets, 
         .dark-theme #zone_produits_client {
             background-color: #1f2937;
             border-color: #374151;
             color: #e5e7eb;
         }
-        .dark-theme .historique-header,
+        .dark-theme .historique-header, 
         .dark-theme .produits-header {
             background: #1f2937;
             border-bottom-color: #374151;
@@ -1457,13 +1457,13 @@
         .dark-theme .produits-header-left {
             color: #60a5fa;
         }
-        .dark-theme .ticket-item,
+        .dark-theme .ticket-item, 
         .dark-theme .product-item {
             background-color: #1f2937;
             border-color: #374151;
             color: #e5e7eb;
         }
-        .dark-theme .ticket-item:hover,
+        .dark-theme .ticket-item:hover, 
         .dark-theme .product-item:hover {
             background-color: #2d3748;
         }
@@ -2940,13 +2940,13 @@
             submitBtn.addEventListener('click', async () => {
                 if (submitLocked) return;
                 submitLocked = true; submitBtn.disabled = true;
-
+                
                 // Marquer définitivement que le panneau a été traité pour ce ticket
                 const currentTicketId = _reasonPanelTicketId || sessionStorage.getItem('pendingReasonTicketId') || getTicketIdFromPage();
                 if (currentTicketId) {
                     sessionStorage.setItem(`reasonPanelCompleted_${currentTicketId}`, '1');
                 }
-
+                
                 sessionStorage.removeItem('pendingReasonPanel');
                 // Récupérer les IDs (ou noms si pas d'ID) des cases cochées
                 const cols = Array.from(panel.querySelectorAll('.col'));
@@ -3041,7 +3041,7 @@
 
     async function addMany2ManyTagsViaDom(fieldName, names = []) {
         console.log('[REASON] addMany2ManyTagsViaDom - Field:', fieldName, 'Names:', names);
-
+        
         const wanted = uniqNormNames(names);
         if (!wanted.length) {
             console.log('[REASON] Aucun nom à ajouter après normalisation');
@@ -3050,7 +3050,7 @@
 
         const root = document.querySelector(`.o_field_many2many_tags[name="${fieldName}"], .o_field_widget[name="${fieldName}"]`);
         console.log('[REASON] Root element trouvé:', !!root);
-
+        
         if (!root) {
             console.error('[REASON] Impossible de trouver le champ:', fieldName);
             return false;
@@ -3065,7 +3065,7 @@
 
         const input = root.querySelector('input');
         console.log('[REASON] Input trouvé:', !!input, input instanceof HTMLInputElement);
-
+        
         if (!(input instanceof HTMLInputElement)) {
             console.error('[REASON] Impossible de trouver l\'input pour le champ:', fieldName);
             return false;
@@ -3074,7 +3074,7 @@
         let added = false;
         for (const name of wanted) {
             console.log('[REASON] Tentative d\'ajout de:', name);
-
+            
             if (existing.has(normalizeReasonName(name))) {
                 console.log('[REASON] Étiquette déjà présente:', name);
                 continue;
@@ -3085,7 +3085,7 @@
             input.value = name;
             input.dispatchEvent(new Event('input', { bubbles: true }));
             await wait(180);
-
+            
             console.log('[REASON] Envoi de la touche Entrée');
             input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
             input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
@@ -3097,47 +3097,47 @@
                     .map(el => normalizeReasonName(el.textContent || ''))
                     .filter(Boolean)
             );
-
+            
             const wasAdded = now.has(normalizeReasonName(name)) || String(input.value || '').trim() === '';
             console.log('[REASON] Étiquette ajoutée:', name, '- Succès:', wasAdded);
-
+            
             if (wasAdded) {
                 added = true;
                 existing.add(normalizeReasonName(name));
             }
         }
-
+        
         console.log('[REASON] Résultat final addMany2ManyTagsViaDom:', added);
         return added;
     }
 
     async function applyTagsViaDom(hwNames = [], swNames = []) {
         console.log('[REASON] applyTagsViaDom - HW Names:', hwNames, 'SW Names:', swNames);
-
+        
         let hwOk = true;
         let swOk = true;
-
+        
         if (hwNames.length > 0) {
             console.log('[REASON] Application des étiquettes matériel via DOM...');
             hwOk = await addMany2ManyTagsViaDom('material_reason_tag_ids', hwNames);
             console.log('[REASON] Résultat étiquettes matériel:', hwOk);
         }
-
+        
         if (swNames.length > 0) {
             console.log('[REASON] Application des étiquettes logiciel via DOM...');
             swOk = await addMany2ManyTagsViaDom('software_reason_tag_ids', swNames);
             console.log('[REASON] Résultat étiquettes logiciel:', swOk);
         }
-
+        
         if (!hwOk && !swOk) {
             console.error('[REASON] Échec de l\'application des étiquettes via DOM');
             return false;
         }
-
+        
         console.log('[REASON] Sauvegarde du formulaire...');
         await wait(150);
         await saveForm();
-
+        
         console.log('[REASON] Application des étiquettes via DOM terminée');
         return true;
     }
@@ -3147,7 +3147,7 @@
         console.log('[REASON] applyTagsToTicket - Ticket ID:', ticketId);
         console.log('[REASON] applyTagsToTicket - HW IDs:', hwIds, 'SW IDs:', swIds);
         console.log('[REASON] applyTagsToTicket - HW Names:', hwNamesFallback, 'SW Names:', swNamesFallback);
-
+        
         if (!ticketId) {
             console.error('[REASON] Aucun ticket ID trouvé');
             return false;
@@ -3168,7 +3168,7 @@
                 console.error('[REASON] Erreur résolution IDs matériel:', error);
             }
         }
-
+        
         if (!swIds.length && swNamesFallback.length) {
             console.log('[REASON] Résolution des IDs logiciel par nom...');
             try {
@@ -3188,9 +3188,9 @@
         // [4, id] = lier sans créer (many2many link)
         if (hwIds.length) vals.material_reason_tag_ids = hwIds.map(id => [4, id]);
         if (swIds.length) vals.software_reason_tag_ids = swIds.map(id => [4, id]);
-
+        
         console.log('[REASON] Valeurs à écrire:', vals);
-
+        
         if (!Object.keys(vals).length) {
             console.log('[REASON] Aucune valeur à écrire, fallback vers DOM');
             // Fallback non-admin : tenter via l'UI Odoo (many2many tags)
@@ -3201,13 +3201,13 @@
         try {
             const writeOk = await odooWrite('helpdesk.ticket', Number(ticketId), vals);
             console.log('[REASON] Résultat écriture API:', writeOk);
-
+            
             if (!writeOk) {
                 console.log('[REASON] Écriture API échouée, fallback vers DOM');
                 // Fallback non-admin : certains profils ne peuvent pas write via API mais peuvent via le widget UI.
                 return applyTagsViaDom(hwNamesFallback, swNamesFallback);
             }
-
+            
             console.log('[REASON] Écriture API réussie, sauvegarde...');
             await wait(300);
             const saveBtn = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
@@ -3215,19 +3215,19 @@
                 console.log('[REASON] Clic sur le bouton sauvegarder');
                 saveBtn.click();
             }
-
+            
             // Forcer le rechargement du formulaire pour afficher les tags sans F5
             await wait(600);
             try {
                 console.log('[REASON] Rechargement de la vue...');
                 // Méthode 1 : bouton discard puis reload (Odoo SPA)
                 const discardBtn = document.querySelector('button.o_form_button_discard, button[data-hotkey="j"]');
-                if (discardBtn) {
+                if (discardBtn) { 
                     console.log('[REASON] Clic sur discard');
-                    discardBtn.click();
-                    await wait(200);
+                    discardBtn.click(); 
+                    await wait(200); 
                 }
-
+                
                 // Méthode 2 : déclencher un reload via l'action manager Odoo
                 if (window.__owl__) {
                     const env = window.__owl__?.apps?.values?.()?.next?.()?.value?.env;
@@ -3239,16 +3239,16 @@
             } catch (reloadError) {
                 console.error('[REASON] Erreur lors du rechargement:', reloadError);
             }
-
+            
             // Méthode 3 : reload de la vue courante via hashchange
             const currentHash = window.location.hash;
             window.location.hash = currentHash + '&_r=' + Date.now();
             await wait(100);
             window.history.replaceState(null, '', window.location.pathname + window.location.search + currentHash);
-
+            
             console.log('[REASON] Application des étiquettes terminée avec succès');
             return true;
-
+            
         } catch (error) {
             console.error('[REASON] Erreur lors de l\'écriture API:', error);
             console.log('[REASON] Fallback vers DOM après erreur API');
@@ -3965,12 +3965,12 @@
             'Annulé': { text: 'Annulé', class: 'annule' },
             'Fermé': { text: 'Fermé', class: 'ferme' }
         };
-
+        
         const result = stageTranslations[stageName];
         if (result) {
             return result;
         }
-
+        
         // Fallback pour les statuts non reconnus
         return { text: stageName, class: 'autre' };
     }
@@ -4087,28 +4087,28 @@
                 tickets.forEach(ticket => {
                     // Rechercher dans le titre
                     const title = ticket.querySelector('.ticket-title').textContent.toLowerCase();
-
+                    
                     // Rechercher dans la description
                     const descriptionElement = ticket.querySelector('.ticket-description');
                     const description = descriptionElement ? descriptionElement.textContent.toLowerCase() : '';
-
+                    
                     // Rechercher dans la note interne
                     const responseElement = ticket.querySelector('.ticket-response-content');
                     const response = responseElement ? responseElement.textContent.toLowerCase() : '';
-
+                    
                     // Rechercher dans les informations du ticket (utilisateur, etc.)
                     const assigneeElement = ticket.querySelector('.ticket-assignee');
                     const assignee = assigneeElement ? assigneeElement.textContent.toLowerCase() : '';
-
+                    
                     const team = ticket.dataset.team;
-
+                    
                     // Vérifier si le terme de recherche est présent dans n'importe quel champ
-                    const matchesSearch = !searchTerm ||
-                        title.includes(searchTerm) ||
-                        description.includes(searchTerm) ||
+                    const matchesSearch = !searchTerm || 
+                        title.includes(searchTerm) || 
+                        description.includes(searchTerm) || 
                         response.includes(searchTerm) ||
                         assignee.includes(searchTerm);
-
+                    
                     const matchesTeam = !selectedTeam || team === selectedTeam;
 
                     ticket.style.display = matchesSearch && matchesTeam ? '' : 'none';
@@ -4201,26 +4201,26 @@
                 products.forEach(product => {
                     // Rechercher dans le titre
                     const title = product.querySelector('.product-title').textContent.toLowerCase();
-
+                    
                     // Rechercher dans la description
                     const descriptionElement = product.querySelector('.product-description');
                     const description = descriptionElement ? descriptionElement.textContent.toLowerCase() : '';
-
+                    
                     // Rechercher dans les informations du produit (référence, etc.)
                     const infoElements = product.querySelectorAll('.product-info div');
                     let allInfo = '';
                     infoElements.forEach(info => {
                         allInfo += info.textContent.toLowerCase() + ' ';
                     });
-
+                    
                     const type = product.dataset.type;
-
+                    
                     // Vérifier si le terme de recherche est présent dans n'importe quel champ
-                    const matchesSearch = !searchTerm ||
-                        title.includes(searchTerm) ||
-                        description.includes(searchTerm) ||
+                    const matchesSearch = !searchTerm || 
+                        title.includes(searchTerm) || 
+                        description.includes(searchTerm) || 
                         allInfo.includes(searchTerm);
-
+                    
                     const matchesType = !selectedType || type === selectedType;
 
                     product.style.display = matchesSearch && matchesType ? '' : 'none';
@@ -4304,7 +4304,7 @@
 
             themeToggle.addEventListener('click', () => {
                 const isCurrentlyDark = document.body.classList.contains('dark-theme');
-
+                
                 if (isCurrentlyDark) {
                     // Passer en mode clair
                     document.body.classList.remove('dark-theme');
@@ -4646,7 +4646,7 @@
             sessionStorage.removeItem('pendingReasonTicketId');
             sessionStorage.removeItem('reasonPanelForceOpen');
             sessionStorage.removeItem('reasonPanelProtectedTicketId');
-
+            
             // Nettoyer les anciens flags de completion (garder seulement les 10 plus récents)
             const completionKeys = Object.keys(sessionStorage).filter(key => key.startsWith('reasonPanelCompleted_'));
             if (completionKeys.length > 10) {
@@ -4656,10 +4656,10 @@
             }
             _assistanceCache.clear();
             _assistanceTagIds = null;
-
+            
             // Gérer la navigation pour l'historique et les produits
             handleHistoryNavigation();
-
+            
             // Plusieurs tentatives pour s'assurer que le DOM Odoo est prêt
             setTimeout(runAll, 400);
             setTimeout(runAll, 900);
@@ -4738,21 +4738,24 @@ let presenceState = {
 // Vérifier si on doit réinitialiser (nouveau jour)
 function checkDailyReset() {
     const today = new Date().toISOString().split('T')[0]; // Format YYYY-MM-DD
-
+    
     if (presenceState.lastResetDate !== today) {
         // Nouveau jour détecté, réinitialiser
         console.log('[Présence] Nouveau jour détecté, réinitialisation des notifications');
         presenceState.reminderShown = false;
         presenceState.lastResetDate = today;
         localStorage.setItem('tm_last_reset_date', today);
-
+        
         // Ne pas réinitialiser disableReminder car c'est un choix permanent de l'utilisateur
     }
 }
 
 // Démarrer la surveillance des changements de présence
 function startPresenceMonitoring() {
-    // Vérifier toutes les 30 secondes
+    // Faire un premier appel immédiat pour initialiser le snapshot (sans notifications)
+    loadInitialPresenceSnapshot();
+    
+    // Puis vérifier toutes les 30 secondes
     setInterval(async () => {
         try {
             const result = await new Promise((resolve, reject) => {
@@ -4775,7 +4778,7 @@ function startPresenceMonitoring() {
                     }
                 });
             });
-
+            
             if (result.ok && result.presence) {
                 checkPresenceChanges(result.presence);
             }
@@ -4785,11 +4788,57 @@ function startPresenceMonitoring() {
     }, 30000); // Toutes les 30 secondes
 }
 
+// Charger le snapshot initial sans afficher de notifications
+async function loadInitialPresenceSnapshot() {
+    try {
+        const result = await new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: PRESENCE_API_URL.replace('timeclock_ingest.php', 'timeclock_presence.php') + '?api_key=' + PRESENCE_API_KEY,
+                headers: {
+                    'X-Api-Key': PRESENCE_API_KEY
+                },
+                onload: function(response) {
+                    try {
+                        const data = JSON.parse(response.responseText);
+                        resolve(data);
+                    } catch (e) {
+                        reject(new Error('Erreur de parsing JSON'));
+                    }
+                },
+                onerror: function(error) {
+                    reject(new Error('Erreur réseau'));
+                }
+            });
+        });
+        
+        if (result.ok && result.presence) {
+            const allUsers = {};
+            
+            // Construire le snapshot initial
+            (result.presence.present || []).forEach(p => {
+                allUsers[p.name] = { status: 'online', time: p.last_action_time };
+            });
+            (result.presence.on_break || []).forEach(p => {
+                allUsers[p.name] = { status: 'pause', time: p.last_action_time };
+            });
+            (result.presence.absent || []).forEach(p => {
+                allUsers[p.name] = { status: 'offline', time: p.last_action_time };
+            });
+            
+            presenceState.lastPresenceSnapshot = allUsers;
+            console.log('[Présence] Snapshot initial chargé:', Object.keys(allUsers).length, 'utilisateurs');
+        }
+    } catch (error) {
+        console.error('[Présence] Erreur chargement snapshot initial:', error);
+    }
+}
+
 // Détecter les changements de statut
 function checkPresenceChanges(presence) {
     const currentUserName = getOdooCurrentUserName() || 'Utilisateur';
     const allUsers = {};
-
+    
     // Construire un snapshot de tous les utilisateurs avec leur statut
     (presence.present || []).forEach(p => {
         allUsers[p.name] = { status: 'online', time: p.last_action_time };
@@ -4800,15 +4849,15 @@ function checkPresenceChanges(presence) {
     (presence.absent || []).forEach(p => {
         allUsers[p.name] = { status: 'offline', time: p.last_action_time };
     });
-
+    
     // Comparer avec le snapshot précédent
     Object.keys(allUsers).forEach(userName => {
         // Ne pas notifier pour soi-même
         if (userName === currentUserName) return;
-
+        
         const currentStatus = allUsers[userName].status;
         const previousStatus = presenceState.lastPresenceSnapshot[userName]?.status;
-
+        
         // Si le statut a changé
         if (previousStatus && previousStatus !== currentStatus) {
             // Mapper le statut vers une action pour la notification
@@ -4824,14 +4873,14 @@ function checkPresenceChanges(presence) {
                     actionType = 'break_start';
                     break;
             }
-
+            
             if (actionType) {
                 console.log(`[Présence] ${userName} : ${previousStatus} → ${currentStatus}`);
                 showPresenceToast(actionType, userName);
             }
         }
     });
-
+    
     // Sauvegarder le snapshot actuel
     presenceState.lastPresenceSnapshot = allUsers;
 }
@@ -4854,7 +4903,7 @@ function createPresenceWidget() {
             <div class="tm-panel-header">
                 <span class="tm-panel-title">Gestion de présence</span>
             </div>
-
+            
             <!-- Boutons d'action avec labels -->
             <div class="tm-actions-row">
                 <button class="tm-action-btn-small tm-action-in" data-action="clock_in">
@@ -4886,16 +4935,16 @@ function createPresenceWidget() {
                     <span class="tm-action-label">Reprise</span>
                 </button>
             </div>
-
+            
             <div id="tm-presence-status" class="tm-status"></div>
-
+            
             <!-- Liste des utilisateurs -->
             <div class="tm-presence-section-title">Équipe</div>
             <div id="tm-presence-inline" class="tm-presence-inline">
                 <div class="tm-presence-loading-inline">Chargement...</div>
             </div>
         </div>
-
+        
         <!-- Modal de rappel -->
         <div id="tm-reminder-modal" style="display:none">
             <div class="tm-reminder-content">
@@ -4914,7 +4963,7 @@ function createPresenceWidget() {
                 </div>
             </div>
         </div>
-
+        
         <!-- Modal heure de fin -->
         <div id="tm-endtime-modal" style="display:none">
             <div class="tm-endtime-content">
@@ -4938,7 +4987,7 @@ function createPresenceWidget() {
     // Toggle panel
     const btn = document.getElementById('tm-presence-btn');
     const panel = document.getElementById('tm-presence-panel');
-
+    
     btn.addEventListener('click', () => {
         const isVisible = panel.style.display !== 'none';
         panel.style.display = isVisible ? 'none' : 'block';
@@ -4947,12 +4996,12 @@ function createPresenceWidget() {
             loadPresenceInPanel();
         }
     });
-
+    
     // Initialiser le témoin lumineux au chargement
     if (presenceState.lastAction) {
         updateStatusIndicator(presenceState.lastAction);
     }
-
+    
     // Fermer le panel si on clique en dehors
     document.addEventListener('click', (e) => {
         const widget = document.getElementById('tm-presence-widget');
@@ -4965,7 +5014,7 @@ function createPresenceWidget() {
     document.querySelectorAll('.tm-action-btn-small').forEach(button => {
         button.addEventListener('click', async () => {
             const action = button.getAttribute('data-action');
-
+            
             // Si c'est une arrivée, demander l'heure de fin d'abord
             if (action === 'clock_in') {
                 showEndTimeModal();
@@ -4985,13 +5034,13 @@ function createPresenceWidget() {
         }
         closeReminderModal();
     });
-
+    
     // Modal heure de fin - Passer
     document.getElementById('tm-endtime-skip').addEventListener('click', async () => {
         closeEndTimeModal();
         await sendPresenceAction('clock_in');
     });
-
+    
     // Modal heure de fin - Enregistrer
     document.getElementById('tm-endtime-save').addEventListener('click', async () => {
         const endTime = document.getElementById('tm-endtime-input').value;
@@ -5005,7 +5054,7 @@ function createPresenceWidget() {
 
     // Démarrer la vérification du rappel
     startReminderCheck();
-
+    
     // Démarrer la surveillance des changements de présence
     startPresenceMonitoring();
 }
@@ -5016,7 +5065,7 @@ async function sendPresenceAction(actionType) {
         const userName = getOdooCurrentUserName() || 'Utilisateur';
         const userEmail = (window.odoo && odoo.session_info && odoo.session_info.email) || '';
         const userId = (window.odoo && odoo.session_info && odoo.session_info.uid) || null;
-
+        
         showStatus('Envoi en cours...', '#00A09D');
 
         // Créer un timestamp en heure locale (pas UTC)
@@ -5069,14 +5118,14 @@ async function sendPresenceAction(actionType) {
             presenceState.lastActionTime = Date.now();
             localStorage.setItem('tm_last_clock_action', actionType);
             localStorage.setItem('tm_last_clock_time', Date.now().toString());
-
+            
             // Arrêter le clignotement et réinitialiser le rappel
             stopBlinking();
             presenceState.reminderShown = false;
-
+            
             // Mettre à jour le témoin lumineux
             updateStatusIndicator(actionType);
-
+            
             const labels = {
                 'clock_in': '✅ Statut: Disponible',
                 'clock_out': '✅ Statut: Non disponible',
@@ -5084,10 +5133,10 @@ async function sendPresenceAction(actionType) {
                 'break_end': '✅ Statut: Disponible'
             };
             showStatus(labels[actionType] || '✅ Enregistré', '#28a745');
-
+            
             // Recharger la liste des présences
             setTimeout(() => loadPresenceInPanel(), 500);
-
+            
             // Afficher une notification toast
             showPresenceToast(actionType, userName);
         } else {
@@ -5104,7 +5153,7 @@ function showStatus(message, color) {
     if (statusEl) {
         statusEl.textContent = message;
         statusEl.style.color = color;
-
+        
         setTimeout(() => {
             statusEl.textContent = '';
         }, 3000);
@@ -5114,22 +5163,22 @@ function showStatus(message, color) {
 function startReminderCheck() {
     // Vérifier le reset quotidien au démarrage
     checkDailyReset();
-
+    
     // Vérifier toutes les minutes
     setInterval(() => {
         // Vérifier le reset quotidien à chaque itération
         checkDailyReset();
-
+        
         const now = Date.now();
         const tenMinutes = 10 * 60 * 1000;
-
+        
         // Vérifier si l'heure de fin est dépassée
         if (presenceState.endTime && presenceState.lastAction === 'clock_in') {
             const currentTime = new Date();
             const [endHour, endMinute] = presenceState.endTime.split(':').map(Number);
             const endTimeToday = new Date();
             endTimeToday.setHours(endHour, endMinute, 0, 0);
-
+            
             // Si l'heure de fin est dépassée, passer en non dispo automatiquement
             if (currentTime >= endTimeToday) {
                 console.log('[Présence] Heure de fin dépassée, passage en non dispo automatique');
@@ -5139,12 +5188,12 @@ function startReminderCheck() {
                 return;
             }
         }
-
+        
         // Ne pas afficher le rappel si l'utilisateur l'a désactivé
         if (presenceState.disableReminder) {
             return;
         }
-
+        
         // Si pas d'action ET pas encore montré le rappel
         // OU si dernière action il y a plus de 10 min ET pas encore montré le rappel
         if (!presenceState.lastAction && !presenceState.reminderShown) {
@@ -5174,7 +5223,7 @@ function closeReminderModal() {
 function startBlinking() {
     const btn = document.getElementById('tm-presence-btn');
     if (!btn || presenceState.blinkInterval) return;
-
+    
     btn.classList.add('tm-blink-warning');
 }
 
@@ -5188,10 +5237,10 @@ function stopBlinking() {
 function updateStatusIndicator(actionType) {
     const indicator = document.getElementById('tm-status-indicator');
     if (!indicator) return;
-
+    
     // Retirer toutes les classes de statut
     indicator.classList.remove('tm-indicator-online', 'tm-indicator-offline', 'tm-indicator-pause');
-
+    
     // Ajouter la classe appropriée
     switch (actionType) {
         case 'clock_in':
@@ -5209,9 +5258,9 @@ function updateStatusIndicator(actionType) {
 
 async function loadPresenceInPanel() {
     const listEl = document.getElementById('tm-presence-inline');
-
+    
     listEl.innerHTML = '<div class="tm-presence-loading-inline">Chargement...</div>';
-
+    
     try {
         // Utiliser GM_xmlhttpRequest au lieu de fetch
         const result = await new Promise((resolve, reject) => {
@@ -5234,7 +5283,7 @@ async function loadPresenceInPanel() {
                 }
             });
         });
-
+        
         if (result.ok && result.presence) {
             displayPresenceInline(result.presence);
         } else {
@@ -5248,13 +5297,13 @@ async function loadPresenceInPanel() {
 
 function displayPresenceInline(presence) {
     const listEl = document.getElementById('tm-presence-inline');
-
+    
     const present = presence.present || [];
     const onBreak = presence.on_break || [];
     const absent = presence.absent || [];
-
+    
     let html = '';
-
+    
     // Afficher les présents (disponibles)
     if (present.length > 0) {
         present.forEach(person => {
@@ -5267,7 +5316,7 @@ function displayPresenceInline(presence) {
             `;
         });
     }
-
+    
     // Afficher les en pause
     if (onBreak.length > 0) {
         onBreak.forEach(person => {
@@ -5280,7 +5329,7 @@ function displayPresenceInline(presence) {
             `;
         });
     }
-
+    
     // Afficher les non disponibles
     if (absent.length > 0) {
         absent.forEach(person => {
@@ -5293,25 +5342,25 @@ function displayPresenceInline(presence) {
             `;
         });
     }
-
+    
     if (!html) {
         html = '<div class="tm-presence-empty-inline">Aucune donnée disponible</div>';
     }
-
+    
     listEl.innerHTML = html;
 }
 
 function showEndTimeModal() {
     const modal = document.getElementById('tm-endtime-modal');
     const input = document.getElementById('tm-endtime-input');
-
+    
     // Pré-remplir avec l'heure sauvegardée ou suggérer 17:30
     if (presenceState.endTime) {
         input.value = presenceState.endTime;
     } else {
         input.value = '17:30';
     }
-
+    
     if (modal) {
         modal.style.display = 'flex';
         // Focus sur l'input après un court délai pour l'animation
@@ -5334,16 +5383,16 @@ function showPresenceToast(actionType, userName) {
         toastContainer.id = 'tm-toast-container';
         document.body.appendChild(toastContainer);
     }
-
+    
     // Créer le toast
     const toast = document.createElement('div');
     toast.className = 'tm-toast';
-
+    
     // Déterminer l'icône, le texte et la couleur selon l'action
     let indicator = '';
     let message = '';
     let indicatorClass = '';
-
+    
     switch (actionType) {
         case 'clock_in':
             indicator = 'tm-toast-indicator-online';
@@ -5366,26 +5415,26 @@ function showPresenceToast(actionType, userName) {
             indicatorClass = 'online';
             break;
     }
-
+    
     toast.innerHTML = `
         <div class="tm-toast-indicator ${indicator}"></div>
         <div class="tm-toast-content">
             <div class="tm-toast-message">${message}</div>
         </div>
     `;
-
+    
     toastContainer.appendChild(toast);
-
+    
     // Animation d'entrée
     setTimeout(() => {
         toast.classList.add('tm-toast-show');
     }, 10);
-
+    
     // Animation de sortie et suppression après 4 secondes
     setTimeout(() => {
         toast.classList.remove('tm-toast-show');
         toast.classList.add('tm-toast-hide');
-
+        
         setTimeout(() => {
             toast.remove();
         }, 500);
@@ -5402,7 +5451,7 @@ GM_addStyle(`
         z-index: 99999;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-
+    
     /* Bouton principal */
     #tm-presence-btn {
         width: 56px;
@@ -5418,16 +5467,16 @@ GM_addStyle(`
         color: white;
         position: relative;
     }
-
+    
     #tm-presence-btn:hover {
         transform: scale(1.05);
         box-shadow: 0 12px 32px rgba(0,160,157,0.4);
     }
-
+    
     #tm-presence-btn.tm-blink-warning {
         animation: blinkOrange 2s ease-in-out infinite;
     }
-
+    
     @keyframes blinkOrange {
         0%, 100% {
             background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
@@ -5438,7 +5487,7 @@ GM_addStyle(`
             box-shadow: 0 8px 24px rgba(255,152,0,0.4);
         }
     }
-
+    
     /* Panel encore plus transparent */
     #tm-presence-panel {
         position: absolute;
@@ -5454,7 +5503,7 @@ GM_addStyle(`
         animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         border: 1px solid rgba(255, 255, 255, 0.2);
     }
-
+    
     @keyframes slideUp {
         from {
             opacity: 0;
@@ -5465,7 +5514,7 @@ GM_addStyle(`
             transform: translateY(0);
         }
     }
-
+    
     /* Header du panel */
     .tm-panel-header {
         display: flex;
@@ -5473,13 +5522,13 @@ GM_addStyle(`
         align-items: center;
         margin-bottom: 16px;
     }
-
+    
     .tm-panel-title {
         font-size: 16px;
         font-weight: 700;
         color: #1a1a1a;
     }
-
+    
     /* Témoin lumineux en haut à gauche, dépassant du bouton */
     .tm-status-indicator {
         position: absolute;
@@ -5491,22 +5540,22 @@ GM_addStyle(`
         box-shadow: 0 0 4px rgba(0,0,0,0.3);
         z-index: 1;
     }
-
+    
     .tm-indicator-online {
         background: #10b981;
         animation: pulseGreen 2s ease-in-out infinite;
     }
-
+    
     .tm-indicator-offline {
         background: #ef4444;
         box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
     }
-
+    
     .tm-indicator-pause {
         background: #f59e0b;
         animation: pulseOrange 2s ease-in-out infinite;
     }
-
+    
     @keyframes pulseGreen {
         0%, 100% {
             opacity: 1;
@@ -5517,7 +5566,7 @@ GM_addStyle(`
             box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 12px rgba(16, 185, 129, 0.8);
         }
     }
-
+    
     @keyframes pulseOrange {
         0%, 100% {
             opacity: 1;
@@ -5528,7 +5577,7 @@ GM_addStyle(`
             box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 12px rgba(245, 158, 11, 0.8);
         }
     }
-
+    
     /* Boutons d'actions avec labels */
     .tm-actions-row {
         display: flex;
@@ -5536,7 +5585,7 @@ GM_addStyle(`
         margin-bottom: 12px;
         justify-content: space-between;
     }
-
+    
     .tm-action-btn-small {
         background: rgba(248, 249, 250, 0.5);
         border: 2px solid transparent;
@@ -5552,19 +5601,19 @@ GM_addStyle(`
         flex: 1;
         min-width: 0;
     }
-
+    
     .tm-action-btn-small:hover {
         transform: translateY(-2px);
         box-shadow: 0 4px 12px rgba(0,0,0,0.1);
     }
-
+    
     .tm-action-btn-small svg {
         display: block;
         flex-shrink: 0;
         stroke: #9ca3af;
         transition: stroke 0.2s;
     }
-
+    
     .tm-action-label {
         font-size: 10px;
         font-weight: 600;
@@ -5574,59 +5623,59 @@ GM_addStyle(`
         letter-spacing: 0.3px;
         transition: color 0.2s;
     }
-
+    
     .tm-action-in:hover {
         background: rgba(209, 250, 229, 0.9);
         border-color: #10b981;
     }
-
+    
     .tm-action-in:hover svg {
         stroke: #10b981;
     }
-
+    
     .tm-action-in:hover .tm-action-label {
         color: #10b981;
     }
-
+    
     .tm-action-out:hover {
         background: rgba(254, 226, 226, 0.9);
         border-color: #ef4444;
     }
-
+    
     .tm-action-out:hover svg {
         stroke: #ef4444;
     }
-
+    
     .tm-action-out:hover .tm-action-label {
         color: #ef4444;
     }
-
+    
     .tm-action-pause:hover {
         background: rgba(254, 243, 199, 0.9);
         border-color: #f59e0b;
     }
-
+    
     .tm-action-pause:hover svg {
         stroke: #f59e0b;
     }
-
+    
     .tm-action-pause:hover .tm-action-label {
         color: #f59e0b;
     }
-
+    
     .tm-action-resume:hover {
         background: rgba(219, 234, 254, 0.9);
         border-color: #3b82f6;
     }
-
+    
     .tm-action-resume:hover svg {
         stroke: #3b82f6;
     }
-
+    
     .tm-action-resume:hover .tm-action-label {
         color: #3b82f6;
     }
-
+    
     /* Status */
     .tm-status {
         text-align: center;
@@ -5637,7 +5686,7 @@ GM_addStyle(`
         min-height: 18px;
         margin-bottom: 12px;
     }
-
+    
     /* Section titre présences */
     .tm-presence-section-title {
         font-size: 11px;
@@ -5647,7 +5696,7 @@ GM_addStyle(`
         text-transform: uppercase;
         letter-spacing: 0.5px;
     }
-
+    
     /* Liste de présence encore plus transparente avec scrollbar stylée */
     .tm-presence-inline {
         max-height: 280px;
@@ -5656,33 +5705,33 @@ GM_addStyle(`
         border-radius: 10px;
         padding: 10px;
     }
-
+    
     /* Scrollbar personnalisée pour Webkit (Chrome, Safari, Edge) */
     .tm-presence-inline::-webkit-scrollbar {
         width: 6px;
     }
-
+    
     .tm-presence-inline::-webkit-scrollbar-track {
         background: rgba(0, 0, 0, 0.05);
         border-radius: 10px;
     }
-
+    
     .tm-presence-inline::-webkit-scrollbar-thumb {
         background: rgba(0, 160, 157, 0.4);
         border-radius: 10px;
         transition: background 0.2s;
     }
-
+    
     .tm-presence-inline::-webkit-scrollbar-thumb:hover {
         background: rgba(0, 160, 157, 0.6);
     }
-
+    
     /* Scrollbar pour Firefox */
     .tm-presence-inline {
         scrollbar-width: thin;
         scrollbar-color: rgba(0, 160, 157, 0.4) rgba(0, 0, 0, 0.05);
     }
-
+    
     .tm-presence-loading-inline,
     .tm-presence-error-inline,
     .tm-presence-empty-inline {
@@ -5691,7 +5740,7 @@ GM_addStyle(`
         color: #999;
         font-size: 12px;
     }
-
+    
     .tm-presence-item-inline {
         display: flex;
         align-items: center;
@@ -5702,17 +5751,17 @@ GM_addStyle(`
         margin-bottom: 6px;
         transition: all 0.2s;
     }
-
+    
     .tm-presence-item-inline:hover {
         transform: translateX(4px);
         box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         background: rgba(255, 255, 255, 0.75);
     }
-
+    
     .tm-presence-item-inline:last-child {
         margin-bottom: 0;
     }
-
+    
     .tm-presence-dot-online {
         width: 8px;
         height: 8px;
@@ -5721,7 +5770,7 @@ GM_addStyle(`
         flex-shrink: 0;
         animation: pulse 2s ease-in-out infinite;
     }
-
+    
     .tm-presence-dot-pause {
         width: 8px;
         height: 8px;
@@ -5730,7 +5779,7 @@ GM_addStyle(`
         flex-shrink: 0;
         animation: pulse 2s ease-in-out infinite;
     }
-
+    
     .tm-presence-dot-offline {
         width: 8px;
         height: 8px;
@@ -5739,7 +5788,7 @@ GM_addStyle(`
         flex-shrink: 0;
         animation: pulse 2s ease-in-out infinite;
     }
-
+    
     @keyframes pulse {
         0%, 100% {
             opacity: 1;
@@ -5750,29 +5799,29 @@ GM_addStyle(`
             transform: scale(1.1);
         }
     }
-
+    
     .tm-presence-name-inline {
         flex: 1;
         font-weight: 600;
         font-size: 12px;
         color: #333;
     }
-
+    
     .tm-presence-status-inline {
         font-size: 10px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.3px;
     }
-
+    
     .tm-status-online {
         color: #10b981;
     }
-
+    
     .tm-status-pause {
         color: #f59e0b;
     }
-
+    
     .tm-status-offline {
         color: #ef4444;
     }
@@ -5791,12 +5840,12 @@ GM_addStyle(`
         animation: fadeIn 0.3s;
         backdrop-filter: blur(4px);
     }
-
+    
     @keyframes fadeIn {
         from { opacity: 0; }
         to { opacity: 1; }
     }
-
+    
     .tm-reminder-content {
         background: white;
         border-radius: 20px;
@@ -5806,7 +5855,7 @@ GM_addStyle(`
         animation: scaleIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         max-width: 380px;
     }
-
+    
     @keyframes scaleIn {
         from {
             opacity: 0;
@@ -5817,25 +5866,25 @@ GM_addStyle(`
             transform: scale(1);
         }
     }
-
+    
     .tm-reminder-content svg {
         margin: 0 auto 20px;
         display: block;
     }
-
+    
     .tm-reminder-title {
         font-size: 22px;
         font-weight: 700;
         color: #1a1a1a;
         margin-bottom: 10px;
     }
-
+    
     .tm-reminder-text {
         font-size: 14px;
         color: #666;
         margin-bottom: 20px;
     }
-
+    
     .tm-reminder-btn {
         padding: 12px 28px;
         background: #00A09D;
@@ -5847,13 +5896,13 @@ GM_addStyle(`
         font-size: 14px;
         transition: all 0.2s;
     }
-
+    
     .tm-reminder-btn:hover {
         background: #008F8C;
         transform: translateY(-1px);
         box-shadow: 0 4px 12px rgba(0,160,157,0.3);
     }
-
+    
     .tm-reminder-checkbox {
         display: flex;
         align-items: center;
@@ -5865,21 +5914,21 @@ GM_addStyle(`
         border-radius: 8px;
         transition: background 0.2s;
     }
-
+    
     .tm-reminder-checkbox:hover {
         background: rgba(0,0,0,0.03);
     }
-
+    
     .tm-reminder-checkbox input[type="checkbox"] {
         width: 16px;
         height: 16px;
         cursor: pointer;
     }
-
+    
     .tm-reminder-checkbox span {
         user-select: none;
     }
-
+    
     /* Modal heure de fin */
     #tm-endtime-modal {
         position: fixed;
@@ -5895,7 +5944,7 @@ GM_addStyle(`
         animation: fadeIn 0.3s;
         backdrop-filter: blur(4px);
     }
-
+    
     .tm-endtime-content {
         background: white;
         border-radius: 20px;
@@ -5906,25 +5955,25 @@ GM_addStyle(`
         max-width: 380px;
         width: 90%;
     }
-
+    
     .tm-endtime-content svg {
         margin: 0 auto 20px;
         display: block;
     }
-
+    
     .tm-endtime-title {
         font-size: 20px;
         font-weight: 700;
         color: #1a1a1a;
         margin-bottom: 6px;
     }
-
+    
     .tm-endtime-text {
         font-size: 13px;
         color: #666;
         margin-bottom: 20px;
     }
-
+    
     .tm-endtime-input {
         width: 100%;
         padding: 14px;
@@ -5936,18 +5985,18 @@ GM_addStyle(`
         font-family: 'SF Mono', Monaco, monospace;
         transition: all 0.2s;
     }
-
+    
     .tm-endtime-input:focus {
         outline: none;
         border-color: #00A09D;
         box-shadow: 0 0 0 4px rgba(0,160,157,0.1);
     }
-
+    
     .tm-endtime-buttons {
         display: flex;
         gap: 10px;
     }
-
+    
     .tm-endtime-btn-skip,
     .tm-endtime-btn-save {
         flex: 1;
@@ -5959,28 +6008,28 @@ GM_addStyle(`
         font-size: 14px;
         transition: all 0.2s;
     }
-
+    
     .tm-endtime-btn-skip {
         background: #f0f0f0;
         color: #666;
     }
-
+    
     .tm-endtime-btn-skip:hover {
         background: #e0e0e0;
         color: #333;
     }
-
+    
     .tm-endtime-btn-save {
         background: #00A09D;
         color: white;
     }
-
+    
     .tm-endtime-btn-save:hover {
         background: #008F8C;
         transform: translateY(-1px);
         box-shadow: 0 4px 12px rgba(0,160,157,0.3);
     }
-
+    
     /* Toast notifications */
     #tm-toast-container {
         position: fixed;
@@ -5992,7 +6041,7 @@ GM_addStyle(`
         gap: 12px;
         pointer-events: none;
     }
-
+    
     .tm-toast {
         display: flex;
         align-items: center;
@@ -6011,51 +6060,51 @@ GM_addStyle(`
         transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
         pointer-events: auto;
     }
-
+    
     .tm-toast-show {
         transform: translateY(0);
         opacity: 1;
     }
-
+    
     .tm-toast-hide {
         transform: translateY(100px);
         opacity: 0;
     }
-
+    
     .tm-toast-indicator {
         width: 10px;
         height: 10px;
         border-radius: 50%;
         flex-shrink: 0;
     }
-
+    
     .tm-toast-indicator-online {
         background: #10b981;
         box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
         animation: pulseGreen 2s ease-in-out infinite;
     }
-
+    
     .tm-toast-indicator-offline {
         background: #ef4444;
         box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
     }
-
+    
     .tm-toast-indicator-pause {
         background: #f59e0b;
         box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
         animation: pulseOrange 2s ease-in-out infinite;
     }
-
+    
     .tm-toast-content {
         flex: 1;
     }
-
+    
     .tm-toast-message {
         font-size: 13px;
         color: #333;
         line-height: 1.4;
     }
-
+    
     .tm-toast-message strong {
         font-weight: 700;
         color: #1a1a1a;
