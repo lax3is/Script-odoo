@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      3.5.0
+// @version      3.6.0
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -4729,8 +4729,25 @@ let presenceState = {
     lastActionTime: parseInt(localStorage.getItem('tm_last_clock_time')) || 0,
     endTime: localStorage.getItem('tm_planned_end_time') || null,
     reminderShown: false,
-    blinkInterval: null
+    blinkInterval: null,
+    disableReminder: localStorage.getItem('tm_disable_reminder') === 'true',
+    lastResetDate: localStorage.getItem('tm_last_reset_date') || ''
 };
+
+// Vérifier si on doit réinitialiser (nouveau jour)
+function checkDailyReset() {
+    const today = new Date().toISOString().split('T')[0]; // Format YYYY-MM-DD
+
+    if (presenceState.lastResetDate !== today) {
+        // Nouveau jour détecté, réinitialiser
+        console.log('[Présence] Nouveau jour détecté, réinitialisation des notifications');
+        presenceState.reminderShown = false;
+        presenceState.lastResetDate = today;
+        localStorage.setItem('tm_last_reset_date', today);
+
+        // Ne pas réinitialiser disableReminder car c'est un choix permanent de l'utilisateur
+    }
+}
 
 function createPresenceWidget() {
     // Vérifier si le widget existe déjà
@@ -4801,7 +4818,13 @@ function createPresenceWidget() {
                 </svg>
                 <div class="tm-reminder-title">N'oubliez pas de mettre à jour votre statut!</div>
                 <div class="tm-reminder-text">Vous êtes connecté depuis plus de 10 minutes</div>
-                <button id="tm-reminder-close" class="tm-reminder-btn">J'ai compris</button>
+                <div style="display:flex;flex-direction:column;gap:12px;margin-top:20px">
+                    <button id="tm-reminder-close" class="tm-reminder-btn">J'ai compris</button>
+                    <label class="tm-reminder-checkbox">
+                        <input type="checkbox" id="tm-reminder-disable" />
+                        <span>Ne plus me rappeler (pour commerciaux/responsables)</span>
+                    </label>
+                </div>
             </div>
         </div>
 
@@ -4867,6 +4890,12 @@ function createPresenceWidget() {
 
     // Fermer le modal de rappel
     document.getElementById('tm-reminder-close').addEventListener('click', () => {
+        const disableCheckbox = document.getElementById('tm-reminder-disable');
+        if (disableCheckbox && disableCheckbox.checked) {
+            presenceState.disableReminder = true;
+            localStorage.setItem('tm_disable_reminder', 'true');
+            console.log('[Présence] Notifications désactivées par l\'utilisateur');
+        }
         closeReminderModal();
     });
 
@@ -4968,6 +4997,9 @@ async function sendPresenceAction(actionType) {
 
             // Recharger la liste des présences
             setTimeout(() => loadPresenceInPanel(), 500);
+
+            // Afficher une notification toast
+            showPresenceToast(actionType, userName);
         } else {
             throw new Error(result.error || 'Erreur inconnue');
         }
@@ -4990,8 +5022,14 @@ function showStatus(message, color) {
 }
 
 function startReminderCheck() {
+    // Vérifier le reset quotidien au démarrage
+    checkDailyReset();
+
     // Vérifier toutes les minutes
     setInterval(() => {
+        // Vérifier le reset quotidien à chaque itération
+        checkDailyReset();
+
         const now = Date.now();
         const tenMinutes = 10 * 60 * 1000;
 
@@ -5010,6 +5048,11 @@ function startReminderCheck() {
                 localStorage.removeItem('tm_planned_end_time');
                 return;
             }
+        }
+
+        // Ne pas afficher le rappel si l'utilisateur l'a désactivé
+        if (presenceState.disableReminder) {
+            return;
         }
 
         // Si pas d'action ET pas encore montré le rappel
@@ -5191,6 +5234,72 @@ function closeEndTimeModal() {
     if (modal) {
         modal.style.display = 'none';
     }
+}
+
+function showPresenceToast(actionType, userName) {
+    // Créer le conteneur de toasts s'il n'existe pas
+    let toastContainer = document.getElementById('tm-toast-container');
+    if (!toastContainer) {
+        toastContainer = document.createElement('div');
+        toastContainer.id = 'tm-toast-container';
+        document.body.appendChild(toastContainer);
+    }
+
+    // Créer le toast
+    const toast = document.createElement('div');
+    toast.className = 'tm-toast';
+
+    // Déterminer l'icône, le texte et la couleur selon l'action
+    let indicator = '';
+    let message = '';
+    let indicatorClass = '';
+
+    switch (actionType) {
+        case 'clock_in':
+            indicator = 'tm-toast-indicator-online';
+            message = `${userName} est maintenant <strong>disponible</strong>`;
+            indicatorClass = 'online';
+            break;
+        case 'clock_out':
+            indicator = 'tm-toast-indicator-offline';
+            message = `${userName} est maintenant <strong>absent</strong>`;
+            indicatorClass = 'offline';
+            break;
+        case 'break_start':
+            indicator = 'tm-toast-indicator-pause';
+            message = `${userName} est en <strong>pause</strong>`;
+            indicatorClass = 'pause';
+            break;
+        case 'break_end':
+            indicator = 'tm-toast-indicator-online';
+            message = `${userName} a repris — <strong>disponible</strong>`;
+            indicatorClass = 'online';
+            break;
+    }
+
+    toast.innerHTML = `
+        <div class="tm-toast-indicator ${indicator}"></div>
+        <div class="tm-toast-content">
+            <div class="tm-toast-message">${message}</div>
+        </div>
+    `;
+
+    toastContainer.appendChild(toast);
+
+    // Animation d'entrée
+    setTimeout(() => {
+        toast.classList.add('tm-toast-show');
+    }, 10);
+
+    // Animation de sortie et suppression après 4 secondes
+    setTimeout(() => {
+        toast.classList.remove('tm-toast-show');
+        toast.classList.add('tm-toast-hide');
+
+        setTimeout(() => {
+            toast.remove();
+        }, 500);
+    }, 4000);
 }
 
 // Styles pour le widget moderne
@@ -5655,6 +5764,32 @@ GM_addStyle(`
         box-shadow: 0 4px 12px rgba(0,160,157,0.3);
     }
 
+    .tm-reminder-checkbox {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        color: #666;
+        cursor: pointer;
+        padding: 8px;
+        border-radius: 8px;
+        transition: background 0.2s;
+    }
+
+    .tm-reminder-checkbox:hover {
+        background: rgba(0,0,0,0.03);
+    }
+
+    .tm-reminder-checkbox input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        cursor: pointer;
+    }
+
+    .tm-reminder-checkbox span {
+        user-select: none;
+    }
+
     /* Modal heure de fin */
     #tm-endtime-modal {
         position: fixed;
@@ -5754,6 +5889,86 @@ GM_addStyle(`
         background: #008F8C;
         transform: translateY(-1px);
         box-shadow: 0 4px 12px rgba(0,160,157,0.3);
+    }
+
+    /* Toast notifications */
+    #tm-toast-container {
+        position: fixed;
+        bottom: 100px;
+        right: 24px;
+        z-index: 99998;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        pointer-events: none;
+    }
+
+    .tm-toast {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-radius: 12px;
+        padding: 14px 18px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        min-width: 280px;
+        max-width: 400px;
+        transform: translateY(100px);
+        opacity: 0;
+        transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+        pointer-events: auto;
+    }
+
+    .tm-toast-show {
+        transform: translateY(0);
+        opacity: 1;
+    }
+
+    .tm-toast-hide {
+        transform: translateY(100px);
+        opacity: 0;
+    }
+
+    .tm-toast-indicator {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+
+    .tm-toast-indicator-online {
+        background: #10b981;
+        box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+        animation: pulseGreen 2s ease-in-out infinite;
+    }
+
+    .tm-toast-indicator-offline {
+        background: #ef4444;
+        box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+    }
+
+    .tm-toast-indicator-pause {
+        background: #f59e0b;
+        box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+        animation: pulseOrange 2s ease-in-out infinite;
+    }
+
+    .tm-toast-content {
+        flex: 1;
+    }
+
+    .tm-toast-message {
+        font-size: 13px;
+        color: #333;
+        line-height: 1.4;
+    }
+
+    .tm-toast-message strong {
+        font-weight: 700;
+        color: #1a1a1a;
     }
 `);
 
