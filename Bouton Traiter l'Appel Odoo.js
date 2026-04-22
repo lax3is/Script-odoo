@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      3.6.5
+// @version      3.6.6
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -4729,6 +4729,7 @@ let presenceState = {
     lastActionTime: parseInt(localStorage.getItem('tm_last_clock_time')) || 0,
     endTime: localStorage.getItem('tm_planned_end_time') || null,
     reminderShown: false,
+    pauseReminderShown: false,
     blinkInterval: null,
     disableReminder: localStorage.getItem('tm_disable_reminder') === 'true',
     lastResetDate: localStorage.getItem('tm_last_reset_date') || '',
@@ -4743,6 +4744,7 @@ function checkDailyReset() {
         // Nouveau jour détecté, réinitialiser
         console.log('[Présence] Nouveau jour détecté, réinitialisation des notifications');
         presenceState.reminderShown = false;
+        presenceState.pauseReminderShown = false;
         presenceState.lastResetDate = today;
         localStorage.setItem('tm_last_reset_date', today);
         
@@ -4755,7 +4757,7 @@ function startPresenceMonitoring() {
     // Faire un premier appel immédiat pour initialiser le snapshot (sans notifications)
     loadInitialPresenceSnapshot();
     
-    // Puis vérifier toutes les 30 secondes
+    // Puis vérifier toutes les 3 secondes pour une réactivité quasi-instantanée
     setInterval(async () => {
         try {
             const result = await new Promise((resolve, reject) => {
@@ -4785,7 +4787,7 @@ function startPresenceMonitoring() {
         } catch (error) {
             console.error('[Présence] Erreur monitoring:', error);
         }
-    }, 30000); // Toutes les 30 secondes
+    }, 3000); // Toutes les 3 secondes pour réactivité quasi-instantanée
 }
 
 // Charger le snapshot initial sans afficher de notifications
@@ -4815,15 +4817,30 @@ async function loadInitialPresenceSnapshot() {
         if (result.ok && result.presence) {
             const allUsers = {};
             
+            // Fonction helper pour obtenir un identifiant unique
+            const getUserKey = (p) => {
+                if (p.name && p.name.trim() && p.name.trim().toLowerCase() !== 'utilisateur') {
+                    return p.name.trim();
+                } else if (p.email && p.email.trim()) {
+                    return p.email;
+                } else if (p.user_id) {
+                    return `user_${p.user_id}`;
+                }
+                return `unknown_${Date.now()}_${Math.random()}`;
+            };
+            
             // Construire le snapshot initial
             (result.presence.present || []).forEach(p => {
-                allUsers[p.name] = { status: 'online', time: p.last_action_time };
+                const key = getUserKey(p);
+                allUsers[key] = { status: 'online', time: p.last_action_time };
             });
             (result.presence.on_break || []).forEach(p => {
-                allUsers[p.name] = { status: 'pause', time: p.last_action_time };
+                const key = getUserKey(p);
+                allUsers[key] = { status: 'pause', time: p.last_action_time };
             });
             (result.presence.absent || []).forEach(p => {
-                allUsers[p.name] = { status: 'offline', time: p.last_action_time };
+                const key = getUserKey(p);
+                allUsers[key] = { status: 'offline', time: p.last_action_time };
             });
             
             presenceState.lastPresenceSnapshot = allUsers;
@@ -4839,24 +4856,54 @@ function checkPresenceChanges(presence) {
     const currentUserName = getOdooCurrentUserName() || 'Utilisateur';
     const allUsers = {};
     
+    // Fonction helper pour obtenir un identifiant unique et un nom d'affichage
+    const getUserInfo = (p) => {
+        let displayName = '';
+        let uniqueKey = '';
+        
+        // Essayer d'obtenir un nom valide
+        if (p.name && p.name.trim() && p.name.trim().toLowerCase() !== 'utilisateur') {
+            displayName = p.name.trim();
+            uniqueKey = p.name.trim();
+        } else if (p.email && p.email.trim()) {
+            displayName = p.email.split('@')[0];
+            uniqueKey = p.email;
+        } else if (p.user_id) {
+            displayName = `Utilisateur #${p.user_id}`;
+            uniqueKey = `user_${p.user_id}`;
+        } else {
+            // Utiliser un timestamp pour éviter les collisions
+            displayName = 'Utilisateur inconnu';
+            uniqueKey = `unknown_${Date.now()}_${Math.random()}`;
+        }
+        
+        return { displayName, uniqueKey };
+    };
+    
     // Construire un snapshot de tous les utilisateurs avec leur statut
     (presence.present || []).forEach(p => {
-        allUsers[p.name] = { status: 'online', time: p.last_action_time };
+        const { displayName, uniqueKey } = getUserInfo(p);
+        allUsers[uniqueKey] = { status: 'online', time: p.last_action_time, displayName };
     });
     (presence.on_break || []).forEach(p => {
-        allUsers[p.name] = { status: 'pause', time: p.last_action_time };
+        const { displayName, uniqueKey } = getUserInfo(p);
+        allUsers[uniqueKey] = { status: 'pause', time: p.last_action_time, displayName };
     });
     (presence.absent || []).forEach(p => {
-        allUsers[p.name] = { status: 'offline', time: p.last_action_time };
+        const { displayName, uniqueKey } = getUserInfo(p);
+        allUsers[uniqueKey] = { status: 'offline', time: p.last_action_time, displayName };
     });
     
     // Comparer avec le snapshot précédent
-    Object.keys(allUsers).forEach(userName => {
-        // Ne pas notifier pour soi-même
-        if (userName === currentUserName) return;
+    Object.keys(allUsers).forEach(userKey => {
+        const userInfo = allUsers[userKey];
+        const displayName = userInfo.displayName;
         
-        const currentStatus = allUsers[userName].status;
-        const previousStatus = presenceState.lastPresenceSnapshot[userName]?.status;
+        // Ne pas notifier pour soi-même
+        if (displayName === currentUserName || userKey.includes(currentUserName)) return;
+        
+        const currentStatus = userInfo.status;
+        const previousStatus = presenceState.lastPresenceSnapshot[userKey]?.status;
         
         // Si le statut a changé
         if (previousStatus && previousStatus !== currentStatus) {
@@ -4875,8 +4922,8 @@ function checkPresenceChanges(presence) {
             }
             
             if (actionType) {
-                console.log(`[Présence] ${userName} : ${previousStatus} → ${currentStatus}`);
-                showPresenceToast(actionType, userName);
+                console.log(`[Présence] ${displayName} : ${previousStatus} → ${currentStatus}`);
+                showPresenceToast(actionType, displayName);
             }
         }
     });
@@ -4919,20 +4966,13 @@ function createPresenceWidget() {
                     </svg>
                     <span class="tm-action-label">Absent</span>
                 </button>
-                <button class="tm-action-btn-small tm-action-pause" data-action="break_start">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <button class="tm-action-btn-small tm-action-pause-toggle" id="tm-pause-toggle-btn" data-action="break_start">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" id="tm-pause-toggle-icon">
                         <circle cx="12" cy="12" r="10"></circle>
                         <line x1="10" y1="15" x2="10" y2="9"></line>
                         <line x1="14" y1="15" x2="14" y2="9"></line>
                     </svg>
-                    <span class="tm-action-label">Pause</span>
-                </button>
-                <button class="tm-action-btn-small tm-action-resume" data-action="break_end">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <polygon points="10 8 16 12 10 16 10 8"></polygon>
-                    </svg>
-                    <span class="tm-action-label">Reprise</span>
+                    <span class="tm-action-label" id="tm-pause-toggle-label">Pause</span>
                 </button>
             </div>
             
@@ -5057,6 +5097,14 @@ function createPresenceWidget() {
     
     // Démarrer la surveillance des changements de présence
     startPresenceMonitoring();
+    
+    // Initialiser l'état des boutons basé sur la dernière action
+    if (presenceState.lastAction) {
+        updateButtonStates(presenceState.lastAction);
+    } else {
+        // Si pas d'action précédente, initialiser le bouton pause/reprise en mode "Pause"
+        updatePauseToggleButton(null);
+    }
 }
 
 async function sendPresenceAction(actionType) {
@@ -5119,12 +5167,20 @@ async function sendPresenceAction(actionType) {
             localStorage.setItem('tm_last_clock_action', actionType);
             localStorage.setItem('tm_last_clock_time', Date.now().toString());
             
-            // Arrêter le clignotement et réinitialiser le rappel
+            // Arrêter le clignotement et réinitialiser les rappels
             stopBlinking();
             presenceState.reminderShown = false;
             
+            // Réinitialiser le rappel de pause si on reprend le travail
+            if (actionType === 'break_end' || actionType === 'clock_in') {
+                presenceState.pauseReminderShown = false;
+            }
+            
             // Mettre à jour le témoin lumineux
             updateStatusIndicator(actionType);
+            
+            // Mettre à jour l'état des boutons
+            updateButtonStates(actionType);
             
             const labels = {
                 'clock_in': '✅ Statut: Disponible',
@@ -5170,7 +5226,8 @@ function startReminderCheck() {
         checkDailyReset();
         
         const now = Date.now();
-        const tenMinutes = 10 * 60 * 1000;
+        const twoMinutes = 2 * 60 * 1000; // Changé de 10 à 2 minutes
+        const oneHour = 60 * 60 * 1000; // 1 heure pour le rappel de pause
         
         // Vérifier si l'heure de fin est dépassée
         if (presenceState.endTime && presenceState.lastAction === 'clock_in') {
@@ -5194,21 +5251,42 @@ function startReminderCheck() {
             return;
         }
         
-        // Si pas d'action ET pas encore montré le rappel
-        // OU si dernière action il y a plus de 10 min ET pas encore montré le rappel
+        // Rappel après 2 minutes sans action (au lieu de 10)
         if (!presenceState.lastAction && !presenceState.reminderShown) {
-            if (now - presenceState.lastActionTime > tenMinutes || presenceState.lastActionTime === 0) {
-                showReminderModal();
+            if (now - presenceState.lastActionTime > twoMinutes || presenceState.lastActionTime === 0) {
+                showReminderModal('initial');
                 startBlinking();
                 presenceState.reminderShown = true;
             }
         }
+        
+        // Nouveau : Rappel après 1 heure de pause
+        if (presenceState.lastAction === 'break_start' && !presenceState.pauseReminderShown) {
+            if (now - presenceState.lastActionTime > oneHour) {
+                showReminderModal('pause');
+                startBlinking();
+                presenceState.pauseReminderShown = true;
+            }
+        }
+        
     }, 60000); // Vérifier toutes les minutes
 }
 
-function showReminderModal() {
+function showReminderModal(type = 'initial') {
     const modal = document.getElementById('tm-reminder-modal');
     if (modal) {
+        // Update modal text based on reminder type
+        const titleElement = modal.querySelector('.tm-reminder-title');
+        const textElement = modal.querySelector('.tm-reminder-text');
+        
+        if (type === 'pause') {
+            if (titleElement) titleElement.textContent = 'Retour de pause';
+            if (textElement) textElement.textContent = 'Tu es de retour de ta pause pense à te mettre présent';
+        } else {
+            if (titleElement) titleElement.textContent = "N'oubliez pas de mettre à jour votre statut!";
+            if (textElement) textElement.textContent = 'Vous êtes connecté depuis plus de 2 minutes';
+        }
+        
         modal.style.display = 'flex';
     }
 }
@@ -5253,6 +5331,98 @@ function updateStatusIndicator(actionType) {
         case 'break_start':
             indicator.classList.add('tm-indicator-pause');
             break;
+    }
+}
+
+function updateButtonStates(currentAction) {
+    // Récupérer tous les boutons d'action
+    const buttons = {
+        clockIn: document.querySelector('[data-action="clock_in"]'),
+        clockOut: document.querySelector('[data-action="clock_out"]'),
+        pauseToggle: document.getElementById('tm-pause-toggle-btn')
+    };
+    
+    // Réinitialiser tous les boutons (enlever disabled et classes grayed)
+    Object.values(buttons).forEach(btn => {
+        if (btn) {
+            btn.disabled = false;
+            btn.classList.remove('tm-button-disabled');
+        }
+    });
+    
+    // Mettre à jour le bouton pause/reprise selon l'état actuel
+    updatePauseToggleButton(currentAction);
+    
+    // Griser et désactiver le bouton correspondant à l'état actuel
+    // Logique: on grise le bouton qui représente l'état actuel, pas l'action à faire
+    switch (currentAction) {
+        case 'clock_in':
+            // On est disponible, griser "Dispo"
+            if (buttons.clockIn) {
+                buttons.clockIn.disabled = true;
+                buttons.clockIn.classList.add('tm-button-disabled');
+            }
+            break;
+        case 'clock_out':
+            // On est absent, griser "Absent"
+            if (buttons.clockOut) {
+                buttons.clockOut.disabled = true;
+                buttons.clockOut.classList.add('tm-button-disabled');
+            }
+            break;
+        case 'break_start':
+            // On est en pause, le bouton affiche maintenant "Reprise"
+            // On ne grise PAS le bouton car l'utilisateur doit pouvoir cliquer sur "Reprise"
+            // À la place, on pourrait griser "Dispo" car on n'est pas dispo
+            // Mais en fait, on ne grise rien pour permettre toutes les transitions
+            break;
+        case 'break_end':
+            // On vient de reprendre = on est disponible
+            // Griser "Dispo"
+            if (buttons.clockIn) {
+                buttons.clockIn.disabled = true;
+                buttons.clockIn.classList.add('tm-button-disabled');
+            }
+            break;
+    }
+}
+
+function updatePauseToggleButton(currentAction) {
+    const toggleBtn = document.getElementById('tm-pause-toggle-btn');
+    const toggleLabel = document.getElementById('tm-pause-toggle-label');
+    const toggleIcon = document.getElementById('tm-pause-toggle-icon');
+    
+    if (!toggleBtn || !toggleLabel || !toggleIcon) return;
+    
+    // Si on est en pause, afficher "Reprise"
+    if (currentAction === 'break_start') {
+        toggleBtn.setAttribute('data-action', 'break_end');
+        toggleLabel.textContent = 'Reprise';
+        
+        // Ajouter la classe pour le style bleu (reprise)
+        toggleBtn.classList.remove('is-pause');
+        toggleBtn.classList.add('is-resume');
+        
+        // Changer l'icône pour play
+        toggleIcon.innerHTML = `
+            <circle cx="12" cy="12" r="10"></circle>
+            <polygon points="10 8 16 12 10 16 10 8"></polygon>
+        `;
+    } else {
+        // Sinon, afficher "Pause"
+        toggleBtn.setAttribute('data-action', 'break_start');
+        toggleLabel.textContent = 'Pause';
+        
+        // Ajouter la classe pour le style jaune (pause)
+        toggleBtn.classList.remove('is-resume');
+        toggleBtn.classList.add('is-pause');
+        
+        // Changer l'icône pour pause
+        toggleIcon.innerHTML = `
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="10" y1="15" x2="10" y2="9"></line>
+            <line x1="14" y1="15" x2="14" y2="9"></line>
+        `;
     }
 }
 
@@ -5302,15 +5472,37 @@ function displayPresenceInline(presence) {
     const onBreak = presence.on_break || [];
     const absent = presence.absent || [];
     
+    // Fonction helper pour obtenir un nom d'affichage valide
+    const getDisplayName = (person) => {
+        // Si le nom existe et n'est pas vide
+        if (person.name && person.name.trim() && person.name.trim().toLowerCase() !== 'utilisateur') {
+            return person.name.trim();
+        }
+        
+        // Sinon, essayer l'email
+        if (person.email && person.email.trim()) {
+            return person.email.split('@')[0]; // Prendre la partie avant @
+        }
+        
+        // Sinon, essayer l'ID utilisateur
+        if (person.user_id) {
+            return `Utilisateur #${person.user_id}`;
+        }
+        
+        // En dernier recours
+        return 'Utilisateur inconnu';
+    };
+    
     let html = '';
     
     // Afficher les présents (disponibles)
     if (present.length > 0) {
         present.forEach(person => {
+            const displayName = getDisplayName(person);
             html += `
                 <div class="tm-presence-item-inline">
                     <span class="tm-presence-dot-online"></span>
-                    <span class="tm-presence-name-inline">${person.name}</span>
+                    <span class="tm-presence-name-inline">${displayName}</span>
                     <span class="tm-presence-status-inline tm-status-online">Disponible</span>
                 </div>
             `;
@@ -5320,10 +5512,11 @@ function displayPresenceInline(presence) {
     // Afficher les en pause
     if (onBreak.length > 0) {
         onBreak.forEach(person => {
+            const displayName = getDisplayName(person);
             html += `
                 <div class="tm-presence-item-inline">
                     <span class="tm-presence-dot-pause"></span>
-                    <span class="tm-presence-name-inline">${person.name}</span>
+                    <span class="tm-presence-name-inline">${displayName}</span>
                     <span class="tm-presence-status-inline tm-status-pause">En pause</span>
                 </div>
             `;
@@ -5333,10 +5526,11 @@ function displayPresenceInline(presence) {
     // Afficher les non disponibles
     if (absent.length > 0) {
         absent.forEach(person => {
+            const displayName = getDisplayName(person);
             html += `
                 <div class="tm-presence-item-inline">
                     <span class="tm-presence-dot-offline"></span>
-                    <span class="tm-presence-name-inline">${person.name}</span>
+                    <span class="tm-presence-name-inline">${displayName}</span>
                     <span class="tm-presence-status-inline tm-status-offline">Non dispo</span>
                 </div>
             `;
@@ -5430,7 +5624,7 @@ function showPresenceToast(actionType, userName) {
         toast.classList.add('tm-toast-show');
     }, 10);
     
-    // Animation de sortie et suppression après 4 secondes
+    // Animation de sortie et suppression après 30 secondes
     setTimeout(() => {
         toast.classList.remove('tm-toast-show');
         toast.classList.add('tm-toast-hide');
@@ -5438,7 +5632,7 @@ function showPresenceToast(actionType, userName) {
         setTimeout(() => {
             toast.remove();
         }, 500);
-    }, 4000);
+    }, 30000); // 30 secondes d'affichage
 }
 
 // Styles pour le widget moderne
@@ -5673,6 +5867,33 @@ GM_addStyle(`
     }
     
     .tm-action-resume:hover .tm-action-label {
+        color: #3b82f6;
+    }
+    
+    /* Styles pour le bouton pause/reprise dynamique */
+    .tm-action-pause-toggle.is-pause:hover {
+        background: rgba(254, 243, 199, 0.9);
+        border-color: #f59e0b;
+    }
+    
+    .tm-action-pause-toggle.is-pause:hover svg {
+        stroke: #f59e0b;
+    }
+    
+    .tm-action-pause-toggle.is-pause:hover .tm-action-label {
+        color: #f59e0b;
+    }
+    
+    .tm-action-pause-toggle.is-resume:hover {
+        background: rgba(219, 234, 254, 0.9);
+        border-color: #3b82f6;
+    }
+    
+    .tm-action-pause-toggle.is-resume:hover svg {
+        stroke: #3b82f6;
+    }
+    
+    .tm-action-pause-toggle.is-resume:hover .tm-action-label {
         color: #3b82f6;
     }
     
@@ -6108,6 +6329,18 @@ GM_addStyle(`
     .tm-toast-message strong {
         font-weight: 700;
         color: #1a1a1a;
+    }
+    
+    /* Disabled button styles */
+    .tm-button-disabled {
+        opacity: 0.5 !important;
+        cursor: not-allowed !important;
+        filter: grayscale(1) !important;
+    }
+    
+    .tm-button-disabled:hover {
+        transform: none !important;
+        filter: grayscale(1) brightness(0.9) !important;
     }
 `);
 
