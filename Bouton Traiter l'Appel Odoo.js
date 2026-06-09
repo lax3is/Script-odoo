@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      3.6.6
-// @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients
+// @version      4.0.0
+// @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
 // @match        http://winprovence.odoo.com/*
 // @match        https://*.odoo.com/*
+// @match        https://*.dev.odoo.com/*
+// @match        http://*.dev.odoo.com/*
 // @match        https://winprovence.fr/*
 // @match        http://winprovence.fr/*
 // @match        https://*.winprovence.fr/*
@@ -19,6 +21,7 @@
 // @connect      hotline.sippharma.fr
 // @connect      winprovence.odoo.com
 // @connect      *.odoo.com
+// @connect      *.dev.odoo.com
 // @connect      winprovence.fr
 // @connect      *.winprovence.fr
 // @connect      winprovence.odoo.fr
@@ -26,6 +29,186 @@
 
 (function () {
     'use strict';
+
+    // =========================================================
+    // DÉTECTION DE VERSION ODOO ET COMPATIBILITÉ
+    // =========================================================
+    const OdooVersion = {
+        detected: null,
+        major: null,
+
+        detect() {
+            try {
+                const si = (window.odoo && (odoo.session_info || odoo.__session_info__)) || null;
+                // Méthode 1: Via les infos de session (v16-v18: session_info, v19: __session_info__)
+                if (si && si.server_version_info) {
+                    const versionInfo = si.server_version_info;
+                    this.major = Array.isArray(versionInfo) ? versionInfo[0] : parseInt(versionInfo);
+                    this.detected = `v${this.major}`;
+                    return this.major;
+                }
+
+                // Méthode 2: Via server_version
+                if (si && si.server_version) {
+                    const match = si.server_version.match(/^(\d+)\./);
+                    if (match) {
+                        this.major = parseInt(match[1]);
+                        this.detected = `v${this.major}`;
+                        return this.major;
+                    }
+                }
+
+                // Méthode 3: Fallback - analyser le DOM
+                const metaGenerator = document.querySelector('meta[name="generator"]');
+                if (metaGenerator) {
+                    const content = metaGenerator.getAttribute('content');
+                    const match = content.match(/Odoo\s+(\d+)/i);
+                    if (match) {
+                        this.major = parseInt(match[1]);
+                        this.detected = `v${this.major}`;
+                        return this.major;
+                    }
+                }
+
+                // Défaut v16
+                this.major = 16;
+                this.detected = 'v16 (défaut)';
+                return this.major;
+            } catch (e) {
+                this.major = 16;
+                this.detected = 'v16 (erreur)';
+                return this.major;
+            }
+        },
+
+        isV19OrHigher() {
+            return this.major >= 19;
+        },
+
+        isV18OrHigher() {
+            return this.major >= 18;
+        },
+
+        isV17OrHigher() {
+            return this.major >= 17;
+        }
+    };
+
+    // Détecter la version au chargement
+    OdooVersion.detect();
+
+    // =========================================================
+    // SYSTÈME DE SÉLECTEURS ADAPTATIFS MULTI-VERSION
+    // =========================================================
+    const Selectors = {
+        // Essaie plusieurs sélecteurs dans l'ordre jusqu'à trouver un élément
+        find(selectorsArray, context = document) {
+            for (const selector of selectorsArray) {
+                try {
+                    const element = context.querySelector(selector);
+                    if (element) return element;
+                } catch (e) {
+                    // Sélecteur invalide, continuer
+                }
+            }
+            return null;
+        },
+
+        findAll(selectorsArray, context = document) {
+            for (const selector of selectorsArray) {
+                try {
+                    const elements = context.querySelectorAll(selector);
+                    if (elements.length > 0) return elements;
+                } catch (e) {
+                    // Sélecteur invalide, continuer
+                }
+            }
+            return [];
+        },
+
+        // Sélecteurs pour les champs de formulaire
+        field(fieldName) {
+            return [
+                // v19
+                `.o_field_widget[name="${fieldName}"]`,
+                `[data-field="${fieldName}"]`,
+                `.o_field[name="${fieldName}"]`,
+                // v16-v18
+                `.o_field_widget[name="${fieldName}"]`,
+                `.o_field_many2one[name="${fieldName}"]`,
+                `.o_field_many2many_tags[name="${fieldName}"]`,
+                `[name="${fieldName}"]`
+            ];
+        },
+
+        // Sélecteurs pour les boutons
+        button(text) {
+            return [
+                // v19
+                `button:contains("${text}")`,
+                `button[title="${text}"]`,
+                `button[aria-label="${text}"]`,
+                // v16-v18
+                `button.o_form_button_save`,
+                `button[data-hotkey="s"]`,
+                `.o_form_button_save`
+            ];
+        },
+
+        // Sélecteurs pour la statusbar
+        statusbar() {
+            return [
+                // v19
+                '.o_statusbar',
+                '.o_form_statusbar',
+                '[data-name="statusbar"]',
+                // v16-v18
+                '.o_statusbar',
+                '.o_form_statusbar .o_statusbar_status'
+            ];
+        },
+
+        // Sélecteurs pour le breadcrumb
+        breadcrumb() {
+            return [
+                // v19
+                '.o_breadcrumb',
+                '.o_control_panel_breadcrumbs',
+                '[data-name="breadcrumb"]',
+                // v16-v18
+                '.o_breadcrumb',
+                '.breadcrumb'
+            ];
+        },
+
+        // Sélecteurs pour les lignes de liste
+        listRows() {
+            return [
+                // v19
+                '.o_data_row',
+                '.o_list_row',
+                'tr.o_data_row',
+                // v16-v18
+                '.o_data_row',
+                'tbody tr.o_data_row'
+            ];
+        }
+    };
+
+    // =========================================================
+    // HELPER POUR TROUVER DES ÉLÉMENTS DE MANIÈRE ROBUSTE
+    // =========================================================
+    function findElement(selectorsArray, context = document) {
+        return Selectors.find(selectorsArray, context);
+    }
+
+    function findElements(selectorsArray, context = document) {
+        return Selectors.findAll(selectorsArray, context);
+    }
+
+    function findField(fieldName, context = document) {
+        return Selectors.find(Selectors.field(fieldName), context);
+    }
 
     // =========================================================
     // CONFIGURATION API — obfusquée XOR 0x5A
@@ -79,18 +262,38 @@
     // =========================================================
     // COUCHE API ODOO (JSON-RPC + clé API)
     // =========================================================
+    // v19 expose les infos de session sous odoo.__session_info__ (au lieu de odoo.session_info en v16-v18).
+    // window.__tmSessionInfo est rempli par warmCurrentUserName() via /web/session/get_session_info (fallback fiable).
+    function getSessionInfo() {
+        try {
+            return (window.odoo && (odoo.session_info || odoo.__session_info__)) || window.__tmSessionInfo || {};
+        } catch (e) { return window.__tmSessionInfo || {}; }
+    }
+
+    // Heure locale "murale" au format ISO sans fuseau (ex: 2026-06-09T16:01:00).
+    // Évite le décalage UTC de toISOString() qui affichait l'heure en retard de 2h.
+    function toLocalIsoNoTz(input) {
+        let d;
+        try { d = input ? new Date(input) : new Date(); } catch (_) { d = new Date(); }
+        if (isNaN(d.getTime())) d = new Date();
+        const p = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    }
+
     function getOdooContext() {
-        try { return (window.odoo && odoo.session_info && odoo.session_info.user_context) || {}; } catch (e) { return {}; }
+        try { return getSessionInfo().user_context || {}; } catch (e) { return {}; }
     }
 
     async function odooRpc(model, method, args = [], kwargs = {}) {
+        // v16 → v19 : requête sur le MÊME domaine que la page (session = cookie).
+        // On n'utilise plus l'URL codée en dur (_ru) car l'instance v19 peut être sur un autre domaine
+        // => sinon le fetch part en cross-origin, les cookies ne sont pas envoyés et l'appel échoue.
         try {
-            const res = await fetch(_ru() + '/web/dataset/call_kw', {
+            const res = await fetch(window.location.origin + '/web/dataset/call_kw/' + model + '/' + method, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'Authorization': _authHeader()
+                    'X-Requested-With': 'XMLHttpRequest'
                 },
                 credentials: 'include',
                 body: JSON.stringify({
@@ -103,7 +306,7 @@
             });
             const data = await res.json();
             if (data && data.result !== undefined) return data.result;
-            if (data && data.error) console.warn('[OdooAPI] Erreur RPC:', data.error.data?.message || data.error.message);
+            if (data && data.error) console.warn('[OdooAPI] Erreur RPC', model, method, ':', data.error.data?.message || data.error.message);
         } catch (err) { console.warn('[OdooAPI] Fetch échoué:', model, method, err); }
         return null;
     }
@@ -223,22 +426,45 @@
     // HELPERS URL / TICKET ID
     // =========================================================
     function isTicketPage() {
-        return window.location.href.includes('model=helpdesk.ticket');
+        const url = window.location.href;
+        // v19: /odoo/all-tickets/ ou /odoo/tickets/
+        // v16-v18: model=helpdesk.ticket
+        return url.includes('model=helpdesk.ticket') ||
+               url.includes('/odoo/all-tickets') ||
+               url.includes('/odoo/tickets/') ||
+               url.match(/\/odoo\/[^/]*tickets[^/]*\/\d+/);
     }
     function isTicketForm() {
         const h = window.location.href;
+        // v19: URL avec un numéro de ticket à la fin
+        if (h.match(/\/odoo\/[^/]*tickets[^/]*\/\d+/)) return true;
+        // v16-v18: paramètres classiques
         return h.includes('model=helpdesk.ticket') && (h.includes('view_type=form') || h.includes('id='));
     }
     function isTicketList() {
-        return window.location.href.includes('model=helpdesk.ticket') && window.location.href.includes('view_type=list');
+        const h = window.location.href;
+        // v19: URL sans numéro de ticket
+        if (h.includes('/odoo/all-tickets') && !h.match(/\/\d+/)) return true;
+        if (h.includes('/odoo/tickets') && !h.match(/\/\d+/)) return true;
+        // v16-v18: paramètres classiques
+        return h.includes('model=helpdesk.ticket') && h.includes('view_type=list');
     }
     function isCreatingTicket() {
-        return window.location.href.includes('model=helpdesk.ticket') && window.location.href.includes('view_type=form');
+        const h = window.location.href;
+        // v19: URL avec /new ou /create
+        if (h.includes('/odoo/all-tickets/new') || h.includes('/odoo/tickets/new')) return true;
+        // v16-v18: paramètres classiques
+        return h.includes('model=helpdesk.ticket') && h.includes('view_type=form');
     }
 
     function getTicketIdFromUrl() {
-        const m = window.location.href.match(/[#&?]id=(\d+)/);
-        return m ? m[1] : null;
+        // v19: /odoo/all-tickets/76073
+        const v19Match = window.location.href.match(/\/odoo\/[^/]*tickets[^/]*\/(\d+)/);
+        if (v19Match) return v19Match[1];
+
+        // v16-v18: ?id=76073 ou #id=76073
+        const classicMatch = window.location.href.match(/[#&?]id=(\d+)/);
+        return classicMatch ? classicMatch[1] : null;
     }
 
     function getTicketIdFromPage() {
@@ -265,30 +491,51 @@
         return txt.includes('supprimer') || txt.includes('delete');
     }
 
+    // =========================================================
+    // SYSTÈME DE DEBUG ET LOGGING (DÉSACTIVÉ EN PRODUCTION)
+    // =========================================================
+    // Objet Debug vide pour éviter les erreurs (les appels Debug.log sont ignorés)
+    const Debug = {
+        log() {},
+        error() {}
+    };
+
     function readFirstText(selectors) {
         for (const sel of selectors) {
-            const el = document.querySelector(sel);
-            if (!el) continue;
-            const v = (el.value || el.textContent || '').trim();
-            if (v) return v;
+            try {
+                const el = document.querySelector(sel);
+                if (!el) continue;
+                const v = (el.value || el.textContent || '').trim();
+                if (v) return v;
+            } catch (e) {
+                // Selector invalide, continuer
+            }
         }
         return '';
     }
 
+    let _currentUserNameCache = '';
+
     function getOdooCurrentUserName() {
-        // Prefer session_info if available
+        // 0) Cache pré-chargé (le plus fiable, alimenté via API au démarrage)
+        if (_currentUserNameCache) return _currentUserNameCache;
+
+        // 1) Infos de session (v16-v18: session_info, v19: __session_info__)
         try {
-            const n = (window.odoo && odoo.session_info && (odoo.session_info.name || odoo.session_info.username)) || '';
-            if (n) return String(n).trim();
+            const si = getSessionInfo();
+            const n = (si && (si.name || si.partner_display_name || si.username)) || '';
+            if (n) { _currentUserNameCache = String(n).trim(); return _currentUserNameCache; }
         } catch (_) {}
 
-        // Fallback UI: navbar user name
+        // 2) Fallback UI: navbar user name (sélecteurs élargis v16 → v19)
         try {
             const navUser = document.querySelector(
                 '.o_user_menu .o_menu_brand, ' +
                 '.o_user_menu span[class*="name"], ' +
                 '.o_main_navbar .o_user_menu > a > span, ' +
-                '.o_main_navbar .o_user_menu .o_dropdown_title'
+                '.o_main_navbar .o_user_menu .o_dropdown_title, ' +
+                '.o_user_menu .oi-user + span, ' +
+                'header .o_user_menu button span'
             );
             if (navUser) {
                 const t = (navUser.textContent || '').trim();
@@ -297,6 +544,40 @@
         } catch (_) {}
 
         return '';
+    }
+
+    // Pré-charge le nom de l'utilisateur courant. À appeler au démarrage.
+    // Source fiable v19 : endpoint /web/session/get_session_info (indépendant de l'exposition de odoo.*).
+    async function warmCurrentUserName() {
+        try {
+            // Tentative directe (session déjà exposée / navbar)
+            const direct = getOdooCurrentUserName();
+            if (direct) { _currentUserNameCache = direct; return direct; }
+        } catch (_) {}
+
+        // Fallback fiable : interroger la session côté serveur
+        try {
+            const res = await fetch(window.location.origin + '/web/session/get_session_info', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                credentials: 'include',
+                body: JSON.stringify({ jsonrpc: '2.0', method: 'call', params: {} })
+            });
+            const data = await res.json();
+            const si = data && data.result;
+            if (si && typeof si === 'object') {
+                try { window.__tmSessionInfo = si; } catch (_) {}
+                const n = si.name || si.partner_display_name || si.username;
+                if (n) { _currentUserNameCache = String(n).trim(); return _currentUserNameCache; }
+                // Dernier recours : lire res.users via l'uid
+                const uid = si.uid || (si.user_context && si.user_context.uid) || null;
+                if (uid) {
+                    const u = await odooRead('res.users', Number(uid), ['name']);
+                    if (u && u.name) { _currentUserNameCache = String(u.name).trim(); return _currentUserNameCache; }
+                }
+            }
+        } catch (_) {}
+        return _currentUserNameCache;
     }
 
     function getTicketInfoFromDom() {
@@ -384,7 +665,7 @@
             try { snap = await apiGetTicketDeleteSnapshot(ticketId); } catch (_) { snap = null; }
 
             const dom = getTicketInfoFromDom();
-            const currentUser = getOdooCurrentUserName();
+            const currentUser = getOdooCurrentUserName() || await warmCurrentUserName();
 
             const merge = (apiVal, domVal) => {
                 const a = (apiVal ?? '');
@@ -516,6 +797,11 @@
                     odoo_url: String(p.odoo_url || '')
                 });
             } catch (_) {}
+            // Filet de sécurité : si le nom est encore vide, le résoudre via l'API avant l'envoi
+            let deletedBy = String(p.deleted_by || '').trim();
+            if (!deletedBy) {
+                try { deletedBy = String((await warmCurrentUserName()) || '').trim(); } catch (_) {}
+            }
             const body = new URLSearchParams({
                 api_key: PORTAL_API_KEY,
                 ticket_id: String(p.ticket_id || ''),
@@ -528,8 +814,8 @@
                 client_note: String(p.client_note || ''),
                 created_at: String(p.created_at || ''),
                 updated_at: String(p.updated_at || ''),
-                deleted_by: String(p.deleted_by || ''),
-                deleted_at_local: String(p.deleted_at_local || ''),
+                deleted_by: deletedBy,
+                deleted_at_local: toLocalIsoNoTz(p.deleted_at_local),
                 odoo_url: String(p.odoo_url || '')
             });
 
@@ -685,7 +971,7 @@
                 return originalFetch(input, init);
             }
 
-            const currentUser = getOdooCurrentUserName();
+            const currentUser = getOdooCurrentUserName() || await warmCurrentUserName();
             const dom0 = getTicketInfoFromDom();
             // Base payload immédiat: on enverra au moins l'ID même si le snapshot RPC échoue.
             _pendingDeleteAudit = {
@@ -879,7 +1165,7 @@
     // =========================================================
     // FONCTIONS HISTORIQUE ET PRODUITS CLIENTS
     // =========================================================
-    
+
     // Fonction pour sauvegarder l'état de l'historique
     function saveHistoryState(isVisible) {
         try {
@@ -923,31 +1209,36 @@
     // Fonction pour obtenir l'ID selon le modèle présent dans l'URL
     async function getIdToProcess() {
         try {
-            console.log('[HISTORY] URL complète:', window.location.href);
-            console.log('[HISTORY] Hash:', window.location.hash);
-            
+
             // Essayer différentes méthodes pour parser l'URL Odoo
             let params, model, id;
-            
-            // Méthode 1: URLSearchParams sur le hash
-            if (window.location.hash) {
-                params = new URLSearchParams(window.location.hash.slice(1));
-                model = params.get("model");
-                id = params.get("id");
-                console.log('[HISTORY] Méthode 1 - Model:', model, 'ID:', id);
+
+            // Méthode 1: v19 - Parser l'URL directement (ex: /odoo/all-tickets/76045)
+            const v19Match = window.location.href.match(/\/odoo\/[^/]*tickets[^/]*\/(\d+)/);
+            if (v19Match) {
+                model = 'helpdesk.ticket';
+                id = v19Match[1];
             }
-            
-            // Méthode 2: Parser manuellement l'URL Odoo
+
+            // Méthode 2: URLSearchParams sur le hash (v16-v18)
+            if (!model || !id) {
+                if (window.location.hash) {
+                    params = new URLSearchParams(window.location.hash.slice(1));
+                    model = params.get("model");
+                    id = params.get("id");
+                }
+            }
+
+            // Méthode 3: Parser manuellement l'URL Odoo
             if (!model || !id) {
                 const urlMatch = window.location.href.match(/[#&]model=([^&]+).*[#&]id=(\d+)/);
                 if (urlMatch) {
                     model = urlMatch[1];
                     id = urlMatch[2];
-                    console.log('[HISTORY] Méthode 2 - Model:', model, 'ID:', id);
                 }
             }
-            
-            // Méthode 3: Utiliser l'API Odoo pour obtenir l'ID actuel
+
+            // Méthode 4: Utiliser l'API Odoo pour obtenir l'ID actuel
             if (!model || !id) {
                 try {
                     if (window.odoo && window.odoo.env && window.odoo.env.services && window.odoo.env.services.action) {
@@ -956,55 +1247,49 @@
                             const props = actionService.currentController.props;
                             model = props.resModel;
                             id = props.resId;
-                            console.log('[HISTORY] Méthode 3 - Model:', model, 'ID:', id);
                         }
                     }
                 } catch (e) {
-                    console.log('[HISTORY] Méthode 3 échouée:', e);
+                    // Méthode 4 échouée
                 }
             }
-            
+
             if (!model || !id) {
                 console.log('[HISTORY] Impossible de déterminer le modèle et l\'ID');
                 return null;
             }
 
-            console.log('[HISTORY] Modèle détecté:', model, 'ID:', id);
-
             if (model === "res.partner") {
-                console.log('[HISTORY] Retour direct de l\'ID partenaire:', id);
                 return id;
             } else if (model === "helpdesk.ticket") {
-                console.log('[HISTORY] Récupération du partenaire depuis le ticket:', id);
                 const ticketDetails = await odooRead('helpdesk.ticket', Number(id), ['partner_id']);
-                console.log('[HISTORY] Détails du ticket:', ticketDetails);
                 if (ticketDetails && ticketDetails.partner_id) {
-                    console.log('[HISTORY] Partner ID trouvé:', ticketDetails.partner_id[0]);
                     return ticketDetails.partner_id[0];
                 }
                 return null;
             } else if (model === "sale.order") {
-                console.log('[HISTORY] Récupération du partenaire depuis la commande:', id);
                 const orderDetails = await odooRead('sale.order', Number(id), ['partner_id']);
-                console.log('[HISTORY] Détails de la commande:', orderDetails);
                 if (orderDetails && orderDetails.partner_id) {
-                    console.log('[HISTORY] Partner ID trouvé:', orderDetails.partner_id[0]);
                     return orderDetails.partner_id[0];
                 }
                 return null;
             }
-            
-            console.log('[HISTORY] Modèle non supporté:', model);
+
             return null;
         } catch (error) {
-            console.error('[HISTORY] Erreur dans getIdToProcess:', error);
             return null;
         }
     }
 
     // Fonction pour vérifier si l'URL correspond aux patterns autorisés
     function isValidUrlForHistory() {
+        const h = window.location.href;
         const hash = window.location.hash;
+
+        // v19: URLs avec /odoo/all-tickets/ID ou /odoo/tickets/ID
+        if (h.match(/\/odoo\/[^/]*tickets[^/]*\/\d+/)) return true;
+
+        // v16-v18: paramètres classiques dans le hash
         const isTicketPage = hash.includes("model=helpdesk.ticket") && hash.includes("view_type=form");
         const isPartnerPage = hash.includes("model=res.partner") && hash.includes("view_type=form");
         const isSaleOrderPage = hash.includes("model=sale.order") && hash.includes("view_type=form");
@@ -1014,35 +1299,22 @@
     // Fonction pour récupérer les tickets d'un client
     async function fetchClientTickets() {
         try {
-            console.log('[HISTORY] Début de fetchClientTickets');
             const partnerId = await getIdToProcess();
-            console.log('[HISTORY] Partner ID récupéré:', partnerId);
-            
+
             if (!partnerId) {
-                console.log('[HISTORY] Aucun partner ID trouvé');
                 return null;
             }
 
-            console.log('[HISTORY] Recherche des tickets pour le partner:', partnerId);
-            
-            const tickets = await odooRpc('helpdesk.ticket', 'web_search_read', [], {
-                offset: 0,
-                limit: 0,
-                order: "create_date DESC, priority DESC, id ASC",
-                domain: [["partner_id", "=", parseInt(partnerId)]],
-                fields: [
+            // v19 : web_search_read exige désormais "specification" et non "fields".
+            // On utilise search_read (stable v16 → v19) qui renvoie directement un tableau.
+            const tickets = await odooRpc('helpdesk.ticket', 'search_read', [
+                [["partner_id", "=", parseInt(partnerId)]],
+                [
                     "name", "priority", "create_date", "close_date", "team_id",
                     "user_id", "stage_id", "request_answer", "description"
-                ]
-            });
-
-            console.log('[HISTORY] Résultat de la recherche de tickets:', tickets);
-            
-            if (tickets && tickets.records) {
-                console.log('[HISTORY] Nombre de tickets trouvés:', tickets.records.length);
-            } else {
-                console.log('[HISTORY] Aucun ticket dans la réponse ou format inattendu');
-            }
+                ],
+                0, 0, "create_date DESC, priority DESC, id ASC"
+            ]);
 
             return tickets;
         } catch (error) {
@@ -1052,148 +1324,116 @@
     }
 
     // Fonction pour récupérer les produits d'un client via traçabilité
+    // Migré de get_html (parsing HTML fragile) vers get_main_lines (JSON structuré).
+    // get_main_lines renvoie un tableau d'objets dont chaque "columns" contient :
+    //   [0]=référence, [1]=nom produit "[code] libellé", [2]=date,
+    //   [3]=lot, [4]=emplacement source, [5]=emplacement destination, [6]=quantité.
     async function fetchClientProducts() {
         try {
-            console.log('[PRODUCTS] Début de fetchClientProducts');
             const partnerId = await getIdToProcess();
-            console.log('[PRODUCTS] Partner ID récupéré:', partnerId);
-            
+
             if (!partnerId) {
-                console.log('[PRODUCTS] Aucun partner ID trouvé');
                 return null;
             }
 
-            console.log('[PRODUCTS] Récupération des produits pour le partner:', partnerId);
+            // Appel de l'API de traçabilité via le helper standard (session par cookie, v16 → v19).
+            // get_main_lines attend un unique argument positionnel (objet de paramètres).
+            const result = await odooRpc(
+                'stock.traceability.report',
+                'get_main_lines',
+                [{
+                    active_id: parseInt(partnerId),
+                    auto_unfold: false,
+                    model: 'res.partner',
+                    lot_name: false,
+                    ttype: false,
+                    lang: 'fr_FR'
+                }]
+            );
 
-            // Utilisation de l'API de traçabilité
-            const payload = {
-                "id": 38,
-                "jsonrpc": "2.0",
-                "method": "call",
-                "params": {
-                    "args": [{
-                        "lang": "fr_FR",
-                        "tz": "Europe/Paris",
-                        "uid": 493,
-                        "allowed_company_ids": [1],
-                        "active_id": parseInt(partnerId),
-                        "model": "res.partner",
-                        "ttype": false,
-                        "auto_unfold": false,
-                        "lot_name": false
-                    }],
-                    "model": "stock.traceability.report",
-                    "method": "get_html",
-                    "kwargs": {
-                        "context": {
-                            "lang": "fr_FR",
-                            "tz": "Europe/Paris",
-                            "uid": 493,
-                            "allowed_company_ids": [1]
-                        }
-                    }
-                }
-            };
-
-            console.log('[PRODUCTS] Payload de la requête:', payload);
-
-            const response = await fetch(_ru() + '/web/dataset/call_kw/stock.traceability.report/get_html', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'Authorization': _authHeader()
-                },
-                credentials: 'include',
-                body: JSON.stringify(payload)
-            });
-
-            console.log('[PRODUCTS] Réponse HTTP status:', response.status);
-
-            const data = await response.json();
-            console.log('[PRODUCTS] Données reçues:', data);
-
-            if (!data || !data.result || !data.result.html) {
-                console.log('[PRODUCTS] Pas de HTML dans la réponse');
+            if (!Array.isArray(result)) {
                 return null;
             }
-
-            // Parser le HTML pour extraire les informations
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(data.result.html, 'text/html');
-            const rows = doc.querySelectorAll('tr[data-id]');
-            console.log('[PRODUCTS] Nombre de lignes trouvées dans le HTML:', rows.length);
 
             // Regrouper les produits par référence
             const groupedProducts = {};
-            Array.from(rows).forEach((row, index) => {
-                const cells = row.querySelectorAll('td');
-                console.log('[PRODUCTS] Ligne', index, '- Nombre de cellules:', cells.length);
-                
-                if (cells.length >= 7) {
-                    const reference = cells[0].textContent.trim();
-                    const productCell = cells[1].textContent.trim();
-                    const productMatch = productCell.match(/\[(.*?)\]\s*(.*)/);
-                    const productCode = productMatch ? productMatch[1] : '';
-                    const productName = productMatch ? productMatch[2] : productCell;
-                    const date = cells[2].textContent.trim();
-                    const lot = cells[3].textContent.trim();
-                    const quantity = cells[6].textContent.trim();
+            result.forEach((line) => {
+                const cols = Array.isArray(line.columns) ? line.columns : [];
 
-                    console.log('[PRODUCTS] Produit trouvé:', { reference, productCode, productName, date, lot, quantity });
+                // Référence : champ dédié sinon première colonne
+                const reference = (line.reference || cols[0] || '').trim();
+                // Nom produit : "[code] libellé" dans columns[1]
+                const productCell = (cols[1] || '').trim();
+                const productMatch = productCell.match(/\[(.*?)\]\s*(.*)/);
+                const productCode = productMatch ? productMatch[1] : '';
+                const productName = productMatch ? productMatch[2] : productCell;
+                const date = (cols[2] || '').trim();
+                const lot = (line.lot_name || cols[3] || '').trim();
+                const locationDest = (line.location_destination || cols[5] || '').trim();
+                const quantityRaw = (cols[6] || '').trim();
+                // "1,00 Unités" -> 1.00
+                const quantity = parseFloat(quantityRaw.replace(/\s/g, '').replace(',', '.')) || 0;
 
-                    if (reference.startsWith('SORTIE') || reference.startsWith('EXPEDITIONS')) {
-                        const isExpress = reference.includes('EXPRESS');
-                        if (!groupedProducts[reference]) {
-                            groupedProducts[reference] = {
-                                date: date,
-                                isExpress: isExpress,
-                                products: {}
-                            };
-                        }
-
-                        const productKey = `${productCode}-${productName}`;
-                        if (!groupedProducts[reference].products[productKey]) {
-                            groupedProducts[reference].products[productKey] = {
-                                code: productCode,
-                                name: productName,
-                                lots: [],
-                                totalQuantity: 0
-                            };
-                        }
-
-                        if (lot) {
-                            groupedProducts[reference].products[productKey].lots.push(lot);
-                        }
-                        groupedProducts[reference].products[productKey].totalQuantity += parseFloat(quantity) || 0;
-                    }
+                if (!productCell) {
+                    return;
                 }
+
+                // On ne retient que les mouvements sortants vers un client.
+                const isClientMove =
+                    line.usage === 'out' ||
+                    /client/i.test(locationDest);
+
+                if (!isClientMove) {
+                    return;
+                }
+
+                const isExpress = /express/i.test(reference);
+                const groupKey = reference || productName;
+
+                if (!groupedProducts[groupKey]) {
+                    groupedProducts[groupKey] = {
+                        reference: reference,
+                        date: date,
+                        isExpress: isExpress,
+                        products: {}
+                    };
+                }
+
+                const productKey = `${productCode}-${productName}`;
+                if (!groupedProducts[groupKey].products[productKey]) {
+                    groupedProducts[groupKey].products[productKey] = {
+                        code: productCode,
+                        name: productName,
+                        lots: [],
+                        totalQuantity: 0
+                    };
+                }
+
+                if (lot && !groupedProducts[groupKey].products[productKey].lots.includes(lot)) {
+                    groupedProducts[groupKey].products[productKey].lots.push(lot);
+                }
+                groupedProducts[groupKey].products[productKey].totalQuantity += quantity;
             });
 
-            console.log('[PRODUCTS] Produits groupés:', groupedProducts);
-
-            // Transformer les données
+            // Transformer les données au format attendu par updateProductsList()
             const products = {
                 result: {
-                    records: Object.entries(groupedProducts).flatMap(([reference, group]) =>
+                    records: Object.values(groupedProducts).flatMap((group) =>
                         Object.values(group.products).map(product => ({
                             name: product.name,
                             default_code: product.code,
                             type: group.isExpress ? 'express' : 'normal',
                             create_date: group.date,
-                            description: `Référence: ${reference}\nLots: ${product.lots.join(', ')}\nQuantité: ${product.totalQuantity}`,
+                            description: `Référence: ${group.reference}\nLots: ${product.lots.join(', ')}\nQuantité: ${product.totalQuantity}`,
                             categ_id: [null, 'Produit client']
                         }))
                     )
                 }
             };
 
-            console.log('[PRODUCTS] Produits transformés:', products);
-            console.log('[PRODUCTS] Nombre de produits finaux:', products.result.records.length);
-
             return products;
         } catch (error) {
-            console.error('[PRODUCTS] Erreur lors de la récupération des produits:', error);
+            console.error('[PRODUITS] Erreur fetchClientProducts:', error);
             return null;
         }
     }
@@ -1239,9 +1479,21 @@
     // DÉTECTION ÉTAT DOM (fallback)
     // =========================================================
     function domTimerState() {
-        if (document.querySelector('button[name="action_timer_pause"][type="object"]')) return 'running';
-        if (document.querySelector('button[name="action_timer_resume"][type="object"]')) return 'paused';
-        if (document.querySelector('button[name="action_timer_start"][type="object"]')) return 'stopped';
+        // v19 + v16-v18: Chercher les boutons timer Odoo
+        const pauseBtn = document.querySelector('button[name="action_timer_pause"][type="object"], button[name="action_timer_pause"], button[data-method="action_timer_pause"]');
+        const resumeBtn = document.querySelector('button[name="action_timer_resume"][type="object"], button[name="action_timer_resume"], button[data-method="action_timer_resume"]');
+        const startBtn = document.querySelector('button[name="action_timer_start"][type="object"], button[name="action_timer_start"], button[data-method="action_timer_start"]');
+
+        if (pauseBtn) {
+            return 'running';
+        }
+        if (resumeBtn) {
+            return 'paused';
+        }
+        if (startBtn) {
+            return 'stopped';
+        }
+
         return 'unknown';
     }
 
@@ -1270,11 +1522,30 @@
     }
 
     function findAssignButton() {
-        return document.querySelector('button[name="assign_ticket_to_self"]') ||
-            Array.from(document.getElementsByTagName('button')).find(b => {
-                const s = b.querySelector('span');
-                return s && s.textContent.trim().toLowerCase() === "me l'assigner";
-            });
+        // v19: Chercher le bouton "Me l'assigner"
+        const btn1 = document.querySelector('button[name="assign_ticket_to_self"]');
+        if (btn1) return btn1;
+
+        // Chercher par texte
+        return Array.from(document.getElementsByTagName('button')).find(b => {
+            const s = b.querySelector('span');
+            const text = s ? s.textContent.trim().toLowerCase() : b.textContent.trim().toLowerCase();
+            return text === "me l'assigner" || text === "assign to me";
+        });
+    }
+
+    // Clique automatiquement le bouton natif "Me l'assigner" s'il apparaît (UI v19).
+    // Attend qu'il soit visible et actif (jusqu'à ~1,5 s), puis clique une seule fois.
+    async function clickAssignSelfIfPresent() {
+        for (let i = 0; i < 10; i++) {
+            const b = findAssignButton();
+            if (b && b.offsetParent !== null && !b.disabled) {
+                b.click();
+                return true;
+            }
+            await wait(150);
+        }
+        return false;
     }
 
     // =========================================================
@@ -1303,22 +1574,34 @@
     function injectStyles() {
         const s = document.createElement('style');
         s.textContent = `
-        /* === BOUTONS STATUSBAR — alignés sur la hauteur Odoo native (28px) === */
+        /* === BOUTONS STATUSBAR — harmonisés, plus aérés === */
         #btn-traiter-appel, #btn-inserer-initiales {
-            height: 28px !important;
+            height: 32px !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            gap: 7px !important;
             line-height: 1 !important;
-            border-radius: 4px !important;
+            border-radius: 7px !important;
             font-weight: 600 !important;
-            font-size: 12px !important;
-            padding: 0 10px !important;
+            font-size: 12.5px !important;
+            letter-spacing: .2px !important;
+            padding: 0 15px !important;
             border: none !important;
             cursor: pointer !important;
-            transition: filter .12s ease !important;
-            margin-right: 4px !important;
+            transition: transform .1s ease, box-shadow .15s ease, filter .12s ease !important;
+            margin-right: 8px !important;
             vertical-align: middle !important;
             white-space: nowrap !important;
+            box-shadow: 0 1px 2px rgba(0,0,0,.18) !important;
         }
-        #btn-traiter-appel:hover, #btn-inserer-initiales:hover { filter: brightness(1.12); }
+        #btn-traiter-appel svg, #btn-inserer-initiales svg { flex: 0 0 auto !important; }
+        #btn-traiter-appel:hover, #btn-inserer-initiales:hover {
+            filter: brightness(1.08) !important;
+            transform: translateY(-1px) !important;
+            box-shadow: 0 3px 9px rgba(0,0,0,.26) !important;
+        }
+        #btn-traiter-appel:active, #btn-inserer-initiales:active { transform: translateY(0) !important; }
         #btn-traiter-appel.en-cours {
             background: #f59e0b !important; color: #fff !important;
             animation: pulseWarning 2s infinite;
@@ -1337,54 +1620,39 @@
             70%      { box-shadow: 0 0 0 6px rgba(37,99,235,0); }
         }
         #btn-inserer-initiales { background: #17b6b2 !important; color: #fff !important; }
-        
+
         /* === BOUTONS HISTORIQUE ET PRODUITS === */
         #showHistoryButton, #showProductsButton {
             position: relative;
-            display: inline-flex;
+            display: inline-flex !important;
             align-items: center;
             gap: 8px;
-            margin-bottom: 15px;
-            padding: 8px 16px;
+            margin: 10px 10px 10px 0;
+            padding: 10px 18px;
             background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
-            color: white;
+            color: white !important;
             border: none;
-            border-radius: 8px;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 13px;
             font-weight: 600;
-            box-shadow: 0 2px 8px rgba(0,160,157,0.3);
-            transition: all 0.3s ease;
-            margin-right: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            box-shadow: 0 2px 8px rgba(0,160,157,0.25);
+            transition: all 0.2s ease;
+            text-transform: none;
+            letter-spacing: 0.3px;
         }
         #showHistoryButton:hover, #showProductsButton:hover {
             background: linear-gradient(135deg, #008F8C 0%, #007F7D 100%);
-            box-shadow: 0 4px 12px rgba(0,160,157,0.4);
-            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,160,157,0.35);
+            transform: translateY(-1px);
         }
         #showHistoryButton:active, #showProductsButton:active {
             transform: translateY(0px);
-            box-shadow: 0 2px 6px rgba(0,160,157,0.3);
+            box-shadow: 0 2px 6px rgba(0,160,157,0.25);
         }
         #showHistoryButton i, #showProductsButton i {
-            font-size: 14px;
-        }
-        #showHistoryButton::before, #showProductsButton::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0) 100%);
-            border-radius: 8px;
-            opacity: 0;
-            transition: opacity 0.3s ease;
-        }
-        #showHistoryButton:hover::before, #showProductsButton:hover::before {
-            opacity: 1;
+            font-size: 15px;
+            margin-right: 4px;
         }
 
         /* === CONTENEURS HISTORIQUE ET PRODUITS === */
@@ -1441,13 +1709,13 @@
         }
 
         /* === THÈME SOMBRE === */
-        .dark-theme #zone_historique_tickets, 
+        .dark-theme #zone_historique_tickets,
         .dark-theme #zone_produits_client {
             background-color: #1f2937;
             border-color: #374151;
             color: #e5e7eb;
         }
-        .dark-theme .historique-header, 
+        .dark-theme .historique-header,
         .dark-theme .produits-header {
             background: #1f2937;
             border-bottom-color: #374151;
@@ -1457,13 +1725,13 @@
         .dark-theme .produits-header-left {
             color: #60a5fa;
         }
-        .dark-theme .ticket-item, 
+        .dark-theme .ticket-item,
         .dark-theme .product-item {
             background-color: #1f2937;
             border-color: #374151;
             color: #e5e7eb;
         }
-        .dark-theme .ticket-item:hover, 
+        .dark-theme .ticket-item:hover,
         .dark-theme .product-item:hover {
             background-color: #2d3748;
         }
@@ -1814,23 +2082,30 @@
             flex-wrap: wrap;
         }
 
-        /* Bouton "ME L'ASSIGNER" natif Odoo — harmonisé, texte blanc */
+        /* Bouton "ME L'ASSIGNER" natif Odoo — harmonisé avec les autres */
         button[name="assign_ticket_to_self"] {
-            height: 28px !important;
+            height: 32px !important;
             line-height: 1 !important;
-            border-radius: 4px !important;
-            font-size: 12px !important;
-            padding: 0 10px !important;
+            border-radius: 7px !important;
+            font-size: 12.5px !important;
+            letter-spacing: .2px !important;
+            padding: 0 15px !important;
             font-weight: 600 !important;
             vertical-align: middle !important;
             box-sizing: border-box !important;
             color: #fff !important;
-            background: #017e84 !important;
+            background: #3b4658 !important;
             border: none !important;
+            margin-right: 8px !important;
+            box-shadow: 0 1px 2px rgba(0,0,0,.18) !important;
+            transition: background .12s ease, transform .1s ease, box-shadow .15s ease !important;
         }
         button[name="assign_ticket_to_self"]:hover {
-            background: #015f64 !important;
+            background: #2c3543 !important;
+            transform: translateY(-1px) !important;
+            box-shadow: 0 3px 9px rgba(0,0,0,.26) !important;
         }
+        button[name="assign_ticket_to_self"]:active { transform: translateY(0) !important; }
         /* Bouton désassignation */
         .clear-assign-button {
             background: none; border: none; color: #dc3545;
@@ -1838,33 +2113,20 @@
             position: absolute; right: 34px; top: 50%;
             transform: translateY(-50%); z-index: 2; line-height: 1;
         }
-        /* === INDICATEUR EN COURS — dans le formulaire === */
+        /* === INDICATEUR EN COURS — dans le formulaire (texte simple, sans halo) === */
         #texte-clignotant-container {
-            display: inline-flex; align-items: center; gap: 10px;
-            padding: 5px 12px 5px 8px;
-            border-radius: 20px;
-            background: linear-gradient(90deg, rgba(59,130,246,.18) 0%, rgba(37,99,235,.12) 100%);
-            border: 1px solid rgba(59,130,246,.5);
-            box-shadow: 0 0 12px rgba(59,130,246,.18);
+            display: block;
+            margin: 0 0 6px 0;
+            color: #7c3aed;
+            font-weight: 600;
+            background: none !important;
+            border: none !important;
+            box-shadow: none !important;
+            padding: 0 !important;
+            border-radius: 0 !important;
         }
         #texte-clignotant-container span {
-            color: #93c5fd; font-weight: 700; font-size: 12px;
-        }
-        #texte-clignotant-container .wave-text {
-            display: inline-flex;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 0;
-            line-height: 1.1;
-        }
-        #texte-clignotant-container .wave-letter {
-            display: inline-block;
-            animation: letterWave 2s ease-in-out infinite;
-            margin-right: -0.03em;
-            letter-spacing: 0;
-        }
-        #texte-clignotant-container .wave-space {
-            margin-right: 0.28em;
+            color: inherit; font-weight: inherit; font-size: inherit;
         }
         @keyframes letterWave {
             0%, 60%, 100% { transform: translateY(0); }
@@ -1884,12 +2146,12 @@
         }
         /* === ANIMATIONS LISTE TICKETS === */
         @keyframes ticketEnTraitement {
-            0%,100% { box-shadow: 0 0 0 0 rgba(59,130,246,.3); background-color: rgba(59,130,246,.06); }
-            50%      { box-shadow: 0 0 10px 0 rgba(59,130,246,.5); background-color: rgba(59,130,246,.13); }
+            0%,100% { box-shadow: 0 0 0 0 rgba(139,92,246,.35); background-color: rgba(139,92,246,.07); }
+            50%      { box-shadow: 0 0 10px 0 rgba(139,92,246,.55); background-color: rgba(139,92,246,.14); }
         }
         .o_list_view .o_data_row.ticket-en-traitement {
             position: relative !important; z-index: 1 !important;
-            border: 2px solid rgba(59,130,246,.7) !important; border-radius: 4px !important;
+            border: 2px solid rgba(139,92,246,.7) !important; border-radius: 4px !important;
         }
         .o_list_view .o_data_row.ticket-en-traitement::after {
             content: ''; position: absolute; inset: -1px; pointer-events: none;
@@ -2101,71 +2363,143 @@
     // TEXTE CLIGNOTANT "EN COURS"
     // =========================================================
     function addBlinkText() {
+        // Déjà présent ?
         if (document.getElementById('texte-clignotant-container')) return;
-        const assignBtn = findAssignButton();
-        if (assignBtn) return;
 
-        const reponseField = document.querySelector('div#request_answer.note-editable');
+        // Champ "Réponse à la demande" (zone éditable)
+        const selectors = [
+            '.o_field_html[name="request_answer"] .note-editable.odoo-editor-editable',
+            '.o_field_html[name="request_answer"] .note-editable',
+            '[name="request_answer"] .note-editable',
+            '.o_field_widget[name="request_answer"] .odoo-editor-editable',
+            'div#request_answer.note-editable',
+            'div.note-editable.odoo-editor-editable[contenteditable="true"]'
+        ];
+
+        let reponseField = null;
+        for (const selector of selectors) {
+            reponseField = document.querySelector(selector);
+            if (reponseField) break;
+        }
         if (!reponseField) return;
 
-        const container = document.createElement('div');
-        container.id = 'texte-clignotant-container';
+        // Indicateur simple et propre — même balise que le marqueur enregistré en base
+        const p = document.createElement('p');
+        p.id = 'texte-clignotant-container';
+        p.setAttribute('data-tm-traitement', '1');
+        p.style.cssText = 'margin:0 0 6px 0;color:#7c3aed;font-weight:600;';
+        p.textContent = "Traitement de l'appel en cours...";
 
-        const img = document.createElement('img');
-        img.src = 'https://media.tenor.com/ZZu2QC-efdUAAAAi/cute-cat-white.gif';
-        img.style.cssText = 'width:28px;height:28px;flex-shrink:0;border-radius:50%;';
-
-        const txt = document.createElement('span');
-        txt.className = 'wave-text';
-        const text = "Traitement de l'appel en cours ...";
-        // Créer un span par lettre pour l'effet vague
-        text.split('').forEach((char, i) => {
-            const letterSpan = document.createElement('span');
-            letterSpan.className = char === ' ' ? 'wave-letter wave-space' : 'wave-letter';
-            letterSpan.textContent = char === ' ' ? '\u00A0' : char; // espace insécable
-            letterSpan.style.animationDelay = `${i * 0.08}s`; // délai échelonné
-            txt.appendChild(letterSpan);
-        });
-
-        container.appendChild(img);
-        container.appendChild(txt);
-
-        const wrapper = document.createElement('div');
-        wrapper.style.cssText = 'margin-bottom:6px;';
-        wrapper.appendChild(container);
-
-        if (reponseField.firstChild) reponseField.insertBefore(wrapper, reponseField.firstChild);
-        else reponseField.appendChild(wrapper);
+        if (reponseField.firstChild) reponseField.insertBefore(p, reponseField.firstChild);
+        else reponseField.appendChild(p);
     }
 
     function removeBlinkText() {
-        const el = document.getElementById('texte-clignotant-container');
-        if (!el) return;
-        // Supprimer uniquement le wrapper direct du container, pas le contenu utilisateur
-        const wrapper = el.parentElement;
-        if (wrapper && wrapper.tagName === 'SPAN' && wrapper.children.length === 1) {
-            wrapper.remove();
-        } else {
-            el.remove();
+        // Retire le marqueur quel que soit son support (id injecté ou attribut persisté)
+        document.getElementById('texte-clignotant-container')?.remove();
+        document.querySelectorAll('[data-tm-traitement="1"]').forEach(el => el.remove());
+        // L'attribut data-* peut avoir été supprimé par Odoo au rechargement : retirer aussi par texte
+        const editor = document.querySelector(
+            '.o_field_html[name="request_answer"], [name="request_answer"], div#request_answer'
+        );
+        if (editor) {
+            editor.querySelectorAll('p').forEach(p => {
+                if (isMarkerText(p.textContent)) p.remove();
+            });
         }
+    }
+
+    // Normalise un texte pour comparer le marqueur (insensible à la casse, apostrophes, espaces)
+    function normalizeMarkerText(t) {
+        return (t || '').toLowerCase().replace(/[\u2019']/g, "'").replace(/\s+/g, ' ').trim();
+    }
+    // Le texte correspond-il au marqueur "Traitement de l'appel en cours..." ?
+    function isMarkerText(t) {
+        return normalizeMarkerText(t).includes("traitement de l'appel en cours");
+    }
+
+    // Le ticket affiché est-il "en traitement" ? (marqueur présent dans l'éditeur de réponse)
+    function isTraitementActive() {
+        if (document.getElementById('texte-clignotant-container')) return true;
+        const editor = document.querySelector(
+            '.o_field_html[name="request_answer"], [name="request_answer"], div#request_answer'
+        );
+        if (editor) {
+            // Détection par attribut dédié...
+            if (editor.querySelector('[data-tm-traitement="1"]')) return true;
+            // ...ou par texte (l'attribut data-* peut être supprimé par le sanitizer Odoo)
+            if (isMarkerText(editor.textContent)) return true;
+        }
+        return false;
     }
 
     // =========================================================
     // BOUTON TRAITER L'APPEL — LOGIQUE PRINCIPALE
     // =========================================================
-    function updateTraiterBtn(btn, enCours, paused = false) {
-        if (enCours) {
-            btn.textContent = 'Mettre en pause';
-            btn.className = 'btn en-cours';
-            btn.id = 'btn-traiter-appel';
-        } else if (paused) {
-            btn.textContent = "Reprendre l'appel";
-            btn.className = 'btn en-pause';
-            btn.id = 'btn-traiter-appel';
+    function updateTraiterBtn(btn, isTreating) {
+        const phoneIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6.62 10.79a15.15 15.15 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.24.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2z"/></svg>';
+        const pauseIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5h3v14H8zM13 5h3v14h-3z"/></svg>';
+        btn.id = 'btn-traiter-appel';
+        btn.className = '';            // pas de classe en-cours/en-attente => aucun effet de couleur / clignotement
+        if (isTreating) {
+            btn.innerHTML = pauseIcon + 'Mettre en attente';
+            btn.style.backgroundColor = '#64748b';
         } else {
-            btn.textContent = "Traiter l'appel";
-            btn.className = 'btn en-attente';
-            btn.id = 'btn-traiter-appel';
+            btn.innerHTML = phoneIcon + "Traiter l'appel";
+            btn.style.backgroundColor = '#0d9488';
+        }
+    }
+
+    // Marqueur "en traitement" géré directement en base (indépendant de l'éditeur Owl).
+    const TM_MARKER_TEXT = "Traitement de l'appel en cours...";
+    const TM_MARKER_HTML = '<p data-tm-traitement="1" style="margin:0 0 6px 0;color:#7c3aed;font-weight:600;">' + TM_MARKER_TEXT + '</p>';
+
+    async function setTraitementMarker(ticketId, add) {
+        try {
+            const rec = await odooRead('helpdesk.ticket', Number(ticketId), ['request_answer']);
+            let html = (rec && typeof rec.request_answer === 'string') ? rec.request_answer : '';
+            // Toujours retirer tout marqueur existant (évite les doublons empilés)
+            html = stripTraitementMarkerHtml(html);
+            if (add) html = TM_MARKER_HTML + html;
+            await odooWrite('helpdesk.ticket', Number(ticketId), { request_answer: html });
+            return true;
+        } catch (e) {
+            console.warn('[TRAITER] Écriture marqueur échouée:', e);
+            return false;
+        }
+    }
+
+    // Retire de l'HTML tous les marqueurs de traitement, par attribut ET par texte.
+    // (Odoo peut supprimer l'attribut data-* : on s'appuie alors sur le texte.)
+    function stripTraitementMarkerHtml(html) {
+        if (!html) return '';
+        try {
+            const doc = new DOMParser().parseFromString('<div id="__tm_wrap">' + html + '</div>', 'text/html');
+            const wrap = doc.getElementById('__tm_wrap');
+            if (!wrap) throw new Error('no wrap');
+            wrap.querySelectorAll('p').forEach(p => {
+                if (p.getAttribute('data-tm-traitement') === '1' || isMarkerText(p.textContent)) {
+                    p.remove();
+                }
+            });
+            return wrap.innerHTML;
+        } catch (e) {
+            // Fallback regex si DOMParser indisponible
+            return html.replace(/<p[^>]*data-tm-traitement="1"[^>]*>[\s\S]*?<\/p>/gi, '');
+        }
+    }
+
+    // Restaure l'état du bouton de façon fiable en lisant la base (source de vérité).
+    // Indépendant du timing de rendu de l'éditeur et du nettoyage des attributs data-*.
+    async function restoreTraiterBtnState(btn, ticketId) {
+        try {
+            const rec = await odooRead('helpdesk.ticket', Number(ticketId), ['request_answer']);
+            const html = (rec && typeof rec.request_answer === 'string') ? rec.request_answer : '';
+            const active = isMarkerText(html);
+            updateTraiterBtn(btn, active);
+            saveState(ticketId, active ? 'running' : 'stopped');
+        } catch (e) {
+            // En cas d'échec API, on garde l'état déduit du DOM/localStorage
         }
     }
 
@@ -2175,65 +2509,47 @@
         btn.disabled = true;
 
         const ticketId = getTicketIdFromPage();
-        if (!ticketId) { state.isProcessing = false; btn.disabled = false; return; }
-
-        // Utiliser l'état DOM en priorité : le localStorage peut être décalé.
-        // Fallback sur l'état "effectif" si jamais DOM ne renvoie rien.
-        let currentState = domTimerState();
-        if (currentState === 'unknown') currentState = await getEffectiveTimerState(ticketId);
+        if (!ticketId) {
+            alert("Impossible de trouver l'ID du ticket. Assurez-vous d'être sur un formulaire de ticket.");
+            state.isProcessing = false;
+            btn.disabled = false;
+            return;
+        }
 
         try {
-            if (currentState === 'running') {
-                // Pause
-                simulerRaccourciPause();
-                await wait(300);
-                await waitForDomTimerState('paused', 7000);
-                saveState(ticketId, 'paused');
-                updateTraiterBtn(btn, false, true);
+            const textPresent = isTraitementActive();
+
+            if (textPresent) {
+                // METTRE EN ATTENTE : retirer le marqueur (DOM + base)
                 removeBlinkText();
-                await saveForm();
-
+                saveState(ticketId, 'stopped');
+                updateTraiterBtn(btn, false);
+                await setTraitementMarker(ticketId, false);
             } else {
-                // Reprendre depuis pause ou démarrer depuis stop
-                const needStart = currentState === 'stopped';
+                // TRAITER L'APPEL : s'assigner le ticket + poser le marqueur
 
-                // Assigner à soi-même seulement si on démarre (sinon on risque de perturber la reprise)
-                if (needStart) {
-                    const assignDomBtn = findAssignButton();
-                    if (assignDomBtn) {
-                        assignDomBtn.click();
-                        for (let i = 0; i < 15; i++) {
-                            await wait(300);
-                            if (!findAssignButton()) break;
-                        }
-                    } else {
-                        await odooCall('helpdesk.ticket', 'assign_ticket_to_self', [Number(ticketId)]);
-                        await wait(500);
-                    }
-                }
+                // 1) Affichage immédiat dans l'éditeur (visuel) — survit aussi à une sauvegarde manuelle
+                addBlinkText();
 
-                if (currentState === 'paused') {
-                    // Resume via Alt+W
-                    simulerRaccourciPause();
-                    await wait(300);
-                    await waitForDomTimerState('running', 7000);
-                } else {
-                    // Start via Alt+Z
-                    simulerRaccourciTimer();
-                    await wait(300);
-                    await waitForDomTimerState('running', 7000);
+                // 2) S'assigner le ticket côté serveur (sans déclencher la sauvegarde du formulaire Owl)
+                await odooCall('helpdesk.ticket', 'assign_ticket_to_self', [Number(ticketId)]);
+
+                // 2b) Si le bouton natif "Me l'assigner" est affiché (UI v19), le cliquer automatiquement
+                //     pour refléter l'assignation dans le formulaire.
+                clickAssignSelfIfPresent();
+
+                // 3) Poser le marqueur directement en base (persistant, visible par tous)
+                const ok = await setTraitementMarker(ticketId, true);
+                if (!ok) {
+                    alert("L'enregistrement a échoué. Vérifie que tu es bien connecté.");
                 }
 
                 saveState(ticketId, 'running');
-                state.timerStoppedForTicket = null;
-                state.timerStoppedAt = 0;
                 updateTraiterBtn(btn, true);
-                await wait(100);
-                addBlinkText();
-                await saveForm();
             }
         } catch (e) {
-            console.warn('[TraiterAppel] Erreur:', e);
+            console.error('[TRAITER] Erreur:', e);
+            alert('Erreur lors du traitement de l\'appel: ' + e.message);
         } finally {
             await wait(200);
             btn.disabled = false;
@@ -2241,39 +2557,152 @@
         }
     }
 
+    // =========================================================
+    // BOUTON "TRAITER L'APPEL" — AJOUT
+    // =========================================================
     function addTraiterButton() {
-        if (!isTicketPage()) { removeTraiterButton(); return; }
-        const statusbar = document.querySelector('.o_statusbar_buttons');
-        if (!statusbar || document.getElementById('btn-traiter-appel')) return;
+        console.log('[BOUTON] Ajout du bouton');
+        if (!isTicketForm()) { removeTraiterButton(); return; }
 
-        const ticketId = getTicketIdFromPage();
-        const st = ticketId ? loadState(ticketId) : 'stopped';
+        const statusbarSelectors = [
+            '.o_statusbar_buttons',
+            '.o_form_statusbar .o_statusbar_buttons',
+            '.o_control_panel_actions',
+            '.o_cp_action_menus',
+            '.o_control_panel .o_cp_buttons'
+        ];
+        let statusbar = null;
+        for (const selector of statusbarSelectors) {
+            statusbar = document.querySelector(selector);
+            if (statusbar) {
+                console.log('[BOUTON] Conteneur trouvé:', selector);
+                break;
+            }
+        }
+        if (!statusbar) {
+            console.log('[BOUTON] ❌ Pas de conteneur');
+            return;
+        }
+        if (document.getElementById('btn-traiter-appel')) {
+            console.log('[BOUTON] Bouton déjà présent');
+            return;
+        }
+
+        // Vérifier si le ticket est déjà "en traitement" (pour restaurer l'état du bouton)
+        // 1) Estimation immédiate via DOM + localStorage (évite le clignotement visuel)
+        const ticketIdForState = getTicketIdFromPage();
+        const textPresent = isTraitementActive() || (loadState(ticketIdForState) === 'running');
+        console.log('[BOUTON] En traitement (estimation) :', textPresent);
 
         const btn = document.createElement('button');
         btn.id = 'btn-traiter-appel';
         btn.type = 'button';
-        updateTraiterBtn(btn, st === 'running', st === 'paused');
+        btn.style.color = 'white';
+        btn.style.border = 'none';
+        btn.style.padding = '6px 12px';
+        btn.style.borderRadius = '3px';
+        btn.style.cursor = 'pointer';
+        btn.style.fontWeight = '500';
+        btn.style.display = 'inline-flex';
+        btn.style.alignItems = 'center';
 
-        // Restaurer le gif si le timer était en cours
-        if (st === 'running') setTimeout(addBlinkText, 600);
+        // Mettre à jour le bouton selon la présence du texte
+        updateTraiterBtn(btn, textPresent);
 
-        btn.addEventListener('click', () => handleTraiterClick(btn));
+        btn.addEventListener('click', (e) => {
+            console.log('[BOUTON] Click event triggered!');
+            console.log('[BOUTON] Event:', e);
+            console.log('[BOUTON] Button:', btn);
+            e.preventDefault();
+            e.stopPropagation();
+            handleTraiterClick(btn);
+        });
+
         statusbar.insertBefore(btn, statusbar.firstChild);
 
-        if (ticketId) {
-            setTimeout(async () => {
-                if (!document.body.contains(btn)) return;
-                const realState = await getEffectiveTimerState(ticketId);
-                updateTraiterBtn(btn, realState === 'running', realState === 'paused');
-                if (realState === 'running') addBlinkText();
-                if (realState !== 'running') removeBlinkText();
-            }, 150);
+        // 2) Correction fiable de l'état via lecture de la base (source de vérité).
+        //    Gère le cas où l'éditeur n'est pas encore rendu et où Odoo a nettoyé l'attribut data-*.
+        if (ticketIdForState) {
+            restoreTraiterBtnState(btn, ticketIdForState);
         }
+        console.log('[BOUTON] ✅ Bouton inséré');
+        console.log('[BOUTON] Bouton dans le DOM:', document.getElementById('btn-traiter-appel'));
     }
 
     function removeTraiterButton() {
         document.getElementById('btn-traiter-appel')?.remove();
         removeBlinkText();
+    }
+
+    // =========================================================
+    // DÉTECTION CHANGEMENT DE STAGE POUR "METTRE EN ATTENTE"
+    // =========================================================
+    let lastStageText = '';
+
+    function watchStageChanges() {
+        // Surveiller les changements de stage dans la statusbar
+        const statusbarSelectors = [
+            '.o_statusbar_status',
+            '.o_form_statusbar .o_statusbar_status',
+            '.o_statusbar .o_statusbar_status'
+        ];
+
+        let statusbar = null;
+        for (const selector of statusbarSelectors) {
+            statusbar = document.querySelector(selector);
+            if (statusbar) break;
+        }
+
+        if (!statusbar) return;
+
+        // Trouver le stage actif
+        const activeStage = statusbar.querySelector('.o_active, button[aria-pressed="true"], .o_arrow_button_current');
+        if (!activeStage) return;
+
+        const currentStageText = (activeStage.textContent || '').trim().toLowerCase();
+
+        // Si le stage a changé et qu'il contient "attente" ou "pending"
+        if (currentStageText !== lastStageText) {
+            if (currentStageText.includes('attente') || currentStageText.includes('pending')) {
+                // Supprimer l'animation avec bulle bleue
+                removeBlinkText();
+
+                // Réinitialiser le bouton
+                const btn = document.getElementById('btn-traiter-appel');
+                if (btn) {
+                    updateTraiterBtn(btn, false, true);
+                }
+                const ticketId = getTicketIdFromPage();
+                if (ticketId) saveState(ticketId, 'paused');
+            }
+
+            lastStageText = currentStageText;
+        }
+    }
+
+    // =========================================================
+    // CACHER LE BOUTON "CONVERTIR EN OPPORTUNITÉ"
+    // =========================================================
+    function hideConvertToOpportunityButton() {
+        // v19: Chercher dans le bon conteneur
+        const containers = [
+            '.o_statusbar_buttons',      // v19 + v16-v18
+            '.o_control_panel_actions',  // v19 alternative
+            '.o_form_statusbar'
+        ];
+
+        for (const containerSelector of containers) {
+            const container = document.querySelector(containerSelector);
+            if (!container) continue;
+
+            const allButtons = container.querySelectorAll('button');
+            allButtons.forEach(btn => {
+                const text = (btn.textContent || btn.title || btn.getAttribute('aria-label') || '').toLowerCase();
+                if (text.includes('convertir') && (text.includes('opportun') || text.includes('opportunity'))) {
+                    btn.style.display = 'none';
+                }
+            });
+        }
     }
 
     function getOdooActionService() {
@@ -2475,31 +2904,24 @@
             const ticketId = getTicketIdFromPage();
             if (!ticketId) return;
 
-            // Éviter de relancer si on vient juste de finir
-            if (state.timerStoppedForTicket === ticketId && Date.now() - state.timerStoppedAt < 15000) return;
-
-            // On ne stoppe que si le timer n'est pas déjà arrêté
-            const stDom = domTimerState();
-            if (stDom !== 'running' && stDom !== 'paused') return;
-
             state.closureRunning = true;
 
             try {
+                // Supprimer le texte animé si présent
                 removeBlinkText();
-                const btn = document.getElementById('btn-traiter-appel');
-                if (btn) updateTraiterBtn(btn, false, false);
 
-                const stopped = await stopTimerAndTimesheetViaShortcuts(ticketId);
-                if (stopped) {
-                    state.timerStoppedForTicket = String(ticketId);
-                    state.timerStoppedAt = Date.now();
+                // Réinitialiser le bouton "Traiter l'appel" si présent
+                const btn = document.getElementById('btn-traiter-appel');
+                if (btn) {
+                    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px;"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>Traiter l\'appel';
+                    btn.style.backgroundColor = '#00a09d';
                 }
 
-                // Ouvrir le panneau raisons APRES la séquence stop/timesheet
+                // Ouvrir le panneau raisons
                 sessionStorage.removeItem('pendingReasonPanelAfterClosure');
                 scheduleReasonPanel(250, 40);
             } catch (e) {
-                console.warn('[Clôture] Erreur:', e);
+                // Erreur silencieuse
             } finally {
                 setTimeout(() => { state.closureRunning = false; }, 1500);
             }
@@ -2542,8 +2964,9 @@
                 sessionStorage.removeItem('reasonPanelForceOpen');
                 sessionStorage.removeItem('reasonPanelProtectedTicketId');
             }
-            // Ne pas ouvrir le panneau via la méthode normale
-            sessionStorage.removeItem('pendingReasonPanel');
+            // Conserver aussi le chemin normal (robuste aux rerenders Odoo)
+            sessionStorage.setItem('pendingReasonPanel', '1');
+            scheduleReasonPanel(250, 40);
         });
     }
 
@@ -2588,26 +3011,42 @@
             // Récupérer le nom de l'utilisateur connecté
             let userName = '';
 
-            // Priorité 1 : session Odoo
-            try { userName = odoo?.session_info?.name || ''; } catch(_) {}
+            // Priorité 1 : session Odoo (v16-v18: session_info, v19: __session_info__)
+            try { userName = getSessionInfo().name || ''; } catch(_) {}
 
-            // Priorité 2 : navbar haut droite
+            // Priorité 2 : navbar haut droite (v19 compatible)
             if (!userName) {
-                const navUser = document.querySelector(
-                    '.o_user_menu .o_menu_brand, .o_user_menu span[class*="name"], ' +
-                    '.o_main_navbar .o_user_menu > a > span, ' +
-                    '.o_main_navbar .o_user_menu .o_dropdown_title'
-                );
-                if (navUser) userName = navUser.textContent.trim();
+                const navUserSelectors = [
+                    '.o_user_menu .o_menu_brand',
+                    '.o_user_menu span[class*="name"]',
+                    '.o_main_navbar .o_user_menu > a > span',
+                    '.o_main_navbar .o_user_menu .o_dropdown_title',
+                    '.o_navbar_apps_menu ~ div button span'  // v19
+                ];
+                for (const selector of navUserSelectors) {
+                    const navUser = document.querySelector(selector);
+                    if (navUser) {
+                        userName = navUser.textContent.trim();
+                        if (userName) break;
+                    }
+                }
             }
 
-            // Priorité 3 : champ assigné DOM (lecture seule)
+            // Priorité 3 : champ assigné DOM (lecture seule) - v19 compatible
             if (!userName) {
-                const assignField = document.querySelector(
-                    '.o_field_widget[name="user_id"] .o_form_uri, ' +
-                    '.o_field_widget[name="user_id"] span'
-                );
-                if (assignField) userName = assignField.textContent.trim();
+                const assignSelectors = [
+                    '.o_field_widget[name="user_id"] .o_form_uri',
+                    '.o_field_widget[name="user_id"] span',
+                    '.o_field[name="user_id"] .o_field_many2one_selection',
+                    '[name="user_id"] input'
+                ];
+                for (const selector of assignSelectors) {
+                    const assignField = document.querySelector(selector);
+                    if (assignField) {
+                        userName = (assignField.value || assignField.textContent || '').trim();
+                        if (userName) break;
+                    }
+                }
             }
 
             if (!userName) { alert('Impossible de récupérer votre nom. Vérifiez que vous êtes connecté.'); return; }
@@ -2616,8 +3055,25 @@
             const now = new Date();
             const pad = n => n.toString().padStart(2, '0');
             const texte = `${initiales} ${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} ${pad(now.getHours())}H${pad(now.getMinutes())} : `;
-            const zone = document.querySelector('div#request_answer.note-editable');
+
+            // v19: Chercher la zone de réponse avec plusieurs sélecteurs
+            const zoneSelectors = [
+                'div#request_answer.note-editable',
+                '[name="request_answer"] .note-editable',
+                '.o_field_widget[name="request_answer"] .note-editable',
+                '.o_field[name="request_answer"] .note-editable'
+            ];
+
+            let zone = null;
+            for (const selector of zoneSelectors) {
+                zone = document.querySelector(selector);
+                if (zone) {
+                    break;
+                }
+            }
+
             if (!zone) { alert('Zone de réponse non trouvée !'); return; }
+
             // Supprimer les BR et espaces vides en fin de zone
             while (zone.lastChild && (
                 zone.lastChild.nodeName === 'BR' ||
@@ -2632,14 +3088,67 @@
             try { zone.scrollTop = zone.scrollHeight; } catch (_) {}
         });
 
-        const btnMsg = document.querySelector('button.o_chatter_button_new_message, button[accesskey="m"]');
-        if (btnMsg?.parentNode) btnMsg.parentNode.insertBefore(btn, btnMsg);
-        else {
-            const zone = document.querySelector('div#request_answer.note-editable');
-            if (zone?.parentNode) zone.parentNode.insertBefore(btn, zone);
+        // Stratégie 1 : Insérer au-dessus de la zone "Réponse à la demande"
+        const zoneSelectors = [
+            'div#request_answer.note-editable',
+            '[name="request_answer"] .note-editable',
+            '.o_field_widget[name="request_answer"] .note-editable',
+            '.o_field[name="request_answer"] .note-editable'
+        ];
+
+        let zone = null;
+        for (const selector of zoneSelectors) {
+            zone = document.querySelector(selector);
+            if (zone) {
+                break;
+            }
+        }
+
+        if (zone) {
+            // Insérer le bouton juste au-dessus de la zone éditable
+            const container = zone.closest('.o_field_widget, .o_field, [name="request_answer"]');
+            if (container && container.parentNode) {
+                // Créer un conteneur pour le bouton si nécessaire
+                let btnContainer = container.querySelector('.tm-initiales-btn-container');
+                if (!btnContainer) {
+                    btnContainer = document.createElement('div');
+                    btnContainer.className = 'tm-initiales-btn-container';
+                    btnContainer.style.marginBottom = '8px';
+                    // Insérer AVANT le container du champ, pas avant la zone
+                    container.parentNode.insertBefore(btnContainer, container);
+                }
+                // Vider et ajouter le bouton
+                btnContainer.innerHTML = '';
+                btnContainer.appendChild(btn);
+                return;
+            }
+        }
+
+        // Stratégie 2 : Chercher le bouton message du chatter
+        const btnMsgSelectors = [
+            '.o-mail-Chatter button',  // v19
+            '.o_mail_chatter_container button',
+            'button.o_chatter_button_new_message',
+            'button[accesskey="m"]',
+            '.o_chatter button[title*="message"]',
+            '.o_chatter_topbar button'
+        ];
+
+        let btnMsg = null;
+        for (const selector of btnMsgSelectors) {
+            btnMsg = document.querySelector(selector);
+            if (btnMsg) {
+                break;
+            }
+        }
+
+        if (btnMsg?.parentNode) {
+            btnMsg.parentNode.insertBefore(btn, btnMsg);
         }
     }
 
+    // =========================================================
+    // BOUTON DÉSASSIGNATION (croix)
     // =========================================================
     // BOUTON DÉSASSIGNATION (croix)
     // =========================================================
@@ -2699,7 +3208,6 @@
         // Vérifier si le panneau a déjà été complété pour ce ticket
         const currentTicketId = getTicketIdFromPage();
         if (currentTicketId && sessionStorage.getItem(`reasonPanelCompleted_${currentTicketId}`) === '1') {
-            console.log('[ReasonPanel] Panneau déjà complété pour ce ticket, skip schedule');
             return;
         }
 
@@ -2782,7 +3290,6 @@
         // Vérifier si le panneau a déjà été complété pour ce ticket
         const currentTicketId = getTicketIdFromPage();
         if (currentTicketId && sessionStorage.getItem(`reasonPanelCompleted_${currentTicketId}`) === '1') {
-            console.log('[ReasonPanel] Panneau déjà complété pour ce ticket, skip');
             return;
         }
 
@@ -2810,39 +3317,81 @@
             styleEl.id = 'odoo-reason-style';
             styleEl.textContent = `
         #odoo-reason-panel {
-            --bg:#0f1115; --elev:#151823; --text:#e6e8ee; --muted:#a8b0c2;
-            --accent:#00d0b6; --accent-2:#3b82f6; --danger:#ef4444; --success:#22c55e;
-            --chip:#1f2330; --chip-border:#2a3042;
+            --bg:#0e1016; --elev:#171a24; --card:#1b1f2b; --text:#eef1f8; --muted:#9aa3b8;
+            --accent:#5b8cff; --accent-soft:rgba(91,140,255,.16); --hw:#5b8cff; --sw:#22c79a;
+            --hw-soft:rgba(91,140,255,.16); --sw-soft:rgba(34,199,154,.16);
+            --danger:#ef5350; --border:#272c3a; --chip:#1f2431;
         }
         #odoo-reason-panel.theme-light {
-            --bg:#fff; --elev:#f6f7fb; --text:#0e1320; --muted:#56607a;
-            --accent:#09b39e; --accent-2:#2563eb; --danger:#dc2626; --success:#16a34a;
-            --chip:#eef1f7; --chip-border:#dde3f0;
+            --bg:#f4f6fb; --elev:#ffffff; --card:#ffffff; --text:#15203a; --muted:#5c6780;
+            --accent:#2563eb; --accent-soft:rgba(37,99,235,.12); --hw:#2563eb; --sw:#0ea36f;
+            --hw-soft:rgba(37,99,235,.10); --sw-soft:rgba(14,163,111,.12);
+            --danger:#dc2626; --border:#e3e8f2; --chip:#f3f5fa;
         }
-        #odoo-reason-panel { width:min(960px,92vw); max-height:86vh; border-radius:14px; overflow:hidden; box-shadow:0 20px 50px rgba(0,0,0,.35); display:flex; flex-direction:column; font-family:Inter,system-ui,sans-serif; }
-        #odoo-reason-panel .hdr { background:var(--elev); padding:16px 18px; display:flex; align-items:center; gap:12px; color:var(--text); border-bottom:1px solid var(--chip-border); }
-        #odoo-reason-panel .title { font-size:16px; font-weight:600; margin-right:auto; }
-        #odoo-reason-panel .theme-toggle { border:1px solid var(--chip-border); background:var(--chip); color:var(--text); border-radius:20px; padding:6px 10px; cursor:pointer; font-size:12px; }
-        #odoo-reason-panel .close-btn { border:1px solid var(--chip-border); background:transparent; color:var(--danger); border-radius:999px; width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-size:18px; }
-        #odoo-reason-panel .body { background:var(--bg); color:var(--text); display:grid; grid-template-columns:1fr 1fr; min-height:0; overflow:auto; }
-        #odoo-reason-panel .col { padding:14px 16px; border-right:1px solid var(--chip-border); }
-        #odoo-reason-panel .col:last-child { border-right:0; }
-        #odoo-reason-panel .col-title { font-weight:600; margin-bottom:10px; color:var(--muted); text-transform:uppercase; font-size:12px; letter-spacing:.6px; }
-        #odoo-reason-panel .list { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-        #odoo-reason-panel .chip { border:1px solid var(--chip-border); background:var(--chip); color:var(--text); padding:9px 10px; border-radius:10px; display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; transition:transform .06s ease; }
-        #odoo-reason-panel .chip:hover { transform:translateY(-1px); }
-        #odoo-reason-panel .chip input { accent-color:var(--accent-2); }
-        #odoo-reason-panel .chip--software input { accent-color:var(--success); }
-        #odoo-reason-panel .chip.selected { border-color:var(--accent-2); box-shadow:0 0 0 2px rgba(59,130,246,.25) inset; }
-        #odoo-reason-panel .chip--software.selected { border-color:var(--success); box-shadow:0 0 0 2px rgba(34,197,94,.25) inset; }
-        #odoo-reason-panel .ftr { background:var(--elev); padding:12px 16px; display:flex; align-items:center; gap:10px; border-top:1px solid var(--chip-border); }
-        #odoo-reason-panel .btn { padding:10px 16px; border-radius:10px; font-weight:600; border:1px solid transparent; cursor:pointer; }
-        #odoo-reason-panel .btn.primary { background:linear-gradient(180deg,var(--accent),#08a892); color:#fff; }
-        #odoo-reason-panel .btn.primary:disabled { opacity:.55; cursor:not-allowed; }
-        #odoo-reason-panel .btn.ghost { background:transparent; border-color:var(--chip-border); color:var(--text); }
+        #odoo-reason-overlay { backdrop-filter:blur(3px); }
+        #odoo-reason-panel { width:min(880px,94vw); max-height:88vh; border-radius:18px; overflow:hidden;
+            box-shadow:0 24px 70px rgba(0,0,0,.45); display:flex; flex-direction:column;
+            font-family:Inter,system-ui,-apple-system,sans-serif; border:1px solid var(--border); background:var(--bg); }
+
+        /* Header */
+        #odoo-reason-panel .hdr { background:var(--elev); padding:14px 18px; display:flex; align-items:center; gap:12px;
+            color:var(--text); border-bottom:1px solid var(--border); flex-wrap:wrap; }
+        #odoo-reason-panel .title { font-size:15px; font-weight:700; letter-spacing:.2px; display:flex; align-items:center; gap:8px; margin-right:auto; }
+        #odoo-reason-panel .title::before { content:'🏷️'; font-size:16px; }
+        #odoo-reason-panel .search { flex:1 1 220px; min-width:180px; max-width:340px; position:relative; order:3; }
+        #odoo-reason-panel .search input { width:100%; box-sizing:border-box; padding:8px 12px 8px 32px; border-radius:10px;
+            border:1px solid var(--border); background:var(--chip); color:var(--text); font-size:13px; outline:none; }
+        #odoo-reason-panel .search input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+        #odoo-reason-panel .search::before { content:'🔍'; position:absolute; left:10px; top:50%; transform:translateY(-50%); font-size:12px; opacity:.7; }
+        #odoo-reason-panel .theme-toggle { border:1px solid var(--border); background:var(--chip); color:var(--text);
+            border-radius:10px; padding:7px 12px; cursor:pointer; font-size:12px; font-weight:600; }
+        #odoo-reason-panel .theme-toggle:hover { border-color:var(--accent); }
+        #odoo-reason-panel .close-btn { border:1px solid var(--border); background:transparent; color:var(--danger);
+            border-radius:10px; width:34px; height:34px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-size:18px; }
+        #odoo-reason-panel .close-btn:hover { background:var(--danger); color:#fff; border-color:var(--danger); }
+
+        /* Body */
+        #odoo-reason-panel .body { background:var(--bg); color:var(--text); display:grid; grid-template-columns:1fr 1fr;
+            gap:14px; padding:16px; min-height:0; overflow:auto; }
+        #odoo-reason-panel .col { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:14px 14px 8px; }
+        #odoo-reason-panel .col-title { font-weight:700; margin-bottom:12px; font-size:13px; display:flex; align-items:center; gap:8px; }
+        #odoo-reason-panel .col-title .count { margin-left:auto; font-size:11px; font-weight:700; padding:2px 9px; border-radius:999px;
+            background:var(--hw-soft); color:var(--hw); }
+        #odoo-reason-panel .col--sw .col-title .count { background:var(--sw-soft); color:var(--sw); }
+        #odoo-reason-panel .list { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:7px; }
+
+        /* Chips */
+        #odoo-reason-panel .chip { border:1px solid var(--border); background:var(--chip); color:var(--text);
+            padding:9px 11px; border-radius:11px; display:flex; align-items:center; gap:9px; cursor:pointer; user-select:none;
+            font-size:13px; line-height:1.2; transition:border-color .12s, background .12s, transform .06s; }
+        #odoo-reason-panel .chip:hover { transform:translateY(-1px); border-color:var(--hw); }
+        #odoo-reason-panel .col--sw .chip:hover { border-color:var(--sw); }
+        #odoo-reason-panel .chip input { width:16px; height:16px; flex:0 0 auto; accent-color:var(--hw); cursor:pointer; margin:0; }
+        #odoo-reason-panel .chip--software input { accent-color:var(--sw); }
+        #odoo-reason-panel .chip span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        #odoo-reason-panel .chip.selected { border-color:var(--hw); background:var(--hw-soft); font-weight:600; }
+        #odoo-reason-panel .chip--software.selected { border-color:var(--sw); background:var(--sw-soft); }
+        #odoo-reason-panel .col-empty { color:var(--muted); font-size:12px; padding:8px 2px; font-style:italic; display:none; }
+
+        /* Footer */
+        #odoo-reason-panel .ftr { background:var(--elev); padding:12px 16px; display:flex; align-items:center; gap:10px;
+            border-top:1px solid var(--border); }
+        #odoo-reason-panel .sel-count { font-size:12px; color:var(--muted); margin-right:auto; font-weight:600; }
+        #odoo-reason-panel .sel-count b { color:var(--accent); }
+        #odoo-reason-panel .btn { padding:9px 18px; border-radius:11px; font-weight:700; font-size:13px; border:1px solid transparent; cursor:pointer; }
+        #odoo-reason-panel .btn.primary { background:var(--accent); color:#fff; }
+        #odoo-reason-panel .btn.primary:hover { filter:brightness(1.08); }
+        #odoo-reason-panel .btn.primary:disabled { opacity:.5; cursor:not-allowed; filter:none; }
+        #odoo-reason-panel .btn.ghost { background:transparent; border-color:var(--border); color:var(--muted); }
+        #odoo-reason-panel .btn.ghost:hover { color:var(--text); border-color:var(--accent); }
+
+        /* Scrollbar */
+        #odoo-reason-panel .body::-webkit-scrollbar { width:10px; }
+        #odoo-reason-panel .body::-webkit-scrollbar-thumb { background:var(--border); border-radius:999px; }
+
         @media(max-width:768px) {
             #odoo-reason-panel .body { grid-template-columns:1fr; }
-            #odoo-reason-panel .list { grid-template-columns:1fr; }
+            #odoo-reason-panel .search { max-width:none; order:3; flex-basis:100%; }
         }
             `;
             document.head.appendChild(styleEl);
@@ -2857,43 +3406,51 @@
 
             // Header
             const hdr = document.createElement('div'); hdr.className = 'hdr';
-            const title = document.createElement('div'); title.className = 'title'; title.textContent = 'Sélection des raisons (Matériel / Logiciel)';
-            const themeBtn = document.createElement('button'); themeBtn.className = 'theme-toggle'; themeBtn.textContent = savedTheme === 'dark' ? 'Thème clair' : 'Thème sombre';
+            const title = document.createElement('div'); title.className = 'title'; title.textContent = 'Sélection des raisons';
+            const search = document.createElement('div'); search.className = 'search';
+            const searchInput = document.createElement('input'); searchInput.type = 'text'; searchInput.placeholder = 'Rechercher une raison…'; searchInput.setAttribute('autocomplete', 'off');
+            search.appendChild(searchInput);
+            const themeBtn = document.createElement('button'); themeBtn.className = 'theme-toggle'; themeBtn.textContent = savedTheme === 'dark' ? '☀️ Clair' : '🌙 Sombre';
             const closeBtn = document.createElement('button'); closeBtn.className = 'close-btn'; closeBtn.textContent = '×';
-            hdr.appendChild(title); hdr.appendChild(themeBtn); hdr.appendChild(closeBtn);
+            hdr.appendChild(title); hdr.appendChild(search); hdr.appendChild(themeBtn); hdr.appendChild(closeBtn);
 
             // Body
             const body = document.createElement('div'); body.className = 'body';
 
             function buildCol(titleText, items, prefix, type) {
-                const col = document.createElement('div'); col.className = 'col';
+                const col = document.createElement('div'); col.className = 'col' + (type === 'software' ? ' col--sw' : '');
                 const ttl = document.createElement('div'); ttl.className = 'col-title'; ttl.textContent = titleText;
+                const count = document.createElement('span'); count.className = 'count'; count.textContent = String(items.length);
+                ttl.appendChild(count);
                 const list = document.createElement('div'); list.className = 'list';
                 items.slice().sort((a,b) => a.name.localeCompare(b.name,'fr',{sensitivity:'base',ignorePunctuation:true})).forEach((item, idx) => {
                     const chip = document.createElement('label');
                     chip.className = 'chip' + (type === 'software' ? ' chip--software' : '');
+                    chip.dataset.search = normalizeReasonName(item.name);
                     const cb = document.createElement('input'); cb.type = 'checkbox';
                     // Stocker l'ID si disponible, sinon le nom (fallback)
                     cb.value = item.id ? String(item.id) : item.name;
                     cb.dataset.tagName = item.name;
                     cb.dataset.tagId = item.id ? String(item.id) : '';
                     cb.id = `${prefix}-${idx}`;
-                    const span = document.createElement('span'); span.textContent = item.name;
+                    const span = document.createElement('span'); span.textContent = item.name; span.title = item.name;
                     chip.appendChild(cb); chip.appendChild(span);
                     list.appendChild(chip);
                 });
-                col.appendChild(ttl); col.appendChild(list);
+                const empty = document.createElement('div'); empty.className = 'col-empty'; empty.textContent = 'Aucune raison ne correspond.';
+                col.appendChild(ttl); col.appendChild(list); col.appendChild(empty);
                 return col;
             }
 
-            body.appendChild(buildCol('🔧 Raisons matériel', HARDWARE, 'hw', 'hardware'));
-            body.appendChild(buildCol('📖 Raisons logiciel', SOFTWARE, 'sw', 'software'));
+            body.appendChild(buildCol('🔧 Matériel', HARDWARE, 'hw', 'hardware'));
+            body.appendChild(buildCol('� Logiciel', SOFTWARE, 'sw', 'software'));
 
             // Footer
             const ftr = document.createElement('div'); ftr.className = 'ftr';
+            const selCount = document.createElement('div'); selCount.className = 'sel-count'; selCount.innerHTML = '<b>0</b> sélectionnée(s)';
             const skipBtn = document.createElement('button'); skipBtn.type = 'button'; skipBtn.className = 'btn ghost'; skipBtn.textContent = "Pas d'étiquette";
             const submitBtn = document.createElement('button'); submitBtn.type = 'button'; submitBtn.className = 'btn primary'; submitBtn.textContent = 'Valider'; submitBtn.disabled = true; submitBtn.style.display = 'none';
-            ftr.appendChild(skipBtn); ftr.appendChild(submitBtn);
+            ftr.appendChild(selCount); ftr.appendChild(skipBtn); ftr.appendChild(submitBtn);
 
             panel.appendChild(hdr); panel.appendChild(body); panel.appendChild(ftr);
             overlay.appendChild(panel);
@@ -2906,6 +3463,7 @@
                 const n = panel.querySelectorAll('.chip input:checked').length;
                 submitBtn.disabled = n === 0; submitBtn.style.display = n === 0 ? 'none' : 'inline-block';
                 allChips.forEach(c => c.classList.toggle('selected', c.querySelector('input').checked));
+                selCount.innerHTML = '<b>' + n + '</b> sélectionnée(s)';
             };
             allChips.forEach(chip => {
                 chip.addEventListener('click', e => {
@@ -2916,10 +3474,26 @@
             });
             updateSubmit();
 
+            // Recherche live : filtre les chips des deux colonnes + message "aucun résultat"
+            const filterChips = () => {
+                const q = normalizeReasonName(searchInput.value);
+                panel.querySelectorAll('.col').forEach(col => {
+                    let visible = 0;
+                    col.querySelectorAll('.chip').forEach(chip => {
+                        const match = !q || (chip.dataset.search || '').includes(q);
+                        chip.style.display = match ? '' : 'none';
+                        if (match) visible++;
+                    });
+                    const empty = col.querySelector('.col-empty');
+                    if (empty) empty.style.display = visible === 0 ? 'block' : 'none';
+                });
+            };
+            searchInput.addEventListener('input', filterChips);
+
             themeBtn.addEventListener('click', () => {
                 const isLight = panel.classList.toggle('theme-light');
                 localStorage.setItem(themeKey, isLight ? 'light' : 'dark');
-                themeBtn.textContent = isLight ? 'Thème sombre' : 'Thème clair';
+                themeBtn.textContent = isLight ? '🌙 Sombre' : '☀️ Clair';
             });
 
             const closePanel = () => {
@@ -2940,13 +3514,13 @@
             submitBtn.addEventListener('click', async () => {
                 if (submitLocked) return;
                 submitLocked = true; submitBtn.disabled = true;
-                
+
                 // Marquer définitivement que le panneau a été traité pour ce ticket
                 const currentTicketId = _reasonPanelTicketId || sessionStorage.getItem('pendingReasonTicketId') || getTicketIdFromPage();
                 if (currentTicketId) {
                     sessionStorage.setItem(`reasonPanelCompleted_${currentTicketId}`, '1');
                 }
-                
+
                 sessionStorage.removeItem('pendingReasonPanel');
                 // Récupérer les IDs (ou noms si pas d'ID) des cases cochées
                 const cols = Array.from(panel.querySelectorAll('.col'));
@@ -3041,7 +3615,7 @@
 
     async function addMany2ManyTagsViaDom(fieldName, names = []) {
         console.log('[REASON] addMany2ManyTagsViaDom - Field:', fieldName, 'Names:', names);
-        
+
         const wanted = uniqNormNames(names);
         if (!wanted.length) {
             console.log('[REASON] Aucun nom à ajouter après normalisation');
@@ -3050,7 +3624,7 @@
 
         const root = document.querySelector(`.o_field_many2many_tags[name="${fieldName}"], .o_field_widget[name="${fieldName}"]`);
         console.log('[REASON] Root element trouvé:', !!root);
-        
+
         if (!root) {
             console.error('[REASON] Impossible de trouver le champ:', fieldName);
             return false;
@@ -3065,7 +3639,7 @@
 
         const input = root.querySelector('input');
         console.log('[REASON] Input trouvé:', !!input, input instanceof HTMLInputElement);
-        
+
         if (!(input instanceof HTMLInputElement)) {
             console.error('[REASON] Impossible de trouver l\'input pour le champ:', fieldName);
             return false;
@@ -3074,7 +3648,7 @@
         let added = false;
         for (const name of wanted) {
             console.log('[REASON] Tentative d\'ajout de:', name);
-            
+
             if (existing.has(normalizeReasonName(name))) {
                 console.log('[REASON] Étiquette déjà présente:', name);
                 continue;
@@ -3085,7 +3659,7 @@
             input.value = name;
             input.dispatchEvent(new Event('input', { bubbles: true }));
             await wait(180);
-            
+
             console.log('[REASON] Envoi de la touche Entrée');
             input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
             input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
@@ -3097,47 +3671,47 @@
                     .map(el => normalizeReasonName(el.textContent || ''))
                     .filter(Boolean)
             );
-            
+
             const wasAdded = now.has(normalizeReasonName(name)) || String(input.value || '').trim() === '';
             console.log('[REASON] Étiquette ajoutée:', name, '- Succès:', wasAdded);
-            
+
             if (wasAdded) {
                 added = true;
                 existing.add(normalizeReasonName(name));
             }
         }
-        
+
         console.log('[REASON] Résultat final addMany2ManyTagsViaDom:', added);
         return added;
     }
 
     async function applyTagsViaDom(hwNames = [], swNames = []) {
         console.log('[REASON] applyTagsViaDom - HW Names:', hwNames, 'SW Names:', swNames);
-        
+
         let hwOk = true;
         let swOk = true;
-        
+
         if (hwNames.length > 0) {
             console.log('[REASON] Application des étiquettes matériel via DOM...');
             hwOk = await addMany2ManyTagsViaDom('material_reason_tag_ids', hwNames);
             console.log('[REASON] Résultat étiquettes matériel:', hwOk);
         }
-        
+
         if (swNames.length > 0) {
             console.log('[REASON] Application des étiquettes logiciel via DOM...');
             swOk = await addMany2ManyTagsViaDom('software_reason_tag_ids', swNames);
             console.log('[REASON] Résultat étiquettes logiciel:', swOk);
         }
-        
+
         if (!hwOk && !swOk) {
             console.error('[REASON] Échec de l\'application des étiquettes via DOM');
             return false;
         }
-        
+
         console.log('[REASON] Sauvegarde du formulaire...');
         await wait(150);
         await saveForm();
-        
+
         console.log('[REASON] Application des étiquettes via DOM terminée');
         return true;
     }
@@ -3147,7 +3721,7 @@
         console.log('[REASON] applyTagsToTicket - Ticket ID:', ticketId);
         console.log('[REASON] applyTagsToTicket - HW IDs:', hwIds, 'SW IDs:', swIds);
         console.log('[REASON] applyTagsToTicket - HW Names:', hwNamesFallback, 'SW Names:', swNamesFallback);
-        
+
         if (!ticketId) {
             console.error('[REASON] Aucun ticket ID trouvé');
             return false;
@@ -3168,7 +3742,7 @@
                 console.error('[REASON] Erreur résolution IDs matériel:', error);
             }
         }
-        
+
         if (!swIds.length && swNamesFallback.length) {
             console.log('[REASON] Résolution des IDs logiciel par nom...');
             try {
@@ -3188,9 +3762,9 @@
         // [4, id] = lier sans créer (many2many link)
         if (hwIds.length) vals.material_reason_tag_ids = hwIds.map(id => [4, id]);
         if (swIds.length) vals.software_reason_tag_ids = swIds.map(id => [4, id]);
-        
+
         console.log('[REASON] Valeurs à écrire:', vals);
-        
+
         if (!Object.keys(vals).length) {
             console.log('[REASON] Aucune valeur à écrire, fallback vers DOM');
             // Fallback non-admin : tenter via l'UI Odoo (many2many tags)
@@ -3201,13 +3775,13 @@
         try {
             const writeOk = await odooWrite('helpdesk.ticket', Number(ticketId), vals);
             console.log('[REASON] Résultat écriture API:', writeOk);
-            
+
             if (!writeOk) {
                 console.log('[REASON] Écriture API échouée, fallback vers DOM');
                 // Fallback non-admin : certains profils ne peuvent pas write via API mais peuvent via le widget UI.
                 return applyTagsViaDom(hwNamesFallback, swNamesFallback);
             }
-            
+
             console.log('[REASON] Écriture API réussie, sauvegarde...');
             await wait(300);
             const saveBtn = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
@@ -3215,19 +3789,19 @@
                 console.log('[REASON] Clic sur le bouton sauvegarder');
                 saveBtn.click();
             }
-            
+
             // Forcer le rechargement du formulaire pour afficher les tags sans F5
             await wait(600);
             try {
                 console.log('[REASON] Rechargement de la vue...');
                 // Méthode 1 : bouton discard puis reload (Odoo SPA)
                 const discardBtn = document.querySelector('button.o_form_button_discard, button[data-hotkey="j"]');
-                if (discardBtn) { 
+                if (discardBtn) {
                     console.log('[REASON] Clic sur discard');
-                    discardBtn.click(); 
-                    await wait(200); 
+                    discardBtn.click();
+                    await wait(200);
                 }
-                
+
                 // Méthode 2 : déclencher un reload via l'action manager Odoo
                 if (window.__owl__) {
                     const env = window.__owl__?.apps?.values?.()?.next?.()?.value?.env;
@@ -3239,16 +3813,16 @@
             } catch (reloadError) {
                 console.error('[REASON] Erreur lors du rechargement:', reloadError);
             }
-            
+
             // Méthode 3 : reload de la vue courante via hashchange
             const currentHash = window.location.hash;
             window.location.hash = currentHash + '&_r=' + Date.now();
             await wait(100);
             window.history.replaceState(null, '', window.location.pathname + window.location.search + currentHash);
-            
+
             console.log('[REASON] Application des étiquettes terminée avec succès');
             return true;
-            
+
         } catch (error) {
             console.error('[REASON] Erreur lors de l\'écriture API:', error);
             console.log('[REASON] Fallback vers DOM après erreur API');
@@ -3274,23 +3848,59 @@
     }
 
     function findStatsContainer() {
-        for (const sel of ['.o_form_button_box','.o_form_buttonbox','.oe_button_box','.o_button_box']) {
+        // v19: Nouveaux sélecteurs
+        const selectors = [
+            '.o_form_button_box',
+            '.o_form_buttonbox',
+            '.oe_button_box',
+            '.o_button_box',
+            '.o_form_sheet .o_button_box',  // v19
+            '.o_form_renderer .o_button_box'  // v19
+        ];
+
+        console.log('[findStatsContainer] Recherche du conteneur de badges...');
+
+        for (const sel of selectors) {
             const el = document.querySelector(sel);
-            if (el?.querySelector('.o_stat_button,.oe_stat_button')) return el;
+            if (el) {
+                return el;
+            }
         }
+
+        // v19: Si le conteneur n'existe pas, le créer
+        const formSheet = document.querySelector('.o_form_renderer .o_form_sheet, .o_form_sheet');
+        if (formSheet) {
+            const buttonBox = document.createElement('div');
+            buttonBox.className = 'o_button_box';
+            buttonBox.style.display = 'flex';
+            buttonBox.style.flexWrap = 'wrap';
+            buttonBox.style.gap = '8px';
+            buttonBox.style.marginBottom = '16px';
+            // Insérer au début du form sheet
+            formSheet.insertBefore(buttonBox, formSheet.firstChild);
+            return buttonBox;
+        }
+
         return null;
     }
 
     function placeAfterStats(container, badge) {
-        if (!container || !badge) return;
+        if (!container || !badge) {
+            return;
+        }
         // Ne déplacer que si le badge n'est pas encore dans le container
-        if (badge.parentNode === container) return;
+        if (badge.parentNode === container) {
+            return;
+        }
         // Trouver le dernier bouton stat natif Odoo (exclure nos propres badges)
         const btns = Array.from(container.querySelectorAll('.o_stat_button,.oe_stat_button'))
             .filter(el => el.id !== 'badge-devis-client' && el.id !== 'badge-tickets-ouverts');
         const last = btns.length ? btns[btns.length-1] : null;
-        if (last) last.insertAdjacentElement('afterend', badge);
-        else container.appendChild(badge);
+        if (last) {
+            last.insertAdjacentElement('afterend', badge);
+        } else {
+            container.appendChild(badge);
+        }
     }
 
     function ensureBadgeOrder(container) {
@@ -3309,18 +3919,40 @@
 
     let devisTimer = null;
     async function updateDevisBadge() {
-        if (!isTicketPage()) { document.getElementById('badge-devis-client')?.remove(); return; }
+        console.log('[updateDevisBadge] Début de la mise à jour du badge VENTES');
+        console.log('[updateDevisBadge] isTicketPage():', isTicketPage());
+
+        if (!isTicketPage()) {
+            console.log('[updateDevisBadge] Pas sur une page ticket, suppression du badge');
+            document.getElementById('badge-devis-client')?.remove();
+            return;
+        }
         const ticketId = getTicketIdFromPage();
-        if (!ticketId) return;
+        console.log('[updateDevisBadge] Ticket ID:', ticketId);
+        if (!ticketId) {
+            console.log('[updateDevisBadge] Pas de ticket ID, abandon');
+            return;
+        }
 
         const stats = findStatsContainer();
+        console.log('[updateDevisBadge] Conteneur stats:', stats ? '✅ trouvé' : '❌ absent');
+
         let badge = document.getElementById('badge-devis-client');
         if (!badge) {
+            console.log('[updateDevisBadge] Badge VENTES absent, création...');
             badge = document.createElement('span');
             badge.id = 'badge-devis-client';
+            if (stats) {
+                placeAfterStats(stats, badge);
+                console.log('[updateDevisBadge] ✅ Badge VENTES créé et placé dans le conteneur');
+            } else {
+                console.log('[updateDevisBadge] ❌ Pas de conteneur stats, abandon');
+                return;
+            }
+        } else {
+            console.log('[updateDevisBadge] Badge VENTES existe déjà, repositionnement...');
             if (stats) placeAfterStats(stats, badge);
-            else return;
-        } else if (stats) placeAfterStats(stats, badge);
+        }
 
         // Lire partner_id via API
         const ticket = await odooRead('helpdesk.ticket', Number(ticketId), ['partner_id']);
@@ -3481,19 +4113,41 @@
     }
 
     async function updateOpenTicketsBadge() {
-        if (!isCreatingTicket()) { document.getElementById('badge-tickets-ouverts')?.remove(); return; }
+        console.log('[updateOpenTicketsBadge] Début de la mise à jour du badge DOUBLONS');
+        console.log('[updateOpenTicketsBadge] isTicketForm():', isTicketForm());
+
+        if (!isTicketForm()) {
+            console.log('[updateOpenTicketsBadge] Pas sur un formulaire de ticket, suppression du badge');
+            document.getElementById('badge-tickets-ouverts')?.remove();
+            return;
+        }
         const stats = findStatsContainer();
-        if (!stats) return;
+        console.log('[updateOpenTicketsBadge] Conteneur stats:', stats ? '✅ trouvé' : '❌ absent');
+        if (!stats) {
+            console.log('[updateOpenTicketsBadge] ❌ Pas de conteneur stats, abandon');
+            return;
+        }
 
         let badge = document.getElementById('badge-tickets-ouverts');
         if (!badge) {
-            badge = document.createElement('span'); badge.id = 'badge-tickets-ouverts';
+            console.log('[updateOpenTicketsBadge] Badge DOUBLONS absent, création...');
+            badge = document.createElement('span');
+            badge.id = 'badge-tickets-ouverts';
             placeAfterStats(stats, badge);
-        } else placeAfterStats(stats, badge);
+            console.log('[updateOpenTicketsBadge] ✅ Badge DOUBLONS créé et placé dans le conteneur');
+        } else {
+            console.log('[updateOpenTicketsBadge] Badge DOUBLONS existe déjà, repositionnement...');
+            placeAfterStats(stats, badge);
+        }
         badge.style.marginRight = '8px';
 
         const code = findPartnerCode();
-        if (!code) { badge.innerHTML = ''; return; }
+        console.log('[updateOpenTicketsBadge] Code client:', code);
+        if (!code) {
+            console.log('[updateOpenTicketsBadge] Pas de code client, badge vide');
+            badge.innerHTML = '';
+            return;
+        }
 
         const closeIds = await getCloseStageIds();
         const domain = [['partner_code','=',code]];
@@ -3541,7 +4195,7 @@
         recs.forEach(r => {
             const li = document.createElement('li');
             const a = document.createElement('a');
-            a.href = `/web?debug=#id=${r.id}&model=helpdesk.ticket&view_type=form`;
+            a.href = `/web#id=${r.id}&model=helpdesk.ticket&view_type=form`;
             a.textContent = r.name || ('Ticket #'+r.id); a.style.color = '#8be9fd';
             a.onclick = e => { e.preventDefault(); window.location.href = a.href; pop.remove(); };
             const team = document.createElement('span'); team.className = 'team'; team.textContent = Array.isArray(r.team_id) ? r.team_id[1] : '';
@@ -3583,7 +4237,29 @@
 
     function updateTicketListAnimations() {
         if (!isTicketList()) return;
-        document.querySelectorAll('.o_list_view .o_data_row').forEach(row => {
+
+        // v19: Essayer plusieurs sélecteurs pour les lignes
+        const rowSelectors = [
+            '.o_list_view .o_data_row',
+            '.o_list_view tr.o_data_row',
+            '.o_list_renderer .o_data_row',
+            'tr.o_data_row',
+            '.o_data_row'
+        ];
+
+        let rows = [];
+        for (const selector of rowSelectors) {
+            rows = document.querySelectorAll(selector);
+            if (rows.length > 0) {
+                break;
+            }
+        }
+
+        if (rows.length === 0) {
+            return;
+        }
+
+        rows.forEach(row => {
             // Reconstruire le texte complet en ignorant les spans wave-letter (qui fragmentent le texte)
             const txt = (row.innerText || row.textContent || '').toLowerCase().replace(/\s+/g, ' ');
             // Vérifier aussi via localStorage (état stocké par le script)
@@ -3598,7 +4274,7 @@
             if (hasEnCours) {
                 if (!row.classList.contains('ticket-en-traitement')) {
                     row.classList.add('ticket-en-traitement');
-                    row.style.border = '2px solid rgba(59,130,246,.7)';
+                    row.style.border = '2px solid rgba(139,92,246,.7)';
                     row.style.borderRadius = '4px';
                 }
             } else {
@@ -3732,6 +4408,58 @@
     // =========================================================
     // RAPPELS RDV
     // =========================================================
+    // Parse la date/heure d'un RDV depuis le texte de la cellule.
+    // Gère l'ancien format "JJ/MM/AAAA HH:MM" ET le format v19 français "9 juin, 14:00"
+    // (mois en toutes lettres, année omise si année courante), + "aujourd'hui/demain/hier".
+    function parseRdvDateTime(text) {
+        if (!text) return null;
+        const t = text.replace(/\u00a0/g, ' ').trim();
+
+        // 1) Format classique JJ/MM/AAAA HH:MM
+        let m = t.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+        if (m) {
+            const [, jj, mm, aaaa, hh, min] = m;
+            const d = new Date(Number(aaaa), Number(mm) - 1, Number(jj), Number(hh), Number(min), 0);
+            return isNaN(d.getTime()) ? null : { date: d, hh: String(hh).padStart(2, '0'), min };
+        }
+
+        // Résout un mois français (accents/abréviations) vers 0-11
+        const resolveFrMonth = (s) => {
+            const n = s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\.$/, '');
+            if (n.startsWith('juil')) return 6;
+            if (n.startsWith('juin')) return 5;
+            const map = { jan: 0, fev: 1, mar: 2, avr: 3, mai: 4, aou: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+            const v = map[n.substring(0, 3)];
+            return (v === undefined) ? null : v;
+        };
+
+        // 2) Heure du jour relative : "aujourd'hui 14:00", "demain 14:00", "hier 14:00"
+        const heure = t.match(/(\d{1,2}):(\d{2})/);
+        const lower = t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        if (heure && /(aujourd|demain|hier)/.test(lower)) {
+            const hh = heure[1], min = heure[2];
+            const d = new Date();
+            if (lower.includes('demain')) d.setDate(d.getDate() + 1);
+            else if (lower.includes('hier')) d.setDate(d.getDate() - 1);
+            d.setHours(Number(hh), Number(min), 0, 0);
+            return { date: d, hh: String(hh).padStart(2, '0'), min };
+        }
+
+        // 3) Format v19 : "9 juin, 14:00" ou "9 juin 2026, 14:00"
+        m = t.match(/(\d{1,2})\s+([a-zà-ÿ]+\.?)(?:\s+(\d{4}))?,?\s+(\d{1,2}):(\d{2})/i);
+        if (m) {
+            const jj = parseInt(m[1], 10);
+            const mois = resolveFrMonth(m[2]);
+            const aaaa = m[3] ? parseInt(m[3], 10) : new Date().getFullYear();
+            const hh = m[4], min = m[5];
+            if (mois === null) return null;
+            const d = new Date(aaaa, mois, jj, Number(hh), Number(min), 0);
+            return isNaN(d.getTime()) ? null : { date: d, hh: String(hh).padStart(2, '0'), min };
+        }
+
+        return null;
+    }
+
     function scanRdvRappels() {
         const ths = document.querySelectorAll('table thead th');
         let idxRdv = -1, idxPharma = -1, idxAssigne = -1;
@@ -3762,10 +4490,9 @@
                 assigneName = cells[idxAssigne].textContent.trim();
             }
 
-            const match = cellRdv.textContent.match(/(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2})/);
-            if (!match) { cellRdv.classList.remove('rdv-clignote-orange','rdv-clignote-rouge','rdv-clignote-depasse'); return; }
-            const [_, jj, mm, aaaa, hh, min] = match;
-            const dateRdv = new Date(`${aaaa}-${mm}-${jj}T${hh}:${min}:00`);
+            const parsed = parseRdvDateTime(cellRdv.textContent);
+            if (!parsed) { cellRdv.classList.remove('rdv-clignote-orange','rdv-clignote-rouge','rdv-clignote-depasse'); return; }
+            const { date: dateRdv, hh, min } = parsed;
             const now = new Date();
             const diff = (dateRdv - now) / 60000;
 
@@ -3832,52 +4559,103 @@
     }
 
     // =========================================================
-    // STYLES CATÉGORIES (Logiciel, Matériel, etc.)
+    // STYLES CATÉGORIES / ÉQUIPES — en-têtes de groupe de la liste des tickets
     // =========================================================
+    // accent = couleur principale ; le fond est dérivé automatiquement (transparence).
     const CATEGORY_STYLES = {
-        'LOGICIEL':              { bg:'rgba(22,163,74,.18)',  border:'1px solid rgba(22,163,74,.35)',  emoji:'💻' },
-        'MATERIEL':              { bg:'rgba(168,85,247,.18)', border:'1px solid rgba(168,85,247,.35)', emoji:'🛠️' },
-        'MATERIEL N2':           { bg:'rgba(220,38,38,.18)',  border:'1px solid rgba(220,38,38,.35)',  emoji:'🧰' },
-        'RMA/SAV TECH EN COURS': { bg:'rgba(249,115,22,.18)', border:'1px solid rgba(249,115,22,.35)', emoji:'📦' },
-        'RMA':                   { bg:'rgba(249,115,22,.18)', border:'1px solid rgba(249,115,22,.35)', emoji:'📦' },
-        'WINTEAM':               { bg:'rgba(14,165,233,.18)', border:'1px solid rgba(14,165,233,.35)', emoji:'⭐' }
+        'LOGICIEL':              { accent:'#10b981', emoji:'💻' },
+        'MATERIEL':              { accent:'#8b5cf6', emoji:'🛠️' },
+        'MATERIEL N2':           { accent:'#ef4444', emoji:'🧰' },
+        'RMA/SAV TECH EN COURS': { accent:'#f59e0b', emoji:'📦' },
+        'RMA':                   { accent:'#f59e0b', emoji:'📦' },
+        'MSAV':                  { accent:'#ec4899', emoji:'✉️' },
+        'MAIL SAV':              { accent:'#ec4899', emoji:'✉️' },
+        'WINTEAM':               { accent:'#0ea5e9', emoji:'⭐' }
     };
 
     function normLabel(text) {
         return (text||'').replace(/\s*\(\d+\)\s*$/,'').trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
     }
 
-    function tryCategoryStyle(el) {
-        if (!el || el.nodeType !== 1 || el.dataset?.styledCategory === '1') return;
-        if (el.closest?.('.dropdown-menu,.o-dropdown--menu,.o-autocomplete,.o-autocomplete--dropdown,.ui-autocomplete,.o_control_panel,.o_main_navbar,.o_searchview,.o_breadcrumb')) return;
-        const raw = (el.innerText||el.textContent||'').trim();
-        if (!raw || raw.length > 64) return;
+    function hexToRgba(hex, a) {
+        const m = hex.replace('#','');
+        const r = parseInt(m.substring(0,2),16), g = parseInt(m.substring(2,4),16), b = parseInt(m.substring(4,6),16);
+        return `rgba(${r},${g},${b},${a})`;
+    }
+
+    // Détermine la catégorie d'un libellé d'en-tête de groupe (gère les variantes)
+    function resolveCategoryKey(raw) {
         const base = normLabel(raw);
-        let key = CATEGORY_STYLES[base] ? base : null;
-        if (!key && base === 'MATERIEL' && /\bN2\b/i.test(raw)) key = 'MATERIEL N2';
-        if (!key) return;
+        if (CATEGORY_STYLES[base]) return base;
+        if (base.startsWith('MATERIEL')) return /\bN2\b/i.test(raw) ? 'MATERIEL N2' : 'MATERIEL';
+        if (base.startsWith('RMA')) return 'RMA/SAV TECH EN COURS';
+        if (base.startsWith('MAIL SAV') || base.startsWith('MAILSAV')) return 'MAIL SAV';
+        return null;
+    }
+
+    // Lit le libellé d'un en-tête de groupe SANS l'emoji injecté (.cat-emoji), où qu'il soit.
+    // Indispensable pour que le garde-fou soit stable et n'entre pas en boucle.
+    function groupLabelText(el) {
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll('.cat-emoji').forEach(n => n.remove());
+        return (clone.textContent || '').trim();
+    }
+
+    // Applique (ou réinitialise) le style sur l'élément "nom de groupe" d'un en-tête.
+    function styleGroupName(el) {
+        if (!el || el.nodeType !== 1) return;
+        const raw = groupLabelText(el);
+        if (!raw || raw.length > 64) return;
+        const key = resolveCategoryKey(raw);
+
+        // Déjà traité avec la même catégorie => ne rien faire (évite toute boucle d'observer)
+        if (el.dataset.styledCategory === (key || 'none')) return;
+
+        // Réinitialiser un éventuel style précédent (changement de groupe / re-render)
+        el.style.background = '';
+        el.style.backgroundImage = '';
+        el.style.borderLeft = '';
+        el.style.boxShadow = '';
+        el.style.color = '';
+        el.style.fontWeight = '';
+        el.style.borderRadius = '';
+        el.style.padding = '';
+        el.style.paddingLeft = '';
+        el.querySelectorAll('.cat-emoji').forEach(n => n.remove());
+
+        if (!key) { el.dataset.styledCategory = 'none'; return; }
+
         const cfg = CATEGORY_STYLES[key];
-        try {
-            el.style.backgroundColor = cfg.bg;
-            el.style.border = cfg.border;
-            el.style.borderRadius = '6px';
-            el.style.padding = '2px 8px';
-            el.style.display = 'inline-block';
-            el.style.fontWeight = '600';
-            if (!el.querySelector('.cat-emoji')) {
-                const tag = document.createElement('span'); tag.className = 'cat-emoji'; tag.textContent = cfg.emoji + ' ';
-                if (el.firstChild) el.insertBefore(tag, el.firstChild); else el.appendChild(tag);
-            }
-            el.dataset.styledCategory = '1';
-        } catch (_) {}
+        // Style épuré : dégradé qui s'estompe depuis la gauche + fin liseré d'accent.
+        el.style.backgroundImage = `linear-gradient(90deg, ${hexToRgba(cfg.accent, 0.20)} 0%, ${hexToRgba(cfg.accent, 0.05)} 40%, transparent 72%)`;
+        el.style.boxShadow = `inset 3px 0 0 0 ${cfg.accent}`;
+        el.style.color = cfg.accent;
+        el.style.fontWeight = '600';
+        el.style.paddingLeft = '10px';
+
+        // Emoji inséré JUSTE AVANT le texte du libellé => reste sur la même ligne (pas de retour à la ligne).
+        const tag = document.createElement('span');
+        tag.className = 'cat-emoji';
+        tag.textContent = cfg.emoji + ' ';
+        tag.style.cssText = 'display:inline;vertical-align:middle;';
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+        let textNode = null, n;
+        while ((n = walker.nextNode())) { if (n.nodeValue && n.nodeValue.trim()) { textNode = n; break; } }
+        if (textNode && textNode.parentNode) textNode.parentNode.insertBefore(tag, textNode);
+        else if (el.firstChild) el.insertBefore(tag, el.firstChild);
+        else el.appendChild(tag);
+
+        el.dataset.styledCategory = key;
     }
 
     function scanCategoryStyles() {
-        const href = window.location.href;
-        const scopes = [];
-        if (isTicketList()) { const s = document.querySelector('.o_list_view,.o_list_renderer'); if (s) scopes.push(s); }
-        if (isTicketForm()) { const s = document.querySelector('.o_form_view'); if (s) scopes.push(s); }
-        scopes.forEach(scope => scope.querySelectorAll('label,a,li,div,span').forEach(tryCategoryStyle));
+        // Coloration réservée aux EN-TÊTES DE GROUPE de la liste des tickets uniquement.
+        // (Évite de colorer des éléments sans rapport dans le formulaire ou les cellules.)
+        if (!isTicketList()) return;
+        document.querySelectorAll('tr.o_group_header').forEach(row => {
+            const nameEl = row.querySelector('.o_group_name') || row.querySelector('th, td');
+            if (nameEl) styleGroupName(nameEl);
+        });
     }
 
     // =========================================================
@@ -3965,12 +4743,12 @@
             'Annulé': { text: 'Annulé', class: 'annule' },
             'Fermé': { text: 'Fermé', class: 'ferme' }
         };
-        
+
         const result = stageTranslations[stageName];
         if (result) {
             return result;
         }
-        
+
         // Fallback pour les statuts non reconnus
         return { text: stageName, class: 'autre' };
     }
@@ -4087,28 +4865,28 @@
                 tickets.forEach(ticket => {
                     // Rechercher dans le titre
                     const title = ticket.querySelector('.ticket-title').textContent.toLowerCase();
-                    
+
                     // Rechercher dans la description
                     const descriptionElement = ticket.querySelector('.ticket-description');
                     const description = descriptionElement ? descriptionElement.textContent.toLowerCase() : '';
-                    
+
                     // Rechercher dans la note interne
                     const responseElement = ticket.querySelector('.ticket-response-content');
                     const response = responseElement ? responseElement.textContent.toLowerCase() : '';
-                    
+
                     // Rechercher dans les informations du ticket (utilisateur, etc.)
                     const assigneeElement = ticket.querySelector('.ticket-assignee');
                     const assignee = assigneeElement ? assigneeElement.textContent.toLowerCase() : '';
-                    
+
                     const team = ticket.dataset.team;
-                    
+
                     // Vérifier si le terme de recherche est présent dans n'importe quel champ
-                    const matchesSearch = !searchTerm || 
-                        title.includes(searchTerm) || 
-                        description.includes(searchTerm) || 
+                    const matchesSearch = !searchTerm ||
+                        title.includes(searchTerm) ||
+                        description.includes(searchTerm) ||
                         response.includes(searchTerm) ||
                         assignee.includes(searchTerm);
-                    
+
                     const matchesTeam = !selectedTeam || team === selectedTeam;
 
                     ticket.style.display = matchesSearch && matchesTeam ? '' : 'none';
@@ -4201,26 +4979,26 @@
                 products.forEach(product => {
                     // Rechercher dans le titre
                     const title = product.querySelector('.product-title').textContent.toLowerCase();
-                    
+
                     // Rechercher dans la description
                     const descriptionElement = product.querySelector('.product-description');
                     const description = descriptionElement ? descriptionElement.textContent.toLowerCase() : '';
-                    
+
                     // Rechercher dans les informations du produit (référence, etc.)
                     const infoElements = product.querySelectorAll('.product-info div');
                     let allInfo = '';
                     infoElements.forEach(info => {
                         allInfo += info.textContent.toLowerCase() + ' ';
                     });
-                    
+
                     const type = product.dataset.type;
-                    
+
                     // Vérifier si le terme de recherche est présent dans n'importe quel champ
-                    const matchesSearch = !searchTerm || 
-                        title.includes(searchTerm) || 
-                        description.includes(searchTerm) || 
+                    const matchesSearch = !searchTerm ||
+                        title.includes(searchTerm) ||
+                        description.includes(searchTerm) ||
                         allInfo.includes(searchTerm);
-                    
+
                     const matchesType = !selectedType || type === selectedType;
 
                     product.style.display = matchesSearch && matchesType ? '' : 'none';
@@ -4304,7 +5082,7 @@
 
             themeToggle.addEventListener('click', () => {
                 const isCurrentlyDark = document.body.classList.contains('dark-theme');
-                
+
                 if (isCurrentlyDark) {
                     // Passer en mode clair
                     document.body.classList.remove('dark-theme');
@@ -4407,11 +5185,41 @@
 
     // Fonction pour ajouter les boutons d'historique et de produits
     function addHistoryAndProductsButtons() {
-        if (!isValidUrlForHistory()) return;
-        if (historyButtonAdded && productsButtonAdded) return;
+        console.log('[addHistoryAndProductsButtons] Début de la fonction');
+        console.log('[addHistoryAndProductsButtons] isValidUrlForHistory():', isValidUrlForHistory());
+        console.log('[addHistoryAndProductsButtons] historyButtonAdded:', historyButtonAdded);
+        console.log('[addHistoryAndProductsButtons] productsButtonAdded:', productsButtonAdded);
 
-        const formSheet = document.querySelector('.o_form_sheet');
-        if (!formSheet) return;
+        if (!isValidUrlForHistory()) {
+            console.log('[addHistoryAndProductsButtons] URL non valide, abandon');
+            return;
+        }
+        if (historyButtonAdded && productsButtonAdded) {
+            console.log('[addHistoryAndProductsButtons] Boutons déjà ajoutés, abandon');
+            return;
+        }
+
+        // v19: Chercher le formulaire avec plusieurs sélecteurs
+        const formSheetSelectors = [
+            '.o_form_renderer .o_form_sheet',  // v19 - PRIORITAIRE
+            '.o_form_sheet',
+            '.o_form_view .o_form_sheet',
+            '.o_content .o_form_sheet',
+            '.o_form_renderer',  // v19 fallback
+            'form .o_form_sheet'
+        ];
+
+        let formSheet = null;
+        for (const selector of formSheetSelectors) {
+            formSheet = document.querySelector(selector);
+            if (formSheet) {
+                break;
+            }
+        }
+
+        if (!formSheet) {
+            return;
+        }
 
         // Vérifier si le conteneur de boutons existe déjà
         let buttonContainer = document.querySelector('.buttons-container');
@@ -4460,6 +5268,7 @@
 
         // Ajouter le bouton des produits
         if (!productsButtonAdded && !document.getElementById('showProductsButton')) {
+            console.log('[addHistoryAndProductsButtons] Création du bouton Produits...');
             const productsButton = document.createElement('button');
             productsButton.id = 'showProductsButton';
             productsButton.innerHTML = '<i class="fa fa-cubes"></i> Produits du client';
@@ -4493,6 +5302,9 @@
 
             buttonContainer.appendChild(productsButton);
             productsButtonAdded = true;
+            console.log('[addHistoryAndProductsButtons] ✅ Bouton Produits créé et ajouté');
+        } else {
+            console.log('[addHistoryAndProductsButtons] Bouton Produits déjà existant, skip');
         }
     }
 
@@ -4569,8 +5381,10 @@
         addInitialesButton();
         addClearAssignButton();
         addHistoryAndProductsButtons(); // Nouvelle fonction pour l'historique et les produits
+        hideConvertToOpportunityButton(); // Cacher le bouton "Convertir en opportunité"
         hookDeleteAuditClicks();
         hookOdooDeleteRpcAudit();
+        warmCurrentUserName(); // Pré-charge le nom de l'utilisateur (pour "Supprimé par")
         scheduleDevisUpdate(100);
         scheduleOpenTicketsUpdate(100);
         applyInternetBlink();
@@ -4606,13 +5420,19 @@
         // Déclencher uniquement si les badges ne sont pas encore dans le container
         const hasDevis = !!document.getElementById('badge-devis-client') && document.getElementById('badge-devis-client')?.parentNode === stats;
         const hasDoublons = !!document.getElementById('badge-tickets-ouverts') && document.getElementById('badge-tickets-ouverts')?.parentNode === stats;
+
+        console.log('[badgeObserver] Vérification badges - VENTES:', hasDevis ? '✅' : '❌', 'DOUBLONS:', hasDoublons ? '✅' : '❌');
+
         if (!hasDevis || !hasDoublons) {
+            console.log('[badgeObserver] 🔄 Déclenchement mise à jour badges dans 80ms...');
             clearTimeout(_badgeDebounce);
             _badgeDebounce = setTimeout(async () => {
+                console.log('[badgeObserver] ▶️ Début mise à jour badges');
                 _badgeUpdating = true;
                 await updateDevisBadge();
                 await updateOpenTicketsBadge();
                 _badgeUpdating = false;
+                console.log('[badgeObserver] ✅ Mise à jour badges terminée');
             }, 80);
         }
     });
@@ -4646,7 +5466,7 @@
             sessionStorage.removeItem('pendingReasonTicketId');
             sessionStorage.removeItem('reasonPanelForceOpen');
             sessionStorage.removeItem('reasonPanelProtectedTicketId');
-            
+
             // Nettoyer les anciens flags de completion (garder seulement les 10 plus récents)
             const completionKeys = Object.keys(sessionStorage).filter(key => key.startsWith('reasonPanelCompleted_'));
             if (completionKeys.length > 10) {
@@ -4656,10 +5476,10 @@
             }
             _assistanceCache.clear();
             _assistanceTagIds = null;
-            
+
             // Gérer la navigation pour l'historique et les produits
             handleHistoryNavigation();
-            
+
             // Plusieurs tentatives pour s'assurer que le DOM Odoo est prêt
             setTimeout(runAll, 400);
             setTimeout(runAll, 900);
@@ -4679,6 +5499,7 @@
     setInterval(scanRdvRappels, 2000);
     setInterval(scheduleDevisUpdate, 5000);
     setInterval(scheduleOpenTicketsUpdate, 3000);
+    setInterval(watchStageChanges, 500); // Surveiller les changements de stage
 
     // Démarrage
     sessionStorage.removeItem('pendingReasonPanel'); // éviter ouverture fantôme au reload
@@ -4739,7 +5560,7 @@ let presenceState = {
 // Vérifier si on doit réinitialiser (nouveau jour)
 function checkDailyReset() {
     const today = new Date().toISOString().split('T')[0]; // Format YYYY-MM-DD
-    
+
     if (presenceState.lastResetDate !== today) {
         // Nouveau jour détecté, réinitialiser
         console.log('[Présence] Nouveau jour détecté, réinitialisation des notifications');
@@ -4747,7 +5568,7 @@ function checkDailyReset() {
         presenceState.pauseReminderShown = false;
         presenceState.lastResetDate = today;
         localStorage.setItem('tm_last_reset_date', today);
-        
+
         // Ne pas réinitialiser disableReminder car c'est un choix permanent de l'utilisateur
     }
 }
@@ -4756,7 +5577,7 @@ function checkDailyReset() {
 function startPresenceMonitoring() {
     // Faire un premier appel immédiat pour initialiser le snapshot (sans notifications)
     loadInitialPresenceSnapshot();
-    
+
     // Puis vérifier toutes les 3 secondes pour une réactivité quasi-instantanée
     setInterval(async () => {
         try {
@@ -4780,7 +5601,7 @@ function startPresenceMonitoring() {
                     }
                 });
             });
-            
+
             if (result.ok && result.presence) {
                 checkPresenceChanges(result.presence);
             }
@@ -4813,10 +5634,10 @@ async function loadInitialPresenceSnapshot() {
                 }
             });
         });
-        
+
         if (result.ok && result.presence) {
             const allUsers = {};
-            
+
             // Fonction helper pour obtenir un identifiant unique
             const getUserKey = (p) => {
                 if (p.name && p.name.trim() && p.name.trim().toLowerCase() !== 'utilisateur') {
@@ -4828,7 +5649,7 @@ async function loadInitialPresenceSnapshot() {
                 }
                 return `unknown_${Date.now()}_${Math.random()}`;
             };
-            
+
             // Construire le snapshot initial
             (result.presence.present || []).forEach(p => {
                 const key = getUserKey(p);
@@ -4842,7 +5663,7 @@ async function loadInitialPresenceSnapshot() {
                 const key = getUserKey(p);
                 allUsers[key] = { status: 'offline', time: p.last_action_time };
             });
-            
+
             presenceState.lastPresenceSnapshot = allUsers;
             console.log('[Présence] Snapshot initial chargé:', Object.keys(allUsers).length, 'utilisateurs');
         }
@@ -4855,12 +5676,12 @@ async function loadInitialPresenceSnapshot() {
 function checkPresenceChanges(presence) {
     const currentUserName = getOdooCurrentUserName() || 'Utilisateur';
     const allUsers = {};
-    
+
     // Fonction helper pour obtenir un identifiant unique et un nom d'affichage
     const getUserInfo = (p) => {
         let displayName = '';
         let uniqueKey = '';
-        
+
         // Essayer d'obtenir un nom valide
         if (p.name && p.name.trim() && p.name.trim().toLowerCase() !== 'utilisateur') {
             displayName = p.name.trim();
@@ -4876,10 +5697,10 @@ function checkPresenceChanges(presence) {
             displayName = 'Utilisateur inconnu';
             uniqueKey = `unknown_${Date.now()}_${Math.random()}`;
         }
-        
+
         return { displayName, uniqueKey };
     };
-    
+
     // Construire un snapshot de tous les utilisateurs avec leur statut
     (presence.present || []).forEach(p => {
         const { displayName, uniqueKey } = getUserInfo(p);
@@ -4893,18 +5714,18 @@ function checkPresenceChanges(presence) {
         const { displayName, uniqueKey } = getUserInfo(p);
         allUsers[uniqueKey] = { status: 'offline', time: p.last_action_time, displayName };
     });
-    
+
     // Comparer avec le snapshot précédent
     Object.keys(allUsers).forEach(userKey => {
         const userInfo = allUsers[userKey];
         const displayName = userInfo.displayName;
-        
+
         // Ne pas notifier pour soi-même
         if (displayName === currentUserName || userKey.includes(currentUserName)) return;
-        
+
         const currentStatus = userInfo.status;
         const previousStatus = presenceState.lastPresenceSnapshot[userKey]?.status;
-        
+
         // Si le statut a changé
         if (previousStatus && previousStatus !== currentStatus) {
             // Mapper le statut vers une action pour la notification
@@ -4920,14 +5741,14 @@ function checkPresenceChanges(presence) {
                     actionType = 'break_start';
                     break;
             }
-            
+
             if (actionType) {
                 console.log(`[Présence] ${displayName} : ${previousStatus} → ${currentStatus}`);
                 showPresenceToast(actionType, displayName);
             }
         }
     });
-    
+
     // Sauvegarder le snapshot actuel
     presenceState.lastPresenceSnapshot = allUsers;
 }
@@ -4950,7 +5771,7 @@ function createPresenceWidget() {
             <div class="tm-panel-header">
                 <span class="tm-panel-title">Gestion de présence</span>
             </div>
-            
+
             <!-- Boutons d'action avec labels -->
             <div class="tm-actions-row">
                 <button class="tm-action-btn-small tm-action-in" data-action="clock_in">
@@ -4975,16 +5796,16 @@ function createPresenceWidget() {
                     <span class="tm-action-label" id="tm-pause-toggle-label">Pause</span>
                 </button>
             </div>
-            
+
             <div id="tm-presence-status" class="tm-status"></div>
-            
+
             <!-- Liste des utilisateurs -->
             <div class="tm-presence-section-title">Équipe</div>
             <div id="tm-presence-inline" class="tm-presence-inline">
                 <div class="tm-presence-loading-inline">Chargement...</div>
             </div>
         </div>
-        
+
         <!-- Modal de rappel -->
         <div id="tm-reminder-modal" style="display:none">
             <div class="tm-reminder-content">
@@ -5003,7 +5824,7 @@ function createPresenceWidget() {
                 </div>
             </div>
         </div>
-        
+
         <!-- Modal heure de fin -->
         <div id="tm-endtime-modal" style="display:none">
             <div class="tm-endtime-content">
@@ -5027,7 +5848,7 @@ function createPresenceWidget() {
     // Toggle panel
     const btn = document.getElementById('tm-presence-btn');
     const panel = document.getElementById('tm-presence-panel');
-    
+
     btn.addEventListener('click', () => {
         const isVisible = panel.style.display !== 'none';
         panel.style.display = isVisible ? 'none' : 'block';
@@ -5036,12 +5857,12 @@ function createPresenceWidget() {
             loadPresenceInPanel();
         }
     });
-    
+
     // Initialiser le témoin lumineux au chargement
     if (presenceState.lastAction) {
         updateStatusIndicator(presenceState.lastAction);
     }
-    
+
     // Fermer le panel si on clique en dehors
     document.addEventListener('click', (e) => {
         const widget = document.getElementById('tm-presence-widget');
@@ -5054,7 +5875,7 @@ function createPresenceWidget() {
     document.querySelectorAll('.tm-action-btn-small').forEach(button => {
         button.addEventListener('click', async () => {
             const action = button.getAttribute('data-action');
-            
+
             // Si c'est une arrivée, demander l'heure de fin d'abord
             if (action === 'clock_in') {
                 showEndTimeModal();
@@ -5074,13 +5895,13 @@ function createPresenceWidget() {
         }
         closeReminderModal();
     });
-    
+
     // Modal heure de fin - Passer
     document.getElementById('tm-endtime-skip').addEventListener('click', async () => {
         closeEndTimeModal();
         await sendPresenceAction('clock_in');
     });
-    
+
     // Modal heure de fin - Enregistrer
     document.getElementById('tm-endtime-save').addEventListener('click', async () => {
         const endTime = document.getElementById('tm-endtime-input').value;
@@ -5094,10 +5915,10 @@ function createPresenceWidget() {
 
     // Démarrer la vérification du rappel
     startReminderCheck();
-    
+
     // Démarrer la surveillance des changements de présence
     startPresenceMonitoring();
-    
+
     // Initialiser l'état des boutons basé sur la dernière action
     if (presenceState.lastAction) {
         updateButtonStates(presenceState.lastAction);
@@ -5111,9 +5932,10 @@ async function sendPresenceAction(actionType) {
     try {
         // Récupérer les infos utilisateur Odoo
         const userName = getOdooCurrentUserName() || 'Utilisateur';
-        const userEmail = (window.odoo && odoo.session_info && odoo.session_info.email) || '';
-        const userId = (window.odoo && odoo.session_info && odoo.session_info.uid) || null;
-        
+        const _si = getSessionInfo();
+        const userEmail = _si.email || _si.username || '';
+        const userId = _si.uid || null;
+
         showStatus('Envoi en cours...', '#00A09D');
 
         // Créer un timestamp en heure locale (pas UTC)
@@ -5166,22 +5988,22 @@ async function sendPresenceAction(actionType) {
             presenceState.lastActionTime = Date.now();
             localStorage.setItem('tm_last_clock_action', actionType);
             localStorage.setItem('tm_last_clock_time', Date.now().toString());
-            
+
             // Arrêter le clignotement et réinitialiser les rappels
             stopBlinking();
             presenceState.reminderShown = false;
-            
+
             // Réinitialiser le rappel de pause si on reprend le travail
             if (actionType === 'break_end' || actionType === 'clock_in') {
                 presenceState.pauseReminderShown = false;
             }
-            
+
             // Mettre à jour le témoin lumineux
             updateStatusIndicator(actionType);
-            
+
             // Mettre à jour l'état des boutons
             updateButtonStates(actionType);
-            
+
             const labels = {
                 'clock_in': '✅ Statut: Disponible',
                 'clock_out': '✅ Statut: Non disponible',
@@ -5189,10 +6011,10 @@ async function sendPresenceAction(actionType) {
                 'break_end': '✅ Statut: Disponible'
             };
             showStatus(labels[actionType] || '✅ Enregistré', '#28a745');
-            
+
             // Recharger la liste des présences
             setTimeout(() => loadPresenceInPanel(), 500);
-            
+
             // Afficher une notification toast
             showPresenceToast(actionType, userName);
         } else {
@@ -5209,7 +6031,7 @@ function showStatus(message, color) {
     if (statusEl) {
         statusEl.textContent = message;
         statusEl.style.color = color;
-        
+
         setTimeout(() => {
             statusEl.textContent = '';
         }, 3000);
@@ -5219,23 +6041,23 @@ function showStatus(message, color) {
 function startReminderCheck() {
     // Vérifier le reset quotidien au démarrage
     checkDailyReset();
-    
+
     // Vérifier toutes les minutes
     setInterval(() => {
         // Vérifier le reset quotidien à chaque itération
         checkDailyReset();
-        
+
         const now = Date.now();
         const twoMinutes = 2 * 60 * 1000; // Changé de 10 à 2 minutes
         const oneHour = 60 * 60 * 1000; // 1 heure pour le rappel de pause
-        
+
         // Vérifier si l'heure de fin est dépassée
         if (presenceState.endTime && presenceState.lastAction === 'clock_in') {
             const currentTime = new Date();
             const [endHour, endMinute] = presenceState.endTime.split(':').map(Number);
             const endTimeToday = new Date();
             endTimeToday.setHours(endHour, endMinute, 0, 0);
-            
+
             // Si l'heure de fin est dépassée, passer en non dispo automatiquement
             if (currentTime >= endTimeToday) {
                 console.log('[Présence] Heure de fin dépassée, passage en non dispo automatique');
@@ -5245,12 +6067,12 @@ function startReminderCheck() {
                 return;
             }
         }
-        
+
         // Ne pas afficher le rappel si l'utilisateur l'a désactivé
         if (presenceState.disableReminder) {
             return;
         }
-        
+
         // Rappel après 2 minutes sans action (au lieu de 10)
         if (!presenceState.lastAction && !presenceState.reminderShown) {
             if (now - presenceState.lastActionTime > twoMinutes || presenceState.lastActionTime === 0) {
@@ -5259,7 +6081,7 @@ function startReminderCheck() {
                 presenceState.reminderShown = true;
             }
         }
-        
+
         // Nouveau : Rappel après 1 heure de pause
         if (presenceState.lastAction === 'break_start' && !presenceState.pauseReminderShown) {
             if (now - presenceState.lastActionTime > oneHour) {
@@ -5268,7 +6090,7 @@ function startReminderCheck() {
                 presenceState.pauseReminderShown = true;
             }
         }
-        
+
     }, 60000); // Vérifier toutes les minutes
 }
 
@@ -5278,7 +6100,7 @@ function showReminderModal(type = 'initial') {
         // Update modal text based on reminder type
         const titleElement = modal.querySelector('.tm-reminder-title');
         const textElement = modal.querySelector('.tm-reminder-text');
-        
+
         if (type === 'pause') {
             if (titleElement) titleElement.textContent = 'Retour de pause';
             if (textElement) textElement.textContent = 'Tu es de retour de ta pause pense à te mettre présent';
@@ -5286,7 +6108,7 @@ function showReminderModal(type = 'initial') {
             if (titleElement) titleElement.textContent = "N'oubliez pas de mettre à jour votre statut!";
             if (textElement) textElement.textContent = 'Vous êtes connecté depuis plus de 2 minutes';
         }
-        
+
         modal.style.display = 'flex';
     }
 }
@@ -5301,7 +6123,7 @@ function closeReminderModal() {
 function startBlinking() {
     const btn = document.getElementById('tm-presence-btn');
     if (!btn || presenceState.blinkInterval) return;
-    
+
     btn.classList.add('tm-blink-warning');
 }
 
@@ -5315,10 +6137,10 @@ function stopBlinking() {
 function updateStatusIndicator(actionType) {
     const indicator = document.getElementById('tm-status-indicator');
     if (!indicator) return;
-    
+
     // Retirer toutes les classes de statut
     indicator.classList.remove('tm-indicator-online', 'tm-indicator-offline', 'tm-indicator-pause');
-    
+
     // Ajouter la classe appropriée
     switch (actionType) {
         case 'clock_in':
@@ -5341,7 +6163,7 @@ function updateButtonStates(currentAction) {
         clockOut: document.querySelector('[data-action="clock_out"]'),
         pauseToggle: document.getElementById('tm-pause-toggle-btn')
     };
-    
+
     // Réinitialiser tous les boutons (enlever disabled et classes grayed)
     Object.values(buttons).forEach(btn => {
         if (btn) {
@@ -5349,10 +6171,10 @@ function updateButtonStates(currentAction) {
             btn.classList.remove('tm-button-disabled');
         }
     });
-    
+
     // Mettre à jour le bouton pause/reprise selon l'état actuel
     updatePauseToggleButton(currentAction);
-    
+
     // Griser et désactiver le bouton correspondant à l'état actuel
     // Logique: on grise le bouton qui représente l'état actuel, pas l'action à faire
     switch (currentAction) {
@@ -5391,18 +6213,18 @@ function updatePauseToggleButton(currentAction) {
     const toggleBtn = document.getElementById('tm-pause-toggle-btn');
     const toggleLabel = document.getElementById('tm-pause-toggle-label');
     const toggleIcon = document.getElementById('tm-pause-toggle-icon');
-    
+
     if (!toggleBtn || !toggleLabel || !toggleIcon) return;
-    
+
     // Si on est en pause, afficher "Reprise"
     if (currentAction === 'break_start') {
         toggleBtn.setAttribute('data-action', 'break_end');
         toggleLabel.textContent = 'Reprise';
-        
+
         // Ajouter la classe pour le style bleu (reprise)
         toggleBtn.classList.remove('is-pause');
         toggleBtn.classList.add('is-resume');
-        
+
         // Changer l'icône pour play
         toggleIcon.innerHTML = `
             <circle cx="12" cy="12" r="10"></circle>
@@ -5412,11 +6234,11 @@ function updatePauseToggleButton(currentAction) {
         // Sinon, afficher "Pause"
         toggleBtn.setAttribute('data-action', 'break_start');
         toggleLabel.textContent = 'Pause';
-        
+
         // Ajouter la classe pour le style jaune (pause)
         toggleBtn.classList.remove('is-resume');
         toggleBtn.classList.add('is-pause');
-        
+
         // Changer l'icône pour pause
         toggleIcon.innerHTML = `
             <circle cx="12" cy="12" r="10"></circle>
@@ -5428,9 +6250,9 @@ function updatePauseToggleButton(currentAction) {
 
 async function loadPresenceInPanel() {
     const listEl = document.getElementById('tm-presence-inline');
-    
+
     listEl.innerHTML = '<div class="tm-presence-loading-inline">Chargement...</div>';
-    
+
     try {
         // Utiliser GM_xmlhttpRequest au lieu de fetch
         const result = await new Promise((resolve, reject) => {
@@ -5453,7 +6275,7 @@ async function loadPresenceInPanel() {
                 }
             });
         });
-        
+
         if (result.ok && result.presence) {
             displayPresenceInline(result.presence);
         } else {
@@ -5467,34 +6289,34 @@ async function loadPresenceInPanel() {
 
 function displayPresenceInline(presence) {
     const listEl = document.getElementById('tm-presence-inline');
-    
+
     const present = presence.present || [];
     const onBreak = presence.on_break || [];
     const absent = presence.absent || [];
-    
+
     // Fonction helper pour obtenir un nom d'affichage valide
     const getDisplayName = (person) => {
         // Si le nom existe et n'est pas vide
         if (person.name && person.name.trim() && person.name.trim().toLowerCase() !== 'utilisateur') {
             return person.name.trim();
         }
-        
+
         // Sinon, essayer l'email
         if (person.email && person.email.trim()) {
             return person.email.split('@')[0]; // Prendre la partie avant @
         }
-        
+
         // Sinon, essayer l'ID utilisateur
         if (person.user_id) {
             return `Utilisateur #${person.user_id}`;
         }
-        
+
         // En dernier recours
         return 'Utilisateur inconnu';
     };
-    
+
     let html = '';
-    
+
     // Afficher les présents (disponibles)
     if (present.length > 0) {
         present.forEach(person => {
@@ -5508,7 +6330,7 @@ function displayPresenceInline(presence) {
             `;
         });
     }
-    
+
     // Afficher les en pause
     if (onBreak.length > 0) {
         onBreak.forEach(person => {
@@ -5522,7 +6344,7 @@ function displayPresenceInline(presence) {
             `;
         });
     }
-    
+
     // Afficher les non disponibles
     if (absent.length > 0) {
         absent.forEach(person => {
@@ -5536,25 +6358,25 @@ function displayPresenceInline(presence) {
             `;
         });
     }
-    
+
     if (!html) {
         html = '<div class="tm-presence-empty-inline">Aucune donnée disponible</div>';
     }
-    
+
     listEl.innerHTML = html;
 }
 
 function showEndTimeModal() {
     const modal = document.getElementById('tm-endtime-modal');
     const input = document.getElementById('tm-endtime-input');
-    
+
     // Pré-remplir avec l'heure sauvegardée ou suggérer 17:30
     if (presenceState.endTime) {
         input.value = presenceState.endTime;
     } else {
         input.value = '17:30';
     }
-    
+
     if (modal) {
         modal.style.display = 'flex';
         // Focus sur l'input après un court délai pour l'animation
@@ -5577,16 +6399,16 @@ function showPresenceToast(actionType, userName) {
         toastContainer.id = 'tm-toast-container';
         document.body.appendChild(toastContainer);
     }
-    
+
     // Créer le toast
     const toast = document.createElement('div');
     toast.className = 'tm-toast';
-    
+
     // Déterminer l'icône, le texte et la couleur selon l'action
     let indicator = '';
     let message = '';
     let indicatorClass = '';
-    
+
     switch (actionType) {
         case 'clock_in':
             indicator = 'tm-toast-indicator-online';
@@ -5609,26 +6431,26 @@ function showPresenceToast(actionType, userName) {
             indicatorClass = 'online';
             break;
     }
-    
+
     toast.innerHTML = `
         <div class="tm-toast-indicator ${indicator}"></div>
         <div class="tm-toast-content">
             <div class="tm-toast-message">${message}</div>
         </div>
     `;
-    
+
     toastContainer.appendChild(toast);
-    
+
     // Animation d'entrée
     setTimeout(() => {
         toast.classList.add('tm-toast-show');
     }, 10);
-    
+
     // Animation de sortie et suppression après 30 secondes
     setTimeout(() => {
         toast.classList.remove('tm-toast-show');
         toast.classList.add('tm-toast-hide');
-        
+
         setTimeout(() => {
             toast.remove();
         }, 500);
@@ -5645,7 +6467,7 @@ GM_addStyle(`
         z-index: 99999;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-    
+
     /* Bouton principal */
     #tm-presence-btn {
         width: 56px;
@@ -5661,16 +6483,16 @@ GM_addStyle(`
         color: white;
         position: relative;
     }
-    
+
     #tm-presence-btn:hover {
         transform: scale(1.05);
         box-shadow: 0 12px 32px rgba(0,160,157,0.4);
     }
-    
+
     #tm-presence-btn.tm-blink-warning {
         animation: blinkOrange 2s ease-in-out infinite;
     }
-    
+
     @keyframes blinkOrange {
         0%, 100% {
             background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
@@ -5681,7 +6503,7 @@ GM_addStyle(`
             box-shadow: 0 8px 24px rgba(255,152,0,0.4);
         }
     }
-    
+
     /* Panel encore plus transparent */
     #tm-presence-panel {
         position: absolute;
@@ -5697,7 +6519,7 @@ GM_addStyle(`
         animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         border: 1px solid rgba(255, 255, 255, 0.2);
     }
-    
+
     @keyframes slideUp {
         from {
             opacity: 0;
@@ -5708,7 +6530,7 @@ GM_addStyle(`
             transform: translateY(0);
         }
     }
-    
+
     /* Header du panel */
     .tm-panel-header {
         display: flex;
@@ -5716,13 +6538,13 @@ GM_addStyle(`
         align-items: center;
         margin-bottom: 16px;
     }
-    
+
     .tm-panel-title {
         font-size: 16px;
         font-weight: 700;
         color: #1a1a1a;
     }
-    
+
     /* Témoin lumineux en haut à gauche, dépassant du bouton */
     .tm-status-indicator {
         position: absolute;
@@ -5734,22 +6556,22 @@ GM_addStyle(`
         box-shadow: 0 0 4px rgba(0,0,0,0.3);
         z-index: 1;
     }
-    
+
     .tm-indicator-online {
         background: #10b981;
         animation: pulseGreen 2s ease-in-out infinite;
     }
-    
+
     .tm-indicator-offline {
         background: #ef4444;
         box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
     }
-    
+
     .tm-indicator-pause {
         background: #f59e0b;
         animation: pulseOrange 2s ease-in-out infinite;
     }
-    
+
     @keyframes pulseGreen {
         0%, 100% {
             opacity: 1;
@@ -5760,7 +6582,7 @@ GM_addStyle(`
             box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 12px rgba(16, 185, 129, 0.8);
         }
     }
-    
+
     @keyframes pulseOrange {
         0%, 100% {
             opacity: 1;
@@ -5771,7 +6593,7 @@ GM_addStyle(`
             box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 12px rgba(245, 158, 11, 0.8);
         }
     }
-    
+
     /* Boutons d'actions avec labels */
     .tm-actions-row {
         display: flex;
@@ -5779,7 +6601,7 @@ GM_addStyle(`
         margin-bottom: 12px;
         justify-content: space-between;
     }
-    
+
     .tm-action-btn-small {
         background: rgba(248, 249, 250, 0.5);
         border: 2px solid transparent;
@@ -5795,19 +6617,19 @@ GM_addStyle(`
         flex: 1;
         min-width: 0;
     }
-    
+
     .tm-action-btn-small:hover {
         transform: translateY(-2px);
         box-shadow: 0 4px 12px rgba(0,0,0,0.1);
     }
-    
+
     .tm-action-btn-small svg {
         display: block;
         flex-shrink: 0;
         stroke: #9ca3af;
         transition: stroke 0.2s;
     }
-    
+
     .tm-action-label {
         font-size: 10px;
         font-weight: 600;
@@ -5817,86 +6639,86 @@ GM_addStyle(`
         letter-spacing: 0.3px;
         transition: color 0.2s;
     }
-    
+
     .tm-action-in:hover {
         background: rgba(209, 250, 229, 0.9);
         border-color: #10b981;
     }
-    
+
     .tm-action-in:hover svg {
         stroke: #10b981;
     }
-    
+
     .tm-action-in:hover .tm-action-label {
         color: #10b981;
     }
-    
+
     .tm-action-out:hover {
         background: rgba(254, 226, 226, 0.9);
         border-color: #ef4444;
     }
-    
+
     .tm-action-out:hover svg {
         stroke: #ef4444;
     }
-    
+
     .tm-action-out:hover .tm-action-label {
         color: #ef4444;
     }
-    
+
     .tm-action-pause:hover {
         background: rgba(254, 243, 199, 0.9);
         border-color: #f59e0b;
     }
-    
+
     .tm-action-pause:hover svg {
         stroke: #f59e0b;
     }
-    
+
     .tm-action-pause:hover .tm-action-label {
         color: #f59e0b;
     }
-    
+
     .tm-action-resume:hover {
         background: rgba(219, 234, 254, 0.9);
         border-color: #3b82f6;
     }
-    
+
     .tm-action-resume:hover svg {
         stroke: #3b82f6;
     }
-    
+
     .tm-action-resume:hover .tm-action-label {
         color: #3b82f6;
     }
-    
+
     /* Styles pour le bouton pause/reprise dynamique */
     .tm-action-pause-toggle.is-pause:hover {
         background: rgba(254, 243, 199, 0.9);
         border-color: #f59e0b;
     }
-    
+
     .tm-action-pause-toggle.is-pause:hover svg {
         stroke: #f59e0b;
     }
-    
+
     .tm-action-pause-toggle.is-pause:hover .tm-action-label {
         color: #f59e0b;
     }
-    
+
     .tm-action-pause-toggle.is-resume:hover {
         background: rgba(219, 234, 254, 0.9);
         border-color: #3b82f6;
     }
-    
+
     .tm-action-pause-toggle.is-resume:hover svg {
         stroke: #3b82f6;
     }
-    
+
     .tm-action-pause-toggle.is-resume:hover .tm-action-label {
         color: #3b82f6;
     }
-    
+
     /* Status */
     .tm-status {
         text-align: center;
@@ -5907,7 +6729,7 @@ GM_addStyle(`
         min-height: 18px;
         margin-bottom: 12px;
     }
-    
+
     /* Section titre présences */
     .tm-presence-section-title {
         font-size: 11px;
@@ -5917,7 +6739,7 @@ GM_addStyle(`
         text-transform: uppercase;
         letter-spacing: 0.5px;
     }
-    
+
     /* Liste de présence encore plus transparente avec scrollbar stylée */
     .tm-presence-inline {
         max-height: 280px;
@@ -5926,33 +6748,33 @@ GM_addStyle(`
         border-radius: 10px;
         padding: 10px;
     }
-    
+
     /* Scrollbar personnalisée pour Webkit (Chrome, Safari, Edge) */
     .tm-presence-inline::-webkit-scrollbar {
         width: 6px;
     }
-    
+
     .tm-presence-inline::-webkit-scrollbar-track {
         background: rgba(0, 0, 0, 0.05);
         border-radius: 10px;
     }
-    
+
     .tm-presence-inline::-webkit-scrollbar-thumb {
         background: rgba(0, 160, 157, 0.4);
         border-radius: 10px;
         transition: background 0.2s;
     }
-    
+
     .tm-presence-inline::-webkit-scrollbar-thumb:hover {
         background: rgba(0, 160, 157, 0.6);
     }
-    
+
     /* Scrollbar pour Firefox */
     .tm-presence-inline {
         scrollbar-width: thin;
         scrollbar-color: rgba(0, 160, 157, 0.4) rgba(0, 0, 0, 0.05);
     }
-    
+
     .tm-presence-loading-inline,
     .tm-presence-error-inline,
     .tm-presence-empty-inline {
@@ -5961,7 +6783,7 @@ GM_addStyle(`
         color: #999;
         font-size: 12px;
     }
-    
+
     .tm-presence-item-inline {
         display: flex;
         align-items: center;
@@ -5972,17 +6794,17 @@ GM_addStyle(`
         margin-bottom: 6px;
         transition: all 0.2s;
     }
-    
+
     .tm-presence-item-inline:hover {
         transform: translateX(4px);
         box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         background: rgba(255, 255, 255, 0.75);
     }
-    
+
     .tm-presence-item-inline:last-child {
         margin-bottom: 0;
     }
-    
+
     .tm-presence-dot-online {
         width: 8px;
         height: 8px;
@@ -5991,7 +6813,7 @@ GM_addStyle(`
         flex-shrink: 0;
         animation: pulse 2s ease-in-out infinite;
     }
-    
+
     .tm-presence-dot-pause {
         width: 8px;
         height: 8px;
@@ -6000,7 +6822,7 @@ GM_addStyle(`
         flex-shrink: 0;
         animation: pulse 2s ease-in-out infinite;
     }
-    
+
     .tm-presence-dot-offline {
         width: 8px;
         height: 8px;
@@ -6009,7 +6831,7 @@ GM_addStyle(`
         flex-shrink: 0;
         animation: pulse 2s ease-in-out infinite;
     }
-    
+
     @keyframes pulse {
         0%, 100% {
             opacity: 1;
@@ -6020,29 +6842,29 @@ GM_addStyle(`
             transform: scale(1.1);
         }
     }
-    
+
     .tm-presence-name-inline {
         flex: 1;
         font-weight: 600;
         font-size: 12px;
         color: #333;
     }
-    
+
     .tm-presence-status-inline {
         font-size: 10px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.3px;
     }
-    
+
     .tm-status-online {
         color: #10b981;
     }
-    
+
     .tm-status-pause {
         color: #f59e0b;
     }
-    
+
     .tm-status-offline {
         color: #ef4444;
     }
@@ -6061,12 +6883,12 @@ GM_addStyle(`
         animation: fadeIn 0.3s;
         backdrop-filter: blur(4px);
     }
-    
+
     @keyframes fadeIn {
         from { opacity: 0; }
         to { opacity: 1; }
     }
-    
+
     .tm-reminder-content {
         background: white;
         border-radius: 20px;
@@ -6076,7 +6898,7 @@ GM_addStyle(`
         animation: scaleIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         max-width: 380px;
     }
-    
+
     @keyframes scaleIn {
         from {
             opacity: 0;
@@ -6087,25 +6909,25 @@ GM_addStyle(`
             transform: scale(1);
         }
     }
-    
+
     .tm-reminder-content svg {
         margin: 0 auto 20px;
         display: block;
     }
-    
+
     .tm-reminder-title {
         font-size: 22px;
         font-weight: 700;
         color: #1a1a1a;
         margin-bottom: 10px;
     }
-    
+
     .tm-reminder-text {
         font-size: 14px;
         color: #666;
         margin-bottom: 20px;
     }
-    
+
     .tm-reminder-btn {
         padding: 12px 28px;
         background: #00A09D;
@@ -6117,13 +6939,13 @@ GM_addStyle(`
         font-size: 14px;
         transition: all 0.2s;
     }
-    
+
     .tm-reminder-btn:hover {
         background: #008F8C;
         transform: translateY(-1px);
         box-shadow: 0 4px 12px rgba(0,160,157,0.3);
     }
-    
+
     .tm-reminder-checkbox {
         display: flex;
         align-items: center;
@@ -6135,21 +6957,21 @@ GM_addStyle(`
         border-radius: 8px;
         transition: background 0.2s;
     }
-    
+
     .tm-reminder-checkbox:hover {
         background: rgba(0,0,0,0.03);
     }
-    
+
     .tm-reminder-checkbox input[type="checkbox"] {
         width: 16px;
         height: 16px;
         cursor: pointer;
     }
-    
+
     .tm-reminder-checkbox span {
         user-select: none;
     }
-    
+
     /* Modal heure de fin */
     #tm-endtime-modal {
         position: fixed;
@@ -6165,7 +6987,7 @@ GM_addStyle(`
         animation: fadeIn 0.3s;
         backdrop-filter: blur(4px);
     }
-    
+
     .tm-endtime-content {
         background: white;
         border-radius: 20px;
@@ -6176,25 +6998,25 @@ GM_addStyle(`
         max-width: 380px;
         width: 90%;
     }
-    
+
     .tm-endtime-content svg {
         margin: 0 auto 20px;
         display: block;
     }
-    
+
     .tm-endtime-title {
         font-size: 20px;
         font-weight: 700;
         color: #1a1a1a;
         margin-bottom: 6px;
     }
-    
+
     .tm-endtime-text {
         font-size: 13px;
         color: #666;
         margin-bottom: 20px;
     }
-    
+
     .tm-endtime-input {
         width: 100%;
         padding: 14px;
@@ -6206,18 +7028,18 @@ GM_addStyle(`
         font-family: 'SF Mono', Monaco, monospace;
         transition: all 0.2s;
     }
-    
+
     .tm-endtime-input:focus {
         outline: none;
         border-color: #00A09D;
         box-shadow: 0 0 0 4px rgba(0,160,157,0.1);
     }
-    
+
     .tm-endtime-buttons {
         display: flex;
         gap: 10px;
     }
-    
+
     .tm-endtime-btn-skip,
     .tm-endtime-btn-save {
         flex: 1;
@@ -6229,28 +7051,28 @@ GM_addStyle(`
         font-size: 14px;
         transition: all 0.2s;
     }
-    
+
     .tm-endtime-btn-skip {
         background: #f0f0f0;
         color: #666;
     }
-    
+
     .tm-endtime-btn-skip:hover {
         background: #e0e0e0;
         color: #333;
     }
-    
+
     .tm-endtime-btn-save {
         background: #00A09D;
         color: white;
     }
-    
+
     .tm-endtime-btn-save:hover {
         background: #008F8C;
         transform: translateY(-1px);
         box-shadow: 0 4px 12px rgba(0,160,157,0.3);
     }
-    
+
     /* Toast notifications */
     #tm-toast-container {
         position: fixed;
@@ -6262,7 +7084,7 @@ GM_addStyle(`
         gap: 12px;
         pointer-events: none;
     }
-    
+
     .tm-toast {
         display: flex;
         align-items: center;
@@ -6281,69 +7103,75 @@ GM_addStyle(`
         transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
         pointer-events: auto;
     }
-    
+
     .tm-toast-show {
         transform: translateY(0);
         opacity: 1;
     }
-    
+
     .tm-toast-hide {
         transform: translateY(100px);
         opacity: 0;
     }
-    
+
     .tm-toast-indicator {
         width: 10px;
         height: 10px;
         border-radius: 50%;
         flex-shrink: 0;
     }
-    
+
     .tm-toast-indicator-online {
         background: #10b981;
         box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
         animation: pulseGreen 2s ease-in-out infinite;
     }
-    
+
     .tm-toast-indicator-offline {
         background: #ef4444;
         box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
     }
-    
+
     .tm-toast-indicator-pause {
         background: #f59e0b;
         box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
         animation: pulseOrange 2s ease-in-out infinite;
     }
-    
+
     .tm-toast-content {
         flex: 1;
     }
-    
+
     .tm-toast-message {
         font-size: 13px;
         color: #333;
         line-height: 1.4;
     }
-    
+
     .tm-toast-message strong {
         font-weight: 700;
         color: #1a1a1a;
     }
-    
+
     /* Disabled button styles */
     .tm-button-disabled {
         opacity: 0.5 !important;
         cursor: not-allowed !important;
         filter: grayscale(1) !important;
     }
-    
+
     .tm-button-disabled:hover {
         transform: none !important;
         filter: grayscale(1) brightness(0.9) !important;
     }
 `);
 
+// =========================================================
+// POINTEUSE EMPLOYÉS — DÉSACTIVÉE TEMPORAIREMENT
+// =========================================================
+// La pointeuse ralentit les PC sur le long terme (polling réseau toutes les 3s
+// + recréation du widget toutes les 2s). Pour la réactiver : décommenter le bloc ci-dessous.
+/*
 // Créer le widget au chargement
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', createPresenceWidget);
@@ -6357,5 +7185,6 @@ setInterval(() => {
         createPresenceWidget();
     }
 }, 2000);
+*/
 
 })(); // Fermeture de la fonction principale
