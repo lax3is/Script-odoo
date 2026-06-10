@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      4.0.2
+// @version      4.0.4
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -436,47 +436,49 @@
             try { if (decodeURIComponent(am[1]) !== 'helpdesk.ticket') return true; } catch (_) {}
         }
         // sous-chemin /<modele>/<id> après l'id du ticket (ex: /res.partner/17571)
-        if (/\/odoo\/[^/]*tickets[^/]*\/\d+\/[a-z0-9_.]+\/\d+/i.test(h)) return true;
+        if (/\/odoo\/[^?#]*ticket[s]?\/\d+\/[a-z0-9_.]+\/\d+/i.test(h)) return true;
         return false;
     }
 
     function isTicketPage() {
         const url = window.location.href;
         if (isViewingNonTicketRecord()) return false;
-        // v19: /odoo/all-tickets/ ou /odoo/tickets/
+        // v19: /odoo/all-tickets/, /odoo/tickets/, /odoo/helpdesk/ticket/<id>
         // v16-v18: model=helpdesk.ticket
         return url.includes('model=helpdesk.ticket') ||
                url.includes('/odoo/all-tickets') ||
                url.includes('/odoo/tickets/') ||
-               url.match(/\/odoo\/[^/]*tickets[^/]*\/\d+/);
+               /\/odoo\/[^?#]*ticket[s]?(\/|$|\?)/i.test(url);
     }
     function isTicketForm() {
         const h = window.location.href;
         if (isViewingNonTicketRecord()) return false;
         // v19: URL avec un numéro de ticket à la fin
-        if (h.match(/\/odoo\/[^/]*tickets[^/]*\/\d+/)) return true;
+        //  - /odoo/all-tickets/76073
+        //  - /odoo/tickets/76073
+        //  - /odoo/helpdesk/ticket/83920   (ticket singulier, créé via API/logiciel externe)
+        if (/\/odoo\/[^?#]*ticket[s]?\/\d+/i.test(h)) return true;
         // v16-v18: paramètres classiques
         return h.includes('model=helpdesk.ticket') && (h.includes('view_type=form') || h.includes('id='));
     }
     function isTicketList() {
         const h = window.location.href;
-        // v19: URL sans numéro de ticket
-        if (h.includes('/odoo/all-tickets') && !h.match(/\/\d+/)) return true;
-        if (h.includes('/odoo/tickets') && !h.match(/\/\d+/)) return true;
+        // v19: URL liste (sans numéro de ticket)
+        if (/\/odoo\/[^?#]*ticket[s]?(\/|$|\?)/i.test(h) && !/\/odoo\/[^?#]*ticket[s]?\/\d+/i.test(h)) return true;
         // v16-v18: paramètres classiques
         return h.includes('model=helpdesk.ticket') && h.includes('view_type=list');
     }
     function isCreatingTicket() {
         const h = window.location.href;
         // v19: URL avec /new ou /create
-        if (h.includes('/odoo/all-tickets/new') || h.includes('/odoo/tickets/new')) return true;
+        if (/\/odoo\/[^?#]*ticket[s]?\/new/i.test(h)) return true;
         // v16-v18: paramètres classiques
         return h.includes('model=helpdesk.ticket') && h.includes('view_type=form');
     }
 
     function getTicketIdFromUrl() {
-        // v19: /odoo/all-tickets/76073
-        const v19Match = window.location.href.match(/\/odoo\/[^/]*tickets[^/]*\/(\d+)/);
+        // v19: /odoo/all-tickets/76073, /odoo/tickets/76073, /odoo/helpdesk/ticket/83920
+        const v19Match = window.location.href.match(/\/odoo\/[^?#]*ticket[s]?\/(\d+)/i);
         if (v19Match) return v19Match[1];
 
         // v16-v18: ?id=76073 ou #id=76073
@@ -3125,10 +3127,21 @@
 
             if (!userName) { alert('Impossible de récupérer votre nom. Vérifiez que vous êtes connecté.'); return; }
 
-            const initiales = userName.trim().split(/\s+|-/g).map(p => p[0]?.toUpperCase() || '').filter(Boolean).join('.');
+            // Format demandé : "Prénom.N" (prénom complet en Titre + point + initiale du nom).
+            // L'instance affiche le nom au format "NOM PRENOM" (ex: "SAIR ALEXIS") -> 1er mot = nom.
+            const titleCase = s => s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : '';
+            const nameParts = userName.trim().split(/\s+|-/g).filter(Boolean);
+            let signature;
+            if (nameParts.length >= 2) {
+                const nom = nameParts[0];                       // "SAIR"
+                const prenom = nameParts.slice(1).map(titleCase).join(' '); // "Alexis"
+                signature = `${prenom}.${nom.charAt(0).toUpperCase()}`;       // "Alexis.S"
+            } else {
+                signature = titleCase(nameParts[0] || userName);
+            }
             const now = new Date();
             const pad = n => n.toString().padStart(2, '0');
-            const texte = `${initiales} ${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} ${pad(now.getHours())}H${pad(now.getMinutes())} : `;
+            const texte = `${signature} ${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} ${pad(now.getHours())}H${pad(now.getMinutes())} : `;
 
             // v19: Chercher la zone de réponse avec plusieurs sélecteurs
             const zoneSelectors = [
@@ -3519,7 +3532,7 @@
             }
 
             body.appendChild(buildCol('🔧 Matériel', HARDWARE, 'hw', 'hardware'));
-            body.appendChild(buildCol('� Logiciel', SOFTWARE, 'sw', 'software'));
+            body.appendChild(buildCol('💻 Logiciel', SOFTWARE, 'sw', 'software'));
 
             // Footer
             const ftr = document.createElement('div'); ftr.className = 'ftr';
