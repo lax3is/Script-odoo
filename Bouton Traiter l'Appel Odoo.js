@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      4.0.1
+// @version      4.0.2
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -425,8 +425,24 @@
     // =========================================================
     // HELPERS URL / TICKET ID
     // =========================================================
+    // En v19, depuis un ticket on peut ouvrir un sous-enregistrement d'un autre modèle :
+    //   /odoo/all-tickets/62667/res.partner/17571/action-...  (active_model=res.partner)
+    // Dans ce cas on n'est PLUS sur la fiche ticket : il ne faut pas afficher les boutons.
+    function isViewingNonTicketRecord() {
+        const h = window.location.href;
+        // active_model explicite différent de helpdesk.ticket
+        const am = h.match(/[?&]active_model=([^&]+)/);
+        if (am) {
+            try { if (decodeURIComponent(am[1]) !== 'helpdesk.ticket') return true; } catch (_) {}
+        }
+        // sous-chemin /<modele>/<id> après l'id du ticket (ex: /res.partner/17571)
+        if (/\/odoo\/[^/]*tickets[^/]*\/\d+\/[a-z0-9_.]+\/\d+/i.test(h)) return true;
+        return false;
+    }
+
     function isTicketPage() {
         const url = window.location.href;
+        if (isViewingNonTicketRecord()) return false;
         // v19: /odoo/all-tickets/ ou /odoo/tickets/
         // v16-v18: model=helpdesk.ticket
         return url.includes('model=helpdesk.ticket') ||
@@ -436,6 +452,7 @@
     }
     function isTicketForm() {
         const h = window.location.href;
+        if (isViewingNonTicketRecord()) return false;
         // v19: URL avec un numéro de ticket à la fin
         if (h.match(/\/odoo\/[^/]*tickets[^/]*\/\d+/)) return true;
         // v16-v18: paramètres classiques
@@ -1512,8 +1529,9 @@
     }
 
     function isTicketResolved() {
-        if (document.querySelector('button.btn.o_arrow_button_current[data-value="4"]')) return true;
-
+        // On se fie UNIQUEMENT au libellé du stage actif (Résolu/Fermé/Clôturé).
+        // (L'ancien test data-value="4" était faux en v19 : data-value = id/position du stage,
+        //  pas "résolu" — ce qui ouvrait le panneau des raisons à tort sur des tickets en cours.)
         const currentStageEls = document.querySelectorAll(
             '.o_arrow_button_current, .o_statusbar_status .btn-primary, .o_statusbar_status button[aria-pressed="true"]'
         );
@@ -2918,28 +2936,64 @@
         return false;
     }
 
+    // Renvoie les éléments de stage "actif" (bouton courant du statusbar). Vide si le
+    // formulaire n'est pas encore chargé — ce qui permet de distinguer "pas chargé"
+    // de "réellement dans un stage ouvert".
+    function getActiveStageEls() {
+        return Array.from(document.querySelectorAll(
+            '.o_arrow_button_current, .o_statusbar_status .btn-primary, .o_statusbar_status button[aria-pressed="true"]'
+        ));
+    }
+
+    // Tickets observés dans un stage NON résolu (clé = id ticket). Sert à détecter une
+    // vraie transition "ouvert -> résolu" plutôt que la simple consultation d'un ticket déjà clos.
+    const _seenOpenTickets = new Set();
+
     function startClosureWatcher() {
         setInterval(async () => {
-            if (!isTicketResolved() || state.closureRunning) return;
             const ticketId = getTicketIdFromPage();
             if (!ticketId) return;
+            const idKey = String(ticketId);
+
+            // Lire le stage actif réellement rendu
+            const stageEls = getActiveStageEls();
+            if (stageEls.length === 0) return; // formulaire pas (encore) chargé : ne rien décider
+
+            const resolved = stageEls.some(el => isResolvedStageText(el.textContent || ''));
+
+            if (!resolved) {
+                // Ticket bien chargé et dans un stage ouvert -> mémoriser pour détecter une future clôture
+                _seenOpenTickets.add(idKey);
+                return;
+            }
+
+            if (state.closureRunning) return;
+
+            // Le panneau ne doit s'ouvrir que sur une vraie transition (ouvert -> résolu)
+            // ou via une intention de clôture explicite (clic bouton "Clôturer").
+            const wasOpenBefore = _seenOpenTickets.has(idKey);
+            const hadCloseIntent = sessionStorage.getItem('pendingReasonPanelAfterClosure') === '1'
+                || sessionStorage.getItem('pendingReasonPanel') === '1';
 
             state.closureRunning = true;
 
             try {
-                // Supprimer le texte animé si présent
+                // Nettoyage du marqueur (sûr quel que soit le cas) : si encore actif sur un ticket résolu
+                const wasActive = isTraitementActive() || loadState(ticketId) !== 'stopped';
                 removeBlinkText();
-
-                // Réinitialiser le bouton "Traiter l'appel" si présent
-                const btn = document.getElementById('btn-traiter-appel');
-                if (btn) {
-                    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px;"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>Traiter l\'appel';
-                    btn.style.backgroundColor = '#00a09d';
+                if (wasActive) {
+                    saveState(ticketId, 'stopped');
+                    setTraitementMarker(ticketId, false);
+                    const btn = document.getElementById('btn-traiter-appel');
+                    if (btn) updateTraiterBtn(btn, false);
                 }
 
-                // Ouvrir le panneau raisons
-                sessionStorage.removeItem('pendingReasonPanelAfterClosure');
-                scheduleReasonPanel(250, 40);
+                // Ouvrir le panneau raisons UNIQUEMENT sur transition réelle / clôture explicite
+                if (wasOpenBefore || hadCloseIntent) {
+                    _seenOpenTickets.delete(idKey);
+                    sessionStorage.removeItem('pendingReasonPanelAfterClosure');
+                    scheduleReasonPanel(250, 40);
+                }
             } catch (e) {
                 // Erreur silencieuse
             } finally {
@@ -3173,6 +3227,8 @@
     // BOUTON DÉSASSIGNATION (croix)
     // =========================================================
     function addClearAssignButton() {
+        // Uniquement sur le formulaire d'un ticket (pas dans la liste où "Assigné à" apparaît aussi)
+        if (!isTicketForm()) { document.querySelectorAll('.clear-assign-button').forEach(b => b.remove()); return; }
         const field = document.querySelector('.o_field_many2one[name="user_id"], .o_field_widget[name="user_id"]');
         if (!field) return;
         const input = field.querySelector('input');
@@ -5441,6 +5497,301 @@
     }
 
     // =========================================================
+    // RECHERCHE CLIENT PAR TÉLÉPHONE (intégré depuis recherchetel.js, adapté v16→v19)
+    // =========================================================
+    const TMTEL_MIN_DIGITS = 3;     // chiffres min pour lancer une recherche
+    const TMTEL_MIN_SUGGEST = 5;    // chiffres min pour suggestions à la frappe
+    let _tmTelStylesInjected = false;
+
+    function tmTelInjectStyles() {
+        if (_tmTelStylesInjected) return; _tmTelStylesInjected = true;
+        const st = document.createElement('style');
+        st.textContent = `
+        #tm-tel-wrap { display:flex; align-items:center; gap:6px; margin-top:6px; position:relative; flex-wrap:wrap; }
+        #tm-tel-wrap .tm-tel-input { box-sizing:border-box; border-radius:7px; padding:5px 9px; min-width:170px; height:30px;
+            background:rgba(128,128,128,.10); border:1px solid rgba(128,128,128,.35); color:inherit; font-size:12px; outline:none; }
+        #tm-tel-wrap .tm-tel-input:focus { border-color:#0d9488; box-shadow:0 0 0 2px rgba(13,148,136,.25); }
+        #tm-tel-wrap .tm-tel-btn { border:none; border-radius:7px; padding:5px 12px; height:30px; cursor:pointer;
+            background:#0d9488; color:#fff; font-size:12px; font-weight:600; white-space:nowrap; display:inline-flex; align-items:center; gap:6px; }
+        #tm-tel-wrap .tm-tel-btn:hover { filter:brightness(1.08); }
+        #tm-tel-suggest { position:absolute; left:0; top:calc(100% + 4px); z-index:2147483646; min-width:260px; max-height:280px; overflow:auto;
+            background:#1e2330; color:#e8eaf0; border:1px solid rgba(255,255,255,.12); border-radius:8px; box-shadow:0 8px 28px rgba(0,0,0,.45); display:none; }
+        #tm-tel-suggest .tm-it { padding:8px 10px; cursor:pointer; display:flex; flex-direction:column; gap:2px; border-bottom:1px solid rgba(255,255,255,.06); }
+        #tm-tel-suggest .tm-it:last-child { border-bottom:none; }
+        #tm-tel-suggest .tm-it:hover { background:rgba(13,148,136,.20); }
+        #tm-tel-suggest .tm-it .tm-nm { font-weight:600; font-size:13px; color:#fff; }
+        #tm-tel-suggest .tm-it .tm-ph { opacity:.8; font-size:11px; }
+        `;
+        document.head.appendChild(st);
+    }
+
+    function tmTelDigits(s) { return (s || '').replace(/[^\d+]/g, '').replace(/\D/g, ''); }
+
+    // Variantes de recherche FR : 0494... <-> +33494..., groupé/non groupé
+    // Variantes de recherche : couvre les formats stockés (points/espaces/tirets, +33, etc.)
+    function tmTelVariants(raw) {
+        const d = (raw || '').replace(/\D/g, '');     // chiffres purs
+        const out = [];
+        const push = x => { if (x && !out.includes(x)) out.push(x); };
+        if (!d) return out;
+
+        const grp = (s, sep) => s.replace(/(\d{2})(?=\d)/g, '$1' + sep);
+        push(d);                       // 0494660097
+        push((raw || '').trim());      // tel que saisi
+        ['.', ' ', '-'].forEach(sep => push(grp(d, sep)));   // 04.94.66.00.97 / 04 94 66 00 97 / 04-94-66-00-97
+
+        // Formes internationales +33 (si commence par 0)
+        if (/^0\d{8,}$/.test(d)) {
+            const nat = d.slice(1);                 // 494660097
+            push('+33' + nat);
+            push('0033' + nat);
+            push('33' + nat);
+            const natGrp = (sep) => nat.charAt(0) + (nat.length > 1 ? sep + grp(nat.slice(1), sep) : '');
+            ['.', ' ', '-'].forEach(sep => { push('+33 ' + natGrp(sep)); push('+33' + sep + natGrp(sep)); });
+        }
+        // Si saisi en 33... / +33..., ajouter la forme 0...
+        if (/^33\d{8,}$/.test(d)) {
+            const nat = d.slice(2);
+            push('0' + nat);
+            ['.', ' ', '-'].forEach(sep => push(grp('0' + nat, sep)));
+        }
+        return out;
+    }
+
+    // Requête partenaires : reproduit fidèlement recherchetel.js (web_search_read + fields),
+    // avec repli search_read. Renvoie un tableau d'enregistrements.
+    async function tmTelRpc(domain, limit = 20) {
+        const fields = ['id', 'display_name', 'phone', 'email', 'city']; // pas de 'mobile' (inexistant en v19)
+        const ctx = getOdooContext();
+        // 1) web_search_read avec "fields" (comme l'ancien script qui fonctionnait)
+        try {
+            const res = await fetch(window.location.origin + '/web/dataset/call_kw/res.partner/web_search_read', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    jsonrpc: '2.0', method: 'call', id: Date.now(),
+                    params: {
+                        model: 'res.partner', method: 'web_search_read', args: [],
+                        kwargs: { limit, offset: 0, order: '', context: ctx, count_limit: 10001, domain, fields }
+                    }
+                })
+            });
+            const j = await res.json();
+            if (j && j.result && Array.isArray(j.result.records)) return j.result.records;
+        } catch (_) {}
+        // 2) Repli : search_read (v19)
+        const recs = await odooRpc('res.partner', 'search_read', [domain, fields, 0, limit]);
+        return Array.isArray(recs) ? recs : [];
+    }
+
+    // name_search : exactement ce que fait le champ Client natif en v19 (sans 'args').
+    async function tmTelNameSearch(q, limit = 20) {
+        const ctx = Object.assign({}, getOdooContext(), { res_partner_search_mode: 'customer' });
+        const r = await odooRpc('res.partner', 'name_search', [], { name: q, operator: 'ilike', limit, context: ctx });
+        return Array.isArray(r) ? r.map(x => ({ id: Array.isArray(x) ? x[0] : x, display_name: Array.isArray(x) ? x[1] : '' })) : [];
+    }
+
+    // Recherche partenaire par téléphone.
+    // A) name_search (comportement natif du champ Client) ; B) phone_mobile_search / phone.
+    async function tmTelSearchPartner(raw, limit = 20) {
+        const variants = tmTelVariants(raw);
+        console.log('[TEL] Recherche, variantes:', variants);
+
+        // A) name_search (le plus fiable : identique au champ Client)
+        for (const q of variants) {
+            if (tmTelDigits(q).length < TMTEL_MIN_DIGITS) continue;
+            const pairs = await tmTelNameSearch(q, limit);
+            console.log('[TEL] name_search', JSON.stringify(q), '=>', pairs.length);
+            if (pairs.length) {
+                const ids = pairs.map(p => p.id);
+                const details = await odooRpc('res.partner', 'read', [ids, ['id', 'display_name', 'phone', 'city']]) || [];
+                const byId = {}; details.forEach(d => { byId[d.id] = d; });
+                return pairs.map(p => byId[p.id] || p);
+            }
+        }
+
+        // B) Repli : phone_mobile_search puis phone
+        for (const q of variants) {
+            if (tmTelDigits(q).length < TMTEL_MIN_DIGITS) continue;
+            const recs = await tmTelRpc([['phone_mobile_search', 'ilike', q]], limit);
+            console.log('[TEL] B phone_mobile_search', JSON.stringify(q), '=>', recs.length);
+            if (recs.length) return recs;
+        }
+        for (const q of variants) {
+            if (tmTelDigits(q).length < TMTEL_MIN_DIGITS) continue;
+            const recs = await tmTelRpc([['phone', 'ilike', q]], limit);
+            console.log('[TEL] C phone', JSON.stringify(q), '=>', recs.length);
+            if (recs.length) return recs;
+        }
+        return [];
+    }
+
+    function tmTelVisibleMenus() {
+        const sels = ['.o-autocomplete--dropdown-menu', '.o-dropdown--menu', 'ul.ui-autocomplete', '.ui-menu'];
+        const nodes = sels.flatMap(s => Array.from(document.querySelectorAll(s)));
+        return nodes.filter(el => !!(el.offsetParent || el.getClientRects().length));
+    }
+
+    // Définit la valeur d'un input en notifiant Owl/React (setter natif)
+    function tmTelSetInputValue(input, value) {
+        try {
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(input, value);
+        } catch (_) { input.value = value; }
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    // Sélectionne le partenaire dans le many2one Client en s'appuyant sur l'autocomplete Odoo.
+    async function tmTelSelectPartner(input, partner) {
+        input.focus();
+        tmTelSetInputValue(input, partner.display_name || '');
+        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown', code: 'ArrowDown' }));
+
+        const isOption = t => /(recherche avanc|search more|cr[ée]er|create|modifier|edit)/i.test((t || '').toLowerCase());
+        for (let i = 0; i < 25; i++) {
+            const menus = tmTelVisibleMenus();
+            let item = null;
+            for (const ul of menus) {
+                const items = Array.from(ul.querySelectorAll('li, .o-autocomplete--dropdown-item, .dropdown-item, .o_m2o_dropdown_option'));
+                item = items.find(li => {
+                    const t = (li.textContent || '').trim();
+                    return t && !isOption(t) && t.includes(partner.display_name || '\u0000');
+                }) || items.find(li => {
+                    const t = (li.textContent || '').trim();
+                    return t && !isOption(t);
+                });
+                if (item) break;
+            }
+            if (item) {
+                const tgt = item.querySelector('a,button,span,div') || item;
+                ['mousedown', 'mouseup', 'click'].forEach(ev => tgt.dispatchEvent(new MouseEvent(ev, { bubbles: true, cancelable: true })));
+                return true;
+            }
+            await wait(120);
+        }
+        return false;
+    }
+
+    function tmTelHideSuggest(wrap) {
+        const dd = wrap.querySelector('#tm-tel-suggest');
+        if (dd) dd.style.display = 'none';
+    }
+
+    function tmTelRenderSuggest(wrap, records, clientInput, emptyMsg) {
+        let dd = wrap.querySelector('#tm-tel-suggest');
+        if (!dd) {
+            dd = document.createElement('div'); dd.id = 'tm-tel-suggest';
+            wrap.appendChild(dd);
+        }
+        dd.innerHTML = '';
+        if (!records || !records.length) {
+            if (emptyMsg) {
+                const it = document.createElement('div'); it.className = 'tm-it';
+                it.style.cursor = 'default';
+                const nm = document.createElement('div'); nm.className = 'tm-ph'; nm.textContent = emptyMsg;
+                it.appendChild(nm); dd.appendChild(it); dd.style.display = 'block';
+            } else {
+                dd.style.display = 'none';
+            }
+            return;
+        }
+        records.slice(0, 20).forEach(r => {
+            const it = document.createElement('div'); it.className = 'tm-it';
+            const nm = document.createElement('div'); nm.className = 'tm-nm'; nm.textContent = r.display_name || 'Client';
+            const ph = document.createElement('div'); ph.className = 'tm-ph';
+            const parts = [];
+            if (r.phone || r.mobile) parts.push(r.phone || r.mobile);
+            if (r.city) parts.push(String(r.city));
+            ph.textContent = parts.join(' • ');
+            it.appendChild(nm); it.appendChild(ph);
+            it.addEventListener('click', async () => {
+                await tmTelSelectPartner(clientInput, r);
+                tmTelHideSuggest(wrap);
+            });
+            dd.appendChild(it);
+        });
+        dd.style.display = 'block';
+    }
+
+    function tmTelFindClientWidget() {
+        return document.querySelector(
+            '.o_field_widget[name="partner_id"], .o_field_many2one[name="partner_id"], .o_field_res_partner_many2one[name="partner_id"]'
+        );
+    }
+
+    // Ajoute le mini-champ "Rech. tél" sous le champ Client (formulaire ticket uniquement).
+    function ensurePhoneSearchUI() {
+        if (!isTicketForm() && !isCreatingTicket()) {
+            document.getElementById('tm-tel-wrap')?.remove();
+            return;
+        }
+        const widget = tmTelFindClientWidget();
+        if (!widget) return;
+        const clientInput = widget.querySelector('input');
+        if (!clientInput) return;
+
+        const cell = widget.closest('.o_cell') || widget.parentElement;
+        if (!cell || cell.querySelector('#tm-tel-wrap')) return;
+
+        tmTelInjectStyles();
+
+        const wrap = document.createElement('div'); wrap.id = 'tm-tel-wrap';
+        const telInput = document.createElement('input');
+        telInput.type = 'text'; telInput.className = 'tm-tel-input';
+        telInput.placeholder = 'n° téléphone…';
+        telInput.title = 'Rechercher le client par téléphone (+33, espaces et points acceptés)';
+        telInput.autocomplete = 'off';
+
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.className = 'tm-tel-btn';
+        btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6.62 10.79a15.15 15.15 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.24.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2z"/></svg>Rech. tél';
+
+        const doSearch = async () => {
+            const q = (telInput.value || '').trim();
+            if (tmTelDigits(q).length < TMTEL_MIN_DIGITS) return;
+            tmTelRenderSuggest(wrap, [], clientInput, 'Recherche…');
+            try {
+                const records = await tmTelSearchPartner(q, 20);
+                if (!records.length) { tmTelRenderSuggest(wrap, [], clientInput, 'Aucun client trouvé pour ce numéro'); return; }
+                // Toujours afficher la liste (clic = sélection) — plus fiable que la sélection auto
+                tmTelRenderSuggest(wrap, records, clientInput);
+            } catch (e) { console.warn('[TEL] Erreur recherche:', e); tmTelRenderSuggest(wrap, [], clientInput, 'Erreur de recherche'); }
+        };
+
+        btn.addEventListener('click', doSearch);
+
+        let deb;
+        telInput.addEventListener('input', () => {
+            if (tmTelDigits(telInput.value).length >= TMTEL_MIN_SUGGEST) {
+                clearTimeout(deb);
+                deb = setTimeout(async () => {
+                    try { tmTelRenderSuggest(wrap, await tmTelSearchPartner(telInput.value, 20), clientInput); }
+                    catch (_) { tmTelHideSuggest(wrap); }
+                }, 220);
+            } else {
+                tmTelHideSuggest(wrap);
+            }
+        });
+        telInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const first = wrap.querySelector('#tm-tel-suggest .tm-it');
+                if (first) first.click(); else doSearch();
+            } else if (e.key === 'Escape') {
+                tmTelHideSuggest(wrap);
+            }
+        });
+        document.addEventListener('click', (e) => {
+            if (!wrap.contains(e.target)) tmTelHideSuggest(wrap);
+        });
+
+        wrap.appendChild(telInput);
+        wrap.appendChild(btn);
+        cell.appendChild(wrap);
+    }
+
+    // =========================================================
     // OBSERVER PRINCIPAL + INITIALISATION
     // =========================================================
     let lastUrl = window.location.href;
@@ -5450,6 +5801,7 @@
         styleCloseButton();
         addInitialesButton();
         addClearAssignButton();
+        ensurePhoneSearchUI(); // Recherche client par téléphone (champ Client)
         addHistoryAndProductsButtons(); // Nouvelle fonction pour l'historique et les produits
         hideConvertToOpportunityButton(); // Cacher le bouton "Convertir en opportunité"
         hookDeleteAuditClicks();
@@ -5603,1659 +5955,5 @@
         scheduleOpenTicketsUpdate(800);
         setTimeout(applyPrioritaireBadges, 1200);
     });
-
-    // =========================================================
-    // WIDGET POINTEUSE EMPLOYÉS
-    // =========================================================
-   // =========================================================
-// WIDGET POINTEUSE EMPLOYÉS - VERSION AMÉLIORÉE
-// =========================================================
-// Widget de gestion de présence
-
-const PRESENCE_API_URL = 'https://hotline.sippharma.fr/odoospeek/portal/api/timeclock_ingest.php';
-const PRESENCE_API_KEY = 'spk_1_2E6RrG4l2gQ6j1o0vQxV3p9mN8yAqK5lVZ3c4rB1uS7dT9wX0yZ2a';
-
-// État de la présence
-let presenceState = {
-    lastAction: localStorage.getItem('tm_last_clock_action') || null,
-    lastActionTime: parseInt(localStorage.getItem('tm_last_clock_time')) || 0,
-    endTime: localStorage.getItem('tm_planned_end_time') || null,
-    reminderShown: false,
-    pauseReminderShown: false,
-    blinkInterval: null,
-    disableReminder: localStorage.getItem('tm_disable_reminder') === 'true',
-    lastResetDate: localStorage.getItem('tm_last_reset_date') || '',
-    lastPresenceSnapshot: {} // Pour détecter les changements
-};
-
-// Vérifier si on doit réinitialiser (nouveau jour)
-function checkDailyReset() {
-    const today = new Date().toISOString().split('T')[0]; // Format YYYY-MM-DD
-
-    if (presenceState.lastResetDate !== today) {
-        // Nouveau jour détecté, réinitialiser
-        console.log('[Présence] Nouveau jour détecté, réinitialisation des notifications');
-        presenceState.reminderShown = false;
-        presenceState.pauseReminderShown = false;
-        presenceState.lastResetDate = today;
-        localStorage.setItem('tm_last_reset_date', today);
-
-        // Ne pas réinitialiser disableReminder car c'est un choix permanent de l'utilisateur
-    }
-}
-
-// Démarrer la surveillance des changements de présence
-function startPresenceMonitoring() {
-    // Faire un premier appel immédiat pour initialiser le snapshot (sans notifications)
-    loadInitialPresenceSnapshot();
-
-    // Puis vérifier toutes les 3 secondes pour une réactivité quasi-instantanée
-    setInterval(async () => {
-        try {
-            const result = await new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url: PRESENCE_API_URL.replace('timeclock_ingest.php', 'timeclock_presence.php') + '?api_key=' + PRESENCE_API_KEY,
-                    headers: {
-                        'X-Api-Key': PRESENCE_API_KEY
-                    },
-                    onload: function(response) {
-                        try {
-                            const data = JSON.parse(response.responseText);
-                            resolve(data);
-                        } catch (e) {
-                            reject(new Error('Erreur de parsing JSON'));
-                        }
-                    },
-                    onerror: function(error) {
-                        reject(new Error('Erreur réseau'));
-                    }
-                });
-            });
-
-            if (result.ok && result.presence) {
-                checkPresenceChanges(result.presence);
-            }
-        } catch (error) {
-            console.error('[Présence] Erreur monitoring:', error);
-        }
-    }, 3000); // Toutes les 3 secondes pour réactivité quasi-instantanée
-}
-
-// Charger le snapshot initial sans afficher de notifications
-async function loadInitialPresenceSnapshot() {
-    try {
-        const result = await new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: PRESENCE_API_URL.replace('timeclock_ingest.php', 'timeclock_presence.php') + '?api_key=' + PRESENCE_API_KEY,
-                headers: {
-                    'X-Api-Key': PRESENCE_API_KEY
-                },
-                onload: function(response) {
-                    try {
-                        const data = JSON.parse(response.responseText);
-                        resolve(data);
-                    } catch (e) {
-                        reject(new Error('Erreur de parsing JSON'));
-                    }
-                },
-                onerror: function(error) {
-                    reject(new Error('Erreur réseau'));
-                }
-            });
-        });
-
-        if (result.ok && result.presence) {
-            const allUsers = {};
-
-            // Fonction helper pour obtenir un identifiant unique
-            const getUserKey = (p) => {
-                if (p.name && p.name.trim() && p.name.trim().toLowerCase() !== 'utilisateur') {
-                    return p.name.trim();
-                } else if (p.email && p.email.trim()) {
-                    return p.email;
-                } else if (p.user_id) {
-                    return `user_${p.user_id}`;
-                }
-                return `unknown_${Date.now()}_${Math.random()}`;
-            };
-
-            // Construire le snapshot initial
-            (result.presence.present || []).forEach(p => {
-                const key = getUserKey(p);
-                allUsers[key] = { status: 'online', time: p.last_action_time };
-            });
-            (result.presence.on_break || []).forEach(p => {
-                const key = getUserKey(p);
-                allUsers[key] = { status: 'pause', time: p.last_action_time };
-            });
-            (result.presence.absent || []).forEach(p => {
-                const key = getUserKey(p);
-                allUsers[key] = { status: 'offline', time: p.last_action_time };
-            });
-
-            presenceState.lastPresenceSnapshot = allUsers;
-            console.log('[Présence] Snapshot initial chargé:', Object.keys(allUsers).length, 'utilisateurs');
-        }
-    } catch (error) {
-        console.error('[Présence] Erreur chargement snapshot initial:', error);
-    }
-}
-
-// Détecter les changements de statut
-function checkPresenceChanges(presence) {
-    const currentUserName = getOdooCurrentUserName() || 'Utilisateur';
-    const allUsers = {};
-
-    // Fonction helper pour obtenir un identifiant unique et un nom d'affichage
-    const getUserInfo = (p) => {
-        let displayName = '';
-        let uniqueKey = '';
-
-        // Essayer d'obtenir un nom valide
-        if (p.name && p.name.trim() && p.name.trim().toLowerCase() !== 'utilisateur') {
-            displayName = p.name.trim();
-            uniqueKey = p.name.trim();
-        } else if (p.email && p.email.trim()) {
-            displayName = p.email.split('@')[0];
-            uniqueKey = p.email;
-        } else if (p.user_id) {
-            displayName = `Utilisateur #${p.user_id}`;
-            uniqueKey = `user_${p.user_id}`;
-        } else {
-            // Utiliser un timestamp pour éviter les collisions
-            displayName = 'Utilisateur inconnu';
-            uniqueKey = `unknown_${Date.now()}_${Math.random()}`;
-        }
-
-        return { displayName, uniqueKey };
-    };
-
-    // Construire un snapshot de tous les utilisateurs avec leur statut
-    (presence.present || []).forEach(p => {
-        const { displayName, uniqueKey } = getUserInfo(p);
-        allUsers[uniqueKey] = { status: 'online', time: p.last_action_time, displayName };
-    });
-    (presence.on_break || []).forEach(p => {
-        const { displayName, uniqueKey } = getUserInfo(p);
-        allUsers[uniqueKey] = { status: 'pause', time: p.last_action_time, displayName };
-    });
-    (presence.absent || []).forEach(p => {
-        const { displayName, uniqueKey } = getUserInfo(p);
-        allUsers[uniqueKey] = { status: 'offline', time: p.last_action_time, displayName };
-    });
-
-    // Comparer avec le snapshot précédent
-    Object.keys(allUsers).forEach(userKey => {
-        const userInfo = allUsers[userKey];
-        const displayName = userInfo.displayName;
-
-        // Ne pas notifier pour soi-même
-        if (displayName === currentUserName || userKey.includes(currentUserName)) return;
-
-        const currentStatus = userInfo.status;
-        const previousStatus = presenceState.lastPresenceSnapshot[userKey]?.status;
-
-        // Si le statut a changé
-        if (previousStatus && previousStatus !== currentStatus) {
-            // Mapper le statut vers une action pour la notification
-            let actionType = '';
-            switch (currentStatus) {
-                case 'online':
-                    actionType = previousStatus === 'pause' ? 'break_end' : 'clock_in';
-                    break;
-                case 'offline':
-                    actionType = 'clock_out';
-                    break;
-                case 'pause':
-                    actionType = 'break_start';
-                    break;
-            }
-
-            if (actionType) {
-                console.log(`[Présence] ${displayName} : ${previousStatus} → ${currentStatus}`);
-                showPresenceToast(actionType, displayName);
-            }
-        }
-    });
-
-    // Sauvegarder le snapshot actuel
-    presenceState.lastPresenceSnapshot = allUsers;
-}
-
-function createPresenceWidget() {
-    // Vérifier si le widget existe déjà
-    if (document.getElementById('tm-presence-widget')) return;
-
-    const widget = document.createElement('div');
-    widget.id = 'tm-presence-widget';
-    widget.innerHTML = `
-        <div id="tm-presence-btn" title="Gestion de présence">
-            <div class="tm-status-indicator" id="tm-status-indicator"></div>
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                <circle cx="12" cy="7" r="4"></circle>
-            </svg>
-        </div>
-        <div id="tm-presence-panel" style="display:none">
-            <div class="tm-panel-header">
-                <span class="tm-panel-title">Gestion de présence</span>
-            </div>
-
-            <!-- Boutons d'action avec labels -->
-            <div class="tm-actions-row">
-                <button class="tm-action-btn-small tm-action-in" data-action="clock_in">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                        <path d="M9 11l3 3L22 4"></path>
-                        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
-                    </svg>
-                    <span class="tm-action-label">Dispo</span>
-                </button>
-                <button class="tm-action-btn-small tm-action-out" data-action="clock_out">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                        <path d="M18 6L6 18M6 6l12 12"></path>
-                    </svg>
-                    <span class="tm-action-label">Absent</span>
-                </button>
-                <button class="tm-action-btn-small tm-action-pause-toggle" id="tm-pause-toggle-btn" data-action="break_start">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" id="tm-pause-toggle-icon">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <line x1="10" y1="15" x2="10" y2="9"></line>
-                        <line x1="14" y1="15" x2="14" y2="9"></line>
-                    </svg>
-                    <span class="tm-action-label" id="tm-pause-toggle-label">Pause</span>
-                </button>
-            </div>
-
-            <div id="tm-presence-status" class="tm-status"></div>
-
-            <!-- Liste des utilisateurs -->
-            <div class="tm-presence-section-title">Équipe</div>
-            <div id="tm-presence-inline" class="tm-presence-inline">
-                <div class="tm-presence-loading-inline">Chargement...</div>
-            </div>
-        </div>
-
-        <!-- Modal de rappel -->
-        <div id="tm-reminder-modal" style="display:none">
-            <div class="tm-reminder-content">
-                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#00A09D" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <polyline points="12 6 12 12 16 14"></polyline>
-                </svg>
-                <div class="tm-reminder-title">N'oubliez pas de mettre à jour votre statut!</div>
-                <div class="tm-reminder-text">Vous êtes connecté depuis plus de 10 minutes</div>
-                <div style="display:flex;flex-direction:column;gap:12px;margin-top:20px">
-                    <button id="tm-reminder-close" class="tm-reminder-btn">J'ai compris</button>
-                    <label class="tm-reminder-checkbox">
-                        <input type="checkbox" id="tm-reminder-disable" />
-                        <span>Ne plus me rappeler (pour commerciaux/responsables)</span>
-                    </label>
-                </div>
-            </div>
-        </div>
-
-        <!-- Modal heure de fin -->
-        <div id="tm-endtime-modal" style="display:none">
-            <div class="tm-endtime-content">
-                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#00A09D" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <polyline points="12 6 12 12 16 14"></polyline>
-                </svg>
-                <div class="tm-endtime-title">À quelle heure terminez-vous ?</div>
-                <div class="tm-endtime-text">Optionnel - Pour vous rappeler de changer votre statut</div>
-                <input type="time" id="tm-endtime-input" class="tm-endtime-input" />
-                <div class="tm-endtime-buttons">
-                    <button id="tm-endtime-skip" class="tm-endtime-btn-skip">Passer</button>
-                    <button id="tm-endtime-save" class="tm-endtime-btn-save">Enregistrer</button>
-                </div>
-            </div>
-        </div>
-    `;
-
-    document.body.appendChild(widget);
-
-    // Toggle panel
-    const btn = document.getElementById('tm-presence-btn');
-    const panel = document.getElementById('tm-presence-panel');
-
-    btn.addEventListener('click', () => {
-        const isVisible = panel.style.display !== 'none';
-        panel.style.display = isVisible ? 'none' : 'block';
-        if (!isVisible) {
-            // Charger automatiquement les présences à l'ouverture
-            loadPresenceInPanel();
-        }
-    });
-
-    // Initialiser le témoin lumineux au chargement
-    if (presenceState.lastAction) {
-        updateStatusIndicator(presenceState.lastAction);
-    }
-
-    // Fermer le panel si on clique en dehors
-    document.addEventListener('click', (e) => {
-        const widget = document.getElementById('tm-presence-widget');
-        if (widget && !widget.contains(e.target)) {
-            panel.style.display = 'none';
-        }
-    });
-
-    // Gérer les clics sur les boutons de pointage
-    document.querySelectorAll('.tm-action-btn-small').forEach(button => {
-        button.addEventListener('click', async () => {
-            const action = button.getAttribute('data-action');
-
-            // Si c'est une arrivée, demander l'heure de fin d'abord
-            if (action === 'clock_in') {
-                showEndTimeModal();
-            } else {
-                await sendPresenceAction(action);
-            }
-        });
-    });
-
-    // Fermer le modal de rappel
-    document.getElementById('tm-reminder-close').addEventListener('click', () => {
-        const disableCheckbox = document.getElementById('tm-reminder-disable');
-        if (disableCheckbox && disableCheckbox.checked) {
-            presenceState.disableReminder = true;
-            localStorage.setItem('tm_disable_reminder', 'true');
-            console.log('[Présence] Notifications désactivées par l\'utilisateur');
-        }
-        closeReminderModal();
-    });
-
-    // Modal heure de fin - Passer
-    document.getElementById('tm-endtime-skip').addEventListener('click', async () => {
-        closeEndTimeModal();
-        await sendPresenceAction('clock_in');
-    });
-
-    // Modal heure de fin - Enregistrer
-    document.getElementById('tm-endtime-save').addEventListener('click', async () => {
-        const endTime = document.getElementById('tm-endtime-input').value;
-        if (endTime) {
-            presenceState.endTime = endTime;
-            localStorage.setItem('tm_planned_end_time', endTime);
-        }
-        closeEndTimeModal();
-        await sendPresenceAction('clock_in');
-    });
-
-    // Démarrer la vérification du rappel
-    startReminderCheck();
-
-    // Démarrer la surveillance des changements de présence
-    startPresenceMonitoring();
-
-    // Initialiser l'état des boutons basé sur la dernière action
-    if (presenceState.lastAction) {
-        updateButtonStates(presenceState.lastAction);
-    } else {
-        // Si pas d'action précédente, initialiser le bouton pause/reprise en mode "Pause"
-        updatePauseToggleButton(null);
-    }
-}
-
-async function sendPresenceAction(actionType) {
-    try {
-        // Récupérer les infos utilisateur Odoo
-        const userName = getOdooCurrentUserName() || 'Utilisateur';
-        const _si = getSessionInfo();
-        const userEmail = _si.email || _si.username || '';
-        const userId = _si.uid || null;
-
-        showStatus('Envoi en cours...', '#00A09D');
-
-        // Créer un timestamp en heure locale (pas UTC)
-        const now = new Date();
-        const localTimestamp = now.getFullYear() + '-' +
-            String(now.getMonth() + 1).padStart(2, '0') + '-' +
-            String(now.getDate()).padStart(2, '0') + ' ' +
-            String(now.getHours()).padStart(2, '0') + ':' +
-            String(now.getMinutes()).padStart(2, '0') + ':' +
-            String(now.getSeconds()).padStart(2, '0');
-
-        const formData = new URLSearchParams({
-            api_key: PRESENCE_API_KEY,
-            employee_name: userName,
-            employee_email: userEmail,
-            action_type: actionType,
-            timestamp: localTimestamp,
-            odoo_user_id: userId || '',
-            machine_name: navigator.userAgent,
-            notes: presenceState.endTime ? `Fin prévue: ${presenceState.endTime}` : ''
-        });
-
-        // Utiliser GM_xmlhttpRequest au lieu de fetch pour éviter les problèmes CORS
-        const result = await new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'POST',
-                url: PRESENCE_API_URL,
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'X-Api-Key': PRESENCE_API_KEY
-                },
-                data: formData.toString(),
-                onload: function(response) {
-                    try {
-                        const data = JSON.parse(response.responseText);
-                        resolve(data);
-                    } catch (e) {
-                        reject(new Error('Erreur de parsing JSON'));
-                    }
-                },
-                onerror: function(error) {
-                    reject(new Error('Erreur réseau'));
-                }
-            });
-        });
-
-        if (result.ok) {
-            // Sauvegarder l'action
-            presenceState.lastAction = actionType;
-            presenceState.lastActionTime = Date.now();
-            localStorage.setItem('tm_last_clock_action', actionType);
-            localStorage.setItem('tm_last_clock_time', Date.now().toString());
-
-            // Arrêter le clignotement et réinitialiser les rappels
-            stopBlinking();
-            presenceState.reminderShown = false;
-
-            // Réinitialiser le rappel de pause si on reprend le travail
-            if (actionType === 'break_end' || actionType === 'clock_in') {
-                presenceState.pauseReminderShown = false;
-            }
-
-            // Mettre à jour le témoin lumineux
-            updateStatusIndicator(actionType);
-
-            // Mettre à jour l'état des boutons
-            updateButtonStates(actionType);
-
-            const labels = {
-                'clock_in': '✅ Statut: Disponible',
-                'clock_out': '✅ Statut: Non disponible',
-                'break_start': '✅ Statut: En pause',
-                'break_end': '✅ Statut: Disponible'
-            };
-            showStatus(labels[actionType] || '✅ Enregistré', '#28a745');
-
-            // Recharger la liste des présences
-            setTimeout(() => loadPresenceInPanel(), 500);
-
-            // Afficher une notification toast
-            showPresenceToast(actionType, userName);
-        } else {
-            throw new Error(result.error || 'Erreur inconnue');
-        }
-    } catch (error) {
-        console.error('[Présence] Erreur:', error);
-        showStatus('❌ Erreur: ' + error.message, '#dc2626');
-    }
-}
-
-function showStatus(message, color) {
-    const statusEl = document.getElementById('tm-presence-status');
-    if (statusEl) {
-        statusEl.textContent = message;
-        statusEl.style.color = color;
-
-        setTimeout(() => {
-            statusEl.textContent = '';
-        }, 3000);
-    }
-}
-
-function startReminderCheck() {
-    // Vérifier le reset quotidien au démarrage
-    checkDailyReset();
-
-    // Vérifier toutes les minutes
-    setInterval(() => {
-        // Vérifier le reset quotidien à chaque itération
-        checkDailyReset();
-
-        const now = Date.now();
-        const twoMinutes = 2 * 60 * 1000; // Changé de 10 à 2 minutes
-        const oneHour = 60 * 60 * 1000; // 1 heure pour le rappel de pause
-
-        // Vérifier si l'heure de fin est dépassée
-        if (presenceState.endTime && presenceState.lastAction === 'clock_in') {
-            const currentTime = new Date();
-            const [endHour, endMinute] = presenceState.endTime.split(':').map(Number);
-            const endTimeToday = new Date();
-            endTimeToday.setHours(endHour, endMinute, 0, 0);
-
-            // Si l'heure de fin est dépassée, passer en non dispo automatiquement
-            if (currentTime >= endTimeToday) {
-                console.log('[Présence] Heure de fin dépassée, passage en non dispo automatique');
-                sendPresenceAction('clock_out');
-                presenceState.endTime = null;
-                localStorage.removeItem('tm_planned_end_time');
-                return;
-            }
-        }
-
-        // Ne pas afficher le rappel si l'utilisateur l'a désactivé
-        if (presenceState.disableReminder) {
-            return;
-        }
-
-        // Rappel après 2 minutes sans action (au lieu de 10)
-        if (!presenceState.lastAction && !presenceState.reminderShown) {
-            if (now - presenceState.lastActionTime > twoMinutes || presenceState.lastActionTime === 0) {
-                showReminderModal('initial');
-                startBlinking();
-                presenceState.reminderShown = true;
-            }
-        }
-
-        // Nouveau : Rappel après 1 heure de pause
-        if (presenceState.lastAction === 'break_start' && !presenceState.pauseReminderShown) {
-            if (now - presenceState.lastActionTime > oneHour) {
-                showReminderModal('pause');
-                startBlinking();
-                presenceState.pauseReminderShown = true;
-            }
-        }
-
-    }, 60000); // Vérifier toutes les minutes
-}
-
-function showReminderModal(type = 'initial') {
-    const modal = document.getElementById('tm-reminder-modal');
-    if (modal) {
-        // Update modal text based on reminder type
-        const titleElement = modal.querySelector('.tm-reminder-title');
-        const textElement = modal.querySelector('.tm-reminder-text');
-
-        if (type === 'pause') {
-            if (titleElement) titleElement.textContent = 'Retour de pause';
-            if (textElement) textElement.textContent = 'Tu es de retour de ta pause pense à te mettre présent';
-        } else {
-            if (titleElement) titleElement.textContent = "N'oubliez pas de mettre à jour votre statut!";
-            if (textElement) textElement.textContent = 'Vous êtes connecté depuis plus de 2 minutes';
-        }
-
-        modal.style.display = 'flex';
-    }
-}
-
-function closeReminderModal() {
-    const modal = document.getElementById('tm-reminder-modal');
-    if (modal) {
-        modal.style.display = 'none';
-    }
-}
-
-function startBlinking() {
-    const btn = document.getElementById('tm-presence-btn');
-    if (!btn || presenceState.blinkInterval) return;
-
-    btn.classList.add('tm-blink-warning');
-}
-
-function stopBlinking() {
-    const btn = document.getElementById('tm-presence-btn');
-    if (btn) {
-        btn.classList.remove('tm-blink-warning');
-    }
-}
-
-function updateStatusIndicator(actionType) {
-    const indicator = document.getElementById('tm-status-indicator');
-    if (!indicator) return;
-
-    // Retirer toutes les classes de statut
-    indicator.classList.remove('tm-indicator-online', 'tm-indicator-offline', 'tm-indicator-pause');
-
-    // Ajouter la classe appropriée
-    switch (actionType) {
-        case 'clock_in':
-        case 'break_end':
-            indicator.classList.add('tm-indicator-online');
-            break;
-        case 'clock_out':
-            indicator.classList.add('tm-indicator-offline');
-            break;
-        case 'break_start':
-            indicator.classList.add('tm-indicator-pause');
-            break;
-    }
-}
-
-function updateButtonStates(currentAction) {
-    // Récupérer tous les boutons d'action
-    const buttons = {
-        clockIn: document.querySelector('[data-action="clock_in"]'),
-        clockOut: document.querySelector('[data-action="clock_out"]'),
-        pauseToggle: document.getElementById('tm-pause-toggle-btn')
-    };
-
-    // Réinitialiser tous les boutons (enlever disabled et classes grayed)
-    Object.values(buttons).forEach(btn => {
-        if (btn) {
-            btn.disabled = false;
-            btn.classList.remove('tm-button-disabled');
-        }
-    });
-
-    // Mettre à jour le bouton pause/reprise selon l'état actuel
-    updatePauseToggleButton(currentAction);
-
-    // Griser et désactiver le bouton correspondant à l'état actuel
-    // Logique: on grise le bouton qui représente l'état actuel, pas l'action à faire
-    switch (currentAction) {
-        case 'clock_in':
-            // On est disponible, griser "Dispo"
-            if (buttons.clockIn) {
-                buttons.clockIn.disabled = true;
-                buttons.clockIn.classList.add('tm-button-disabled');
-            }
-            break;
-        case 'clock_out':
-            // On est absent, griser "Absent"
-            if (buttons.clockOut) {
-                buttons.clockOut.disabled = true;
-                buttons.clockOut.classList.add('tm-button-disabled');
-            }
-            break;
-        case 'break_start':
-            // On est en pause, le bouton affiche maintenant "Reprise"
-            // On ne grise PAS le bouton car l'utilisateur doit pouvoir cliquer sur "Reprise"
-            // À la place, on pourrait griser "Dispo" car on n'est pas dispo
-            // Mais en fait, on ne grise rien pour permettre toutes les transitions
-            break;
-        case 'break_end':
-            // On vient de reprendre = on est disponible
-            // Griser "Dispo"
-            if (buttons.clockIn) {
-                buttons.clockIn.disabled = true;
-                buttons.clockIn.classList.add('tm-button-disabled');
-            }
-            break;
-    }
-}
-
-function updatePauseToggleButton(currentAction) {
-    const toggleBtn = document.getElementById('tm-pause-toggle-btn');
-    const toggleLabel = document.getElementById('tm-pause-toggle-label');
-    const toggleIcon = document.getElementById('tm-pause-toggle-icon');
-
-    if (!toggleBtn || !toggleLabel || !toggleIcon) return;
-
-    // Si on est en pause, afficher "Reprise"
-    if (currentAction === 'break_start') {
-        toggleBtn.setAttribute('data-action', 'break_end');
-        toggleLabel.textContent = 'Reprise';
-
-        // Ajouter la classe pour le style bleu (reprise)
-        toggleBtn.classList.remove('is-pause');
-        toggleBtn.classList.add('is-resume');
-
-        // Changer l'icône pour play
-        toggleIcon.innerHTML = `
-            <circle cx="12" cy="12" r="10"></circle>
-            <polygon points="10 8 16 12 10 16 10 8"></polygon>
-        `;
-    } else {
-        // Sinon, afficher "Pause"
-        toggleBtn.setAttribute('data-action', 'break_start');
-        toggleLabel.textContent = 'Pause';
-
-        // Ajouter la classe pour le style jaune (pause)
-        toggleBtn.classList.remove('is-resume');
-        toggleBtn.classList.add('is-pause');
-
-        // Changer l'icône pour pause
-        toggleIcon.innerHTML = `
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="10" y1="15" x2="10" y2="9"></line>
-            <line x1="14" y1="15" x2="14" y2="9"></line>
-        `;
-    }
-}
-
-async function loadPresenceInPanel() {
-    const listEl = document.getElementById('tm-presence-inline');
-
-    listEl.innerHTML = '<div class="tm-presence-loading-inline">Chargement...</div>';
-
-    try {
-        // Utiliser GM_xmlhttpRequest au lieu de fetch
-        const result = await new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: PRESENCE_API_URL.replace('timeclock_ingest.php', 'timeclock_presence.php') + '?api_key=' + PRESENCE_API_KEY,
-                headers: {
-                    'X-Api-Key': PRESENCE_API_KEY
-                },
-                onload: function(response) {
-                    try {
-                        const data = JSON.parse(response.responseText);
-                        resolve(data);
-                    } catch (e) {
-                        reject(new Error('Erreur de parsing JSON'));
-                    }
-                },
-                onerror: function(error) {
-                    reject(new Error('Erreur réseau'));
-                }
-            });
-        });
-
-        if (result.ok && result.presence) {
-            displayPresenceInline(result.presence);
-        } else {
-            listEl.innerHTML = '<div class="tm-presence-error-inline">Erreur de chargement</div>';
-        }
-    } catch (error) {
-        console.error('[Présence] Erreur chargement présences:', error);
-        listEl.innerHTML = '<div class="tm-presence-error-inline">Erreur de chargement</div>';
-    }
-}
-
-function displayPresenceInline(presence) {
-    const listEl = document.getElementById('tm-presence-inline');
-
-    const present = presence.present || [];
-    const onBreak = presence.on_break || [];
-    const absent = presence.absent || [];
-
-    // Fonction helper pour obtenir un nom d'affichage valide
-    const getDisplayName = (person) => {
-        // Si le nom existe et n'est pas vide
-        if (person.name && person.name.trim() && person.name.trim().toLowerCase() !== 'utilisateur') {
-            return person.name.trim();
-        }
-
-        // Sinon, essayer l'email
-        if (person.email && person.email.trim()) {
-            return person.email.split('@')[0]; // Prendre la partie avant @
-        }
-
-        // Sinon, essayer l'ID utilisateur
-        if (person.user_id) {
-            return `Utilisateur #${person.user_id}`;
-        }
-
-        // En dernier recours
-        return 'Utilisateur inconnu';
-    };
-
-    let html = '';
-
-    // Afficher les présents (disponibles)
-    if (present.length > 0) {
-        present.forEach(person => {
-            const displayName = getDisplayName(person);
-            html += `
-                <div class="tm-presence-item-inline">
-                    <span class="tm-presence-dot-online"></span>
-                    <span class="tm-presence-name-inline">${displayName}</span>
-                    <span class="tm-presence-status-inline tm-status-online">Disponible</span>
-                </div>
-            `;
-        });
-    }
-
-    // Afficher les en pause
-    if (onBreak.length > 0) {
-        onBreak.forEach(person => {
-            const displayName = getDisplayName(person);
-            html += `
-                <div class="tm-presence-item-inline">
-                    <span class="tm-presence-dot-pause"></span>
-                    <span class="tm-presence-name-inline">${displayName}</span>
-                    <span class="tm-presence-status-inline tm-status-pause">En pause</span>
-                </div>
-            `;
-        });
-    }
-
-    // Afficher les non disponibles
-    if (absent.length > 0) {
-        absent.forEach(person => {
-            const displayName = getDisplayName(person);
-            html += `
-                <div class="tm-presence-item-inline">
-                    <span class="tm-presence-dot-offline"></span>
-                    <span class="tm-presence-name-inline">${displayName}</span>
-                    <span class="tm-presence-status-inline tm-status-offline">Non dispo</span>
-                </div>
-            `;
-        });
-    }
-
-    if (!html) {
-        html = '<div class="tm-presence-empty-inline">Aucune donnée disponible</div>';
-    }
-
-    listEl.innerHTML = html;
-}
-
-function showEndTimeModal() {
-    const modal = document.getElementById('tm-endtime-modal');
-    const input = document.getElementById('tm-endtime-input');
-
-    // Pré-remplir avec l'heure sauvegardée ou suggérer 17:30
-    if (presenceState.endTime) {
-        input.value = presenceState.endTime;
-    } else {
-        input.value = '17:30';
-    }
-
-    if (modal) {
-        modal.style.display = 'flex';
-        // Focus sur l'input après un court délai pour l'animation
-        setTimeout(() => input.focus(), 300);
-    }
-}
-
-function closeEndTimeModal() {
-    const modal = document.getElementById('tm-endtime-modal');
-    if (modal) {
-        modal.style.display = 'none';
-    }
-}
-
-function showPresenceToast(actionType, userName) {
-    // Créer le conteneur de toasts s'il n'existe pas
-    let toastContainer = document.getElementById('tm-toast-container');
-    if (!toastContainer) {
-        toastContainer = document.createElement('div');
-        toastContainer.id = 'tm-toast-container';
-        document.body.appendChild(toastContainer);
-    }
-
-    // Créer le toast
-    const toast = document.createElement('div');
-    toast.className = 'tm-toast';
-
-    // Déterminer l'icône, le texte et la couleur selon l'action
-    let indicator = '';
-    let message = '';
-    let indicatorClass = '';
-
-    switch (actionType) {
-        case 'clock_in':
-            indicator = 'tm-toast-indicator-online';
-            message = `${userName} est maintenant <strong>disponible</strong>`;
-            indicatorClass = 'online';
-            break;
-        case 'clock_out':
-            indicator = 'tm-toast-indicator-offline';
-            message = `${userName} est maintenant <strong>absent</strong>`;
-            indicatorClass = 'offline';
-            break;
-        case 'break_start':
-            indicator = 'tm-toast-indicator-pause';
-            message = `${userName} est en <strong>pause</strong>`;
-            indicatorClass = 'pause';
-            break;
-        case 'break_end':
-            indicator = 'tm-toast-indicator-online';
-            message = `${userName} a repris — <strong>disponible</strong>`;
-            indicatorClass = 'online';
-            break;
-    }
-
-    toast.innerHTML = `
-        <div class="tm-toast-indicator ${indicator}"></div>
-        <div class="tm-toast-content">
-            <div class="tm-toast-message">${message}</div>
-        </div>
-    `;
-
-    toastContainer.appendChild(toast);
-
-    // Animation d'entrée
-    setTimeout(() => {
-        toast.classList.add('tm-toast-show');
-    }, 10);
-
-    // Animation de sortie et suppression après 30 secondes
-    setTimeout(() => {
-        toast.classList.remove('tm-toast-show');
-        toast.classList.add('tm-toast-hide');
-
-        setTimeout(() => {
-            toast.remove();
-        }, 500);
-    }, 30000); // 30 secondes d'affichage
-}
-
-// Styles pour le widget moderne
-GM_addStyle(`
-    /* Widget container */
-    #tm-presence-widget {
-        position: fixed;
-        bottom: 24px;
-        right: 24px;
-        z-index: 99999;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    }
-
-    /* Bouton principal */
-    #tm-presence-btn {
-        width: 56px;
-        height: 56px;
-        background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        box-shadow: 0 8px 24px rgba(0,160,157,0.3);
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        color: white;
-        position: relative;
-    }
-
-    #tm-presence-btn:hover {
-        transform: scale(1.05);
-        box-shadow: 0 12px 32px rgba(0,160,157,0.4);
-    }
-
-    #tm-presence-btn.tm-blink-warning {
-        animation: blinkOrange 2s ease-in-out infinite;
-    }
-
-    @keyframes blinkOrange {
-        0%, 100% {
-            background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
-            box-shadow: 0 8px 24px rgba(0,160,157,0.3);
-        }
-        50% {
-            background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
-            box-shadow: 0 8px 24px rgba(255,152,0,0.4);
-        }
-    }
-
-    /* Panel encore plus transparent */
-    #tm-presence-panel {
-        position: absolute;
-        bottom: 72px;
-        right: 0;
-        background: rgba(255, 255, 255, 0.75);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border-radius: 16px;
-        padding: 18px;
-        box-shadow: 0 12px 48px rgba(0,0,0,0.15);
-        min-width: 300px;
-        animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        border: 1px solid rgba(255, 255, 255, 0.2);
-    }
-
-    @keyframes slideUp {
-        from {
-            opacity: 0;
-            transform: translateY(10px);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
-    }
-
-    /* Header du panel */
-    .tm-panel-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 16px;
-    }
-
-    .tm-panel-title {
-        font-size: 16px;
-        font-weight: 700;
-        color: #1a1a1a;
-    }
-
-    /* Témoin lumineux en haut à gauche, dépassant du bouton */
-    .tm-status-indicator {
-        position: absolute;
-        top: -2px;
-        left: -2px;
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        box-shadow: 0 0 4px rgba(0,0,0,0.3);
-        z-index: 1;
-    }
-
-    .tm-indicator-online {
-        background: #10b981;
-        animation: pulseGreen 2s ease-in-out infinite;
-    }
-
-    .tm-indicator-offline {
-        background: #ef4444;
-        box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
-    }
-
-    .tm-indicator-pause {
-        background: #f59e0b;
-        animation: pulseOrange 2s ease-in-out infinite;
-    }
-
-    @keyframes pulseGreen {
-        0%, 100% {
-            opacity: 1;
-            box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 8px rgba(16, 185, 129, 0.6);
-        }
-        50% {
-            opacity: 0.7;
-            box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 12px rgba(16, 185, 129, 0.8);
-        }
-    }
-
-    @keyframes pulseOrange {
-        0%, 100% {
-            opacity: 1;
-            box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 8px rgba(245, 158, 11, 0.6);
-        }
-        50% {
-            opacity: 0.7;
-            box-shadow: 0 0 4px rgba(0,0,0,0.3), 0 0 12px rgba(245, 158, 11, 0.8);
-        }
-    }
-
-    /* Boutons d'actions avec labels */
-    .tm-actions-row {
-        display: flex;
-        gap: 8px;
-        margin-bottom: 12px;
-        justify-content: space-between;
-    }
-
-    .tm-action-btn-small {
-        background: rgba(248, 249, 250, 0.5);
-        border: 2px solid transparent;
-        border-radius: 10px;
-        padding: 10px 8px;
-        cursor: pointer;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-        transition: all 0.2s;
-        flex: 1;
-        min-width: 0;
-    }
-
-    .tm-action-btn-small:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-    }
-
-    .tm-action-btn-small svg {
-        display: block;
-        flex-shrink: 0;
-        stroke: #9ca3af;
-        transition: stroke 0.2s;
-    }
-
-    .tm-action-label {
-        font-size: 10px;
-        font-weight: 600;
-        color: #9ca3af;
-        white-space: nowrap;
-        text-transform: uppercase;
-        letter-spacing: 0.3px;
-        transition: color 0.2s;
-    }
-
-    .tm-action-in:hover {
-        background: rgba(209, 250, 229, 0.9);
-        border-color: #10b981;
-    }
-
-    .tm-action-in:hover svg {
-        stroke: #10b981;
-    }
-
-    .tm-action-in:hover .tm-action-label {
-        color: #10b981;
-    }
-
-    .tm-action-out:hover {
-        background: rgba(254, 226, 226, 0.9);
-        border-color: #ef4444;
-    }
-
-    .tm-action-out:hover svg {
-        stroke: #ef4444;
-    }
-
-    .tm-action-out:hover .tm-action-label {
-        color: #ef4444;
-    }
-
-    .tm-action-pause:hover {
-        background: rgba(254, 243, 199, 0.9);
-        border-color: #f59e0b;
-    }
-
-    .tm-action-pause:hover svg {
-        stroke: #f59e0b;
-    }
-
-    .tm-action-pause:hover .tm-action-label {
-        color: #f59e0b;
-    }
-
-    .tm-action-resume:hover {
-        background: rgba(219, 234, 254, 0.9);
-        border-color: #3b82f6;
-    }
-
-    .tm-action-resume:hover svg {
-        stroke: #3b82f6;
-    }
-
-    .tm-action-resume:hover .tm-action-label {
-        color: #3b82f6;
-    }
-
-    /* Styles pour le bouton pause/reprise dynamique */
-    .tm-action-pause-toggle.is-pause:hover {
-        background: rgba(254, 243, 199, 0.9);
-        border-color: #f59e0b;
-    }
-
-    .tm-action-pause-toggle.is-pause:hover svg {
-        stroke: #f59e0b;
-    }
-
-    .tm-action-pause-toggle.is-pause:hover .tm-action-label {
-        color: #f59e0b;
-    }
-
-    .tm-action-pause-toggle.is-resume:hover {
-        background: rgba(219, 234, 254, 0.9);
-        border-color: #3b82f6;
-    }
-
-    .tm-action-pause-toggle.is-resume:hover svg {
-        stroke: #3b82f6;
-    }
-
-    .tm-action-pause-toggle.is-resume:hover .tm-action-label {
-        color: #3b82f6;
-    }
-
-    /* Status */
-    .tm-status {
-        text-align: center;
-        font-size: 12px;
-        font-weight: 600;
-        padding: 6px;
-        border-radius: 8px;
-        min-height: 18px;
-        margin-bottom: 12px;
-    }
-
-    /* Section titre présences */
-    .tm-presence-section-title {
-        font-size: 11px;
-        font-weight: 700;
-        color: #666;
-        margin-bottom: 10px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-
-    /* Liste de présence encore plus transparente avec scrollbar stylée */
-    .tm-presence-inline {
-        max-height: 280px;
-        overflow-y: auto;
-        background: rgba(248, 249, 250, 0.3);
-        border-radius: 10px;
-        padding: 10px;
-    }
-
-    /* Scrollbar personnalisée pour Webkit (Chrome, Safari, Edge) */
-    .tm-presence-inline::-webkit-scrollbar {
-        width: 6px;
-    }
-
-    .tm-presence-inline::-webkit-scrollbar-track {
-        background: rgba(0, 0, 0, 0.05);
-        border-radius: 10px;
-    }
-
-    .tm-presence-inline::-webkit-scrollbar-thumb {
-        background: rgba(0, 160, 157, 0.4);
-        border-radius: 10px;
-        transition: background 0.2s;
-    }
-
-    .tm-presence-inline::-webkit-scrollbar-thumb:hover {
-        background: rgba(0, 160, 157, 0.6);
-    }
-
-    /* Scrollbar pour Firefox */
-    .tm-presence-inline {
-        scrollbar-width: thin;
-        scrollbar-color: rgba(0, 160, 157, 0.4) rgba(0, 0, 0, 0.05);
-    }
-
-    .tm-presence-loading-inline,
-    .tm-presence-error-inline,
-    .tm-presence-empty-inline {
-        text-align: center;
-        padding: 16px;
-        color: #999;
-        font-size: 12px;
-    }
-
-    .tm-presence-item-inline {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 8px 10px;
-        background: rgba(255, 255, 255, 0.5);
-        border-radius: 8px;
-        margin-bottom: 6px;
-        transition: all 0.2s;
-    }
-
-    .tm-presence-item-inline:hover {
-        transform: translateX(4px);
-        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        background: rgba(255, 255, 255, 0.75);
-    }
-
-    .tm-presence-item-inline:last-child {
-        margin-bottom: 0;
-    }
-
-    .tm-presence-dot-online {
-        width: 8px;
-        height: 8px;
-        background: #10b981;
-        border-radius: 50%;
-        flex-shrink: 0;
-        animation: pulse 2s ease-in-out infinite;
-    }
-
-    .tm-presence-dot-pause {
-        width: 8px;
-        height: 8px;
-        background: #f59e0b;
-        border-radius: 50%;
-        flex-shrink: 0;
-        animation: pulse 2s ease-in-out infinite;
-    }
-
-    .tm-presence-dot-offline {
-        width: 8px;
-        height: 8px;
-        background: #ef4444;
-        border-radius: 50%;
-        flex-shrink: 0;
-        animation: pulse 2s ease-in-out infinite;
-    }
-
-    @keyframes pulse {
-        0%, 100% {
-            opacity: 1;
-            transform: scale(1);
-        }
-        50% {
-            opacity: 0.6;
-            transform: scale(1.1);
-        }
-    }
-
-    .tm-presence-name-inline {
-        flex: 1;
-        font-weight: 600;
-        font-size: 12px;
-        color: #333;
-    }
-
-    .tm-presence-status-inline {
-        font-size: 10px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.3px;
-    }
-
-    .tm-status-online {
-        color: #10b981;
-    }
-
-    .tm-status-pause {
-        color: #f59e0b;
-    }
-
-    .tm-status-offline {
-        color: #ef4444;
-    }
-    /* Modal de rappel */
-    #tm-reminder-modal {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(0,0,0,0.6);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 100000;
-        animation: fadeIn 0.3s;
-        backdrop-filter: blur(4px);
-    }
-
-    @keyframes fadeIn {
-        from { opacity: 0; }
-        to { opacity: 1; }
-    }
-
-    .tm-reminder-content {
-        background: white;
-        border-radius: 20px;
-        padding: 36px;
-        text-align: center;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        animation: scaleIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        max-width: 380px;
-    }
-
-    @keyframes scaleIn {
-        from {
-            opacity: 0;
-            transform: scale(0.9);
-        }
-        to {
-            opacity: 1;
-            transform: scale(1);
-        }
-    }
-
-    .tm-reminder-content svg {
-        margin: 0 auto 20px;
-        display: block;
-    }
-
-    .tm-reminder-title {
-        font-size: 22px;
-        font-weight: 700;
-        color: #1a1a1a;
-        margin-bottom: 10px;
-    }
-
-    .tm-reminder-text {
-        font-size: 14px;
-        color: #666;
-        margin-bottom: 20px;
-    }
-
-    .tm-reminder-btn {
-        padding: 12px 28px;
-        background: #00A09D;
-        color: white;
-        border: none;
-        border-radius: 10px;
-        cursor: pointer;
-        font-weight: 600;
-        font-size: 14px;
-        transition: all 0.2s;
-    }
-
-    .tm-reminder-btn:hover {
-        background: #008F8C;
-        transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(0,160,157,0.3);
-    }
-
-    .tm-reminder-checkbox {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 13px;
-        color: #666;
-        cursor: pointer;
-        padding: 8px;
-        border-radius: 8px;
-        transition: background 0.2s;
-    }
-
-    .tm-reminder-checkbox:hover {
-        background: rgba(0,0,0,0.03);
-    }
-
-    .tm-reminder-checkbox input[type="checkbox"] {
-        width: 16px;
-        height: 16px;
-        cursor: pointer;
-    }
-
-    .tm-reminder-checkbox span {
-        user-select: none;
-    }
-
-    /* Modal heure de fin */
-    #tm-endtime-modal {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(0,0,0,0.6);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 100001;
-        animation: fadeIn 0.3s;
-        backdrop-filter: blur(4px);
-    }
-
-    .tm-endtime-content {
-        background: white;
-        border-radius: 20px;
-        padding: 36px;
-        text-align: center;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        animation: scaleIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        max-width: 380px;
-        width: 90%;
-    }
-
-    .tm-endtime-content svg {
-        margin: 0 auto 20px;
-        display: block;
-    }
-
-    .tm-endtime-title {
-        font-size: 20px;
-        font-weight: 700;
-        color: #1a1a1a;
-        margin-bottom: 6px;
-    }
-
-    .tm-endtime-text {
-        font-size: 13px;
-        color: #666;
-        margin-bottom: 20px;
-    }
-
-    .tm-endtime-input {
-        width: 100%;
-        padding: 14px;
-        font-size: 22px;
-        text-align: center;
-        border: 2px solid #e0e0e0;
-        border-radius: 10px;
-        margin-bottom: 20px;
-        font-family: 'SF Mono', Monaco, monospace;
-        transition: all 0.2s;
-    }
-
-    .tm-endtime-input:focus {
-        outline: none;
-        border-color: #00A09D;
-        box-shadow: 0 0 0 4px rgba(0,160,157,0.1);
-    }
-
-    .tm-endtime-buttons {
-        display: flex;
-        gap: 10px;
-    }
-
-    .tm-endtime-btn-skip,
-    .tm-endtime-btn-save {
-        flex: 1;
-        padding: 12px 20px;
-        border: none;
-        border-radius: 10px;
-        cursor: pointer;
-        font-weight: 600;
-        font-size: 14px;
-        transition: all 0.2s;
-    }
-
-    .tm-endtime-btn-skip {
-        background: #f0f0f0;
-        color: #666;
-    }
-
-    .tm-endtime-btn-skip:hover {
-        background: #e0e0e0;
-        color: #333;
-    }
-
-    .tm-endtime-btn-save {
-        background: #00A09D;
-        color: white;
-    }
-
-    .tm-endtime-btn-save:hover {
-        background: #008F8C;
-        transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(0,160,157,0.3);
-    }
-
-    /* Toast notifications */
-    #tm-toast-container {
-        position: fixed;
-        bottom: 100px;
-        right: 24px;
-        z-index: 99998;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        pointer-events: none;
-    }
-
-    .tm-toast {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        background: rgba(255, 255, 255, 0.95);
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        border-radius: 12px;
-        padding: 14px 18px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        min-width: 280px;
-        max-width: 400px;
-        transform: translateY(100px);
-        opacity: 0;
-        transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
-        pointer-events: auto;
-    }
-
-    .tm-toast-show {
-        transform: translateY(0);
-        opacity: 1;
-    }
-
-    .tm-toast-hide {
-        transform: translateY(100px);
-        opacity: 0;
-    }
-
-    .tm-toast-indicator {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        flex-shrink: 0;
-    }
-
-    .tm-toast-indicator-online {
-        background: #10b981;
-        box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
-        animation: pulseGreen 2s ease-in-out infinite;
-    }
-
-    .tm-toast-indicator-offline {
-        background: #ef4444;
-        box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
-    }
-
-    .tm-toast-indicator-pause {
-        background: #f59e0b;
-        box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
-        animation: pulseOrange 2s ease-in-out infinite;
-    }
-
-    .tm-toast-content {
-        flex: 1;
-    }
-
-    .tm-toast-message {
-        font-size: 13px;
-        color: #333;
-        line-height: 1.4;
-    }
-
-    .tm-toast-message strong {
-        font-weight: 700;
-        color: #1a1a1a;
-    }
-
-    /* Disabled button styles */
-    .tm-button-disabled {
-        opacity: 0.5 !important;
-        cursor: not-allowed !important;
-        filter: grayscale(1) !important;
-    }
-
-    .tm-button-disabled:hover {
-        transform: none !important;
-        filter: grayscale(1) brightness(0.9) !important;
-    }
-`);
-
-// =========================================================
-// POINTEUSE EMPLOYÉS — DÉSACTIVÉE TEMPORAIREMENT
-// =========================================================
-// La pointeuse ralentit les PC sur le long terme (polling réseau toutes les 3s
-// + recréation du widget toutes les 2s). Pour la réactiver : décommenter le bloc ci-dessous.
-/*
-// Créer le widget au chargement
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', createPresenceWidget);
-} else {
-    createPresenceWidget();
-}
-
-// Recréer le widget si nécessaire (navigation SPA)
-setInterval(() => {
-    if (!document.getElementById('tm-presence-widget')) {
-        createPresenceWidget();
-    }
-}, 2000);
-*/
 
 })(); // Fermeture de la fonction principale
