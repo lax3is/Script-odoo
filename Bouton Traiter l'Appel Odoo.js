@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      4.0.0
+// @version      4.0.1
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -2220,6 +2220,26 @@
             isolation: isolate;
             opacity: 1 !important;
         }
+        .badge-client-new {
+            display: inline-block;
+            background: rgba(6,182,212,.18);
+            color: #22d3ee;
+            border: 1px solid rgba(6,182,212,.7);
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 1px 7px;
+            margin-top: 3px;
+            white-space: nowrap;
+            letter-spacing: .3px;
+            text-transform: uppercase;
+            box-shadow: 0 0 5px 1px rgba(6,182,212,.4);
+            position: relative;
+            z-index: 10;
+            animation: none !important;
+            isolation: isolate;
+            opacity: 1 !important;
+        }
         .rdv-notif-odoo {
             position: fixed; bottom: 24px; right: 24px;
             background: #1e2330; color: #e8eaf0;
@@ -4318,7 +4338,8 @@
     }
 
     const _assistanceCache = new Map();
-    let _assistanceTagIds = null;
+    let _assistanceTagIds = null;   // tags "ASSISTANCE MATERIEL"
+    let _newTagIds = null;          // tags "NEW", "NEW 2025", "NEW 2026"...
 
     async function getAssistanceTagIds() {
         if (_assistanceTagIds !== null) return _assistanceTagIds;
@@ -4333,74 +4354,123 @@
         return _assistanceTagIds;
     }
 
+    async function getNewTagIds() {
+        if (_newTagIds !== null) return _newTagIds;
+        try {
+            // Couvre "NEW", "NEW 2025", "NEW 2026", etc. On filtre ensuite sur un nom commençant par "NEW".
+            const recs = await odooRpc('winpharma.tags', 'search_read',
+                [[['name', 'ilike', 'new']], ['id', 'name'], 0, 50]) || [];
+            _newTagIds = recs
+                .filter(r => /^new\b/i.test(String(r.name || '').trim()))
+                .map(r => r.id);
+        } catch (e) {
+            console.warn('[NewBadge] Erreur getNewTagIds:', e);
+            _newTagIds = [];
+        }
+        return _newTagIds;
+    }
+
+    // Extraction robuste de l'ID partenaire depuis un href (v16-v18: ?id=123 ; v19: /odoo/.../123)
+    function extractPartnerIdFromHref(href) {
+        if (!href) return null;
+        let m = href.match(/[#&?]id=(\d+)/);
+        if (m) return Number(m[1]);
+        // v19 : dernier segment numérique du chemin (/odoo/contacts/17571)
+        const all = [...href.matchAll(/\/(\d+)(?=[/?#]|$)/g)];
+        if (all.length) return Number(all[all.length - 1][1]);
+        return null;
+    }
+
     async function applyPrioritaireBadges() {
             if (!isTicketList()) return;
-            const rows = Array.from(document.querySelectorAll('.o_list_view .o_data_row'));
+            const table = document.querySelector('.o_list_view table, table.o_list_table, .o_list_renderer table');
+            if (!table) return;
+
+            // Repérer les colonnes via les en-têtes (robuste aux changements d'attributs v19)
+            const ths = Array.from(table.querySelectorAll('thead th'));
+            let idxClient = -1, idxName = -1;
+            ths.forEach((th, i) => {
+                const t = th.textContent.trim().toLowerCase();
+                if (idxClient === -1 && (t.includes('client') || t.includes('pharmacie'))) idxClient = i;
+                if (idxName === -1 && (t === 'nom' || t === 'sujet' || t.includes('sujet'))) idxName = i;
+            });
+            if (idxClient === -1) return;
+
+            const [matIds, newIds] = await Promise.all([getAssistanceTagIds(), getNewTagIds()]);
+            if (!matIds.length && !newIds.length) return;
+
+            const rows = Array.from(table.querySelectorAll('tbody tr.o_data_row'));
             if (!rows.length) return;
 
-            const tagIds = await getAssistanceTagIds();
-            if (!tagIds.length) return;
-
-            // Extraire partner_id depuis le lien res.partner + nom du ticket depuis la cellule name
             const rowInfos = rows.map(row => {
-                const partnerCell = row.querySelector('td[name="partner_id"]');
-                const partnerLink = partnerCell ? partnerCell.querySelector('a') : null;
-                const href = partnerLink ? (partnerLink.getAttribute('href') || '') : '';
-                const m = href.match(/[#&?]id=(\d+)/);
-                const partnerId = m ? Number(m[1]) : null;
-
-                const nameCell = row.querySelector('td[name="name"]');
+                const cells = row.querySelectorAll('td');
+                const partnerCell = cells[idxClient] || null;
+                const nameCell = (idxName >= 0 ? cells[idxName] : null);
                 const ticketName = nameCell ? nameCell.textContent.trim() : '';
-
-                return { row, partnerId, partnerCell, nameCell, ticketName };
-            }).filter(r => r.partnerId && r.partnerCell && r.ticketName);
+                return { row, partnerCell, ticketName };
+            }).filter(r => r.partnerCell && r.ticketName);
 
             if (!rowInfos.length) return;
 
-            // Clé de cache = partnerId + ticketName (identifie le ticket exact)
-            const toFetch = rowInfos.filter(r => !_assistanceCache.has(r.partnerId + '|' + r.ticketName));
-            const partnerIds = [...new Set(toFetch.map(r => r.partnerId))];
+            // Clé de cache = nom du ticket
+            const toFetch = rowInfos.filter(r => !_assistanceCache.has(r.ticketName));
+            const names = [...new Set(toFetch.map(r => r.ticketName))];
 
-            if (partnerIds.length) {
+            if (names.length) {
                 try {
-                    // Récupérer tous les tickets de ces partenaires avec id, name, etiquette_winpharma
                     const recs = await odooRpc('helpdesk.ticket', 'search_read', [
-                        [['partner_id', 'in', partnerIds]],
-                        ['id', 'name', 'partner_id', 'etiquette_winpharma'], 0, 1000
+                        [['name', 'in', names]],
+                        ['id', 'name', 'partner_id', 'etiquette_winpharma'], 0, 2000
                     ]) || [];
 
-                    // Construire un map (partnerId, ticketName) -> hasTag
+                    if (window.__tmBadgeDebug !== false) {
+                        console.log('[Badge] tags matériel:', matIds, '| tags NEW:', newIds,
+                                    '| tickets interrogés:', names.length, '| reçus:', recs.length,
+                                    '| ex. etiquette:', recs[0] && recs[0].etiquette_winpharma);
+                    }
+
                     recs.forEach(rec => {
-                        const pid = Array.isArray(rec.partner_id) ? rec.partner_id[0] : rec.partner_id;
                         const tags = rec.etiquette_winpharma || [];
                         const tagIdList = tags.map(t => Array.isArray(t) ? t[0] : t);
-                        const hasTag = tagIds.some(id => tagIdList.includes(id));
-                        _assistanceCache.set(pid + '|' + (rec.name || '').trim(), hasTag);
+                        const hasMat = matIds.some(id => tagIdList.includes(id));
+                        const hasNew = newIds.some(id => tagIdList.includes(id));
+                        const key = (rec.name || '').trim();
+                        const prev = _assistanceCache.get(key) || { mat: false, new: false };
+                        _assistanceCache.set(key, { mat: prev.mat || hasMat, new: prev.new || hasNew });
                     });
 
-                    // Marquer false pour les lignes non trouvées dans l'API
                     toFetch.forEach(r => {
-                        const key = r.partnerId + '|' + r.ticketName;
-                        if (!_assistanceCache.has(key)) _assistanceCache.set(key, false);
+                        if (!_assistanceCache.has(r.ticketName)) _assistanceCache.set(r.ticketName, { mat: false, new: false });
                     });
                 } catch (e) {
-                    console.warn('[PrioritaireBadge] Erreur API:', e);
-                    toFetch.forEach(r => _assistanceCache.set(r.partnerId + '|' + r.ticketName, false));
+                    console.warn('[Badge] Erreur API (vérifier le champ etiquette_winpharma):', e);
+                    toFetch.forEach(r => _assistanceCache.set(r.ticketName, { mat: false, new: false }));
                 }
             }
 
-            rowInfos.forEach(({ row, partnerId, partnerCell, nameCell, ticketName }) => {
-                const key = partnerId + '|' + ticketName;
-                const isPrioritaire = _assistanceCache.get(key) === true;
-                // Badge injecté sous le nom du client (toujours visible, pas tronqué)
-                const existing = partnerCell.querySelector('.badge-client-prioritaire');
-                if (isPrioritaire && !existing) {
+            rowInfos.forEach(({ partnerCell, ticketName }) => {
+                const info = _assistanceCache.get(ticketName) || { mat: false, new: false };
+
+                // Badge "contrat matériel" (rouge)
+                const exMat = partnerCell.querySelector('.badge-client-prioritaire');
+                if (info.mat && !exMat) {
                     const badge = document.createElement('div');
                     badge.className = 'badge-client-prioritaire';
                     badge.textContent = '⚠ Client prioritaire — contrat matériel';
                     partnerCell.appendChild(badge);
-                } else if (!isPrioritaire && existing) {
-                    existing.remove();
+                } else if (!info.mat && exMat) {
+                    exMat.remove();
+                }
+
+                // Badge "contrat NEW" (vert)
+                const exNew = partnerCell.querySelector('.badge-client-new');
+                if (info.new && !exNew) {
+                    const badge = document.createElement('div');
+                    badge.className = 'badge-client-new';
+                    badge.textContent = '🆕 NEW';
+                    partnerCell.appendChild(badge);
+                } else if (!info.new && exNew) {
+                    exNew.remove();
                 }
             });
         }
@@ -5476,6 +5546,7 @@
             }
             _assistanceCache.clear();
             _assistanceTagIds = null;
+            _newTagIds = null;
 
             // Gérer la navigation pour l'historique et les produits
             handleHistoryNavigation();
