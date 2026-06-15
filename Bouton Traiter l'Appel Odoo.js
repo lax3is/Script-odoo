@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      4.0.5
+// @version      4.0.8
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -226,6 +226,7 @@
     // PORTAIL O2SWITCH — TRAÇABILITÉ SUPPRESSIONS
     // =========================================================
     const PORTAL_DELETE_INGEST_URL = 'https://hotline.sippharma.fr/odoospeek/portal/api/odoo_deleted_ingest.php';
+    const PORTAL_MISSED_CALLS_URL = 'https://hotline.sippharma.fr/odoospeek/portal/api/missed_calls.php';
     const PORTAL_API_KEY = 'spk_1_2E6RrG4l2gQ6j1o0vQxV3p9mN8yAqK5lVZ3c4rB1uS7dT9wX0yZ2a';
     const DELETE_AUDIT_STORAGE_KEY = 'tm_delete_audit_pending_v2';
     let _pendingDeleteAudit = null;
@@ -5805,6 +5806,242 @@
     }
 
     // =========================================================
+    // APPELS MANQUÉS (portail Winlink) — bouton flottant sur la LISTE des tickets
+    // =========================================================
+    let _tmMissedData = null;
+    let _tmMissedLoading = false;
+    let _tmMissedLastFetch = 0;
+    const _tmMissedNameCache = {};
+    let _tmMissedStylesInjected = false;
+
+    function tmMissedEsc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function tmMissedFmtTime(s) {
+        if (!s) return '';
+        const m = String(s).match(/(\d{2}):(\d{2})/);
+        return m ? `${m[1]}h${m[2]}` : String(s);
+    }
+
+    function tmMissedInjectStyles() {
+        if (_tmMissedStylesInjected) return; _tmMissedStylesInjected = true;
+        const st = document.createElement('style');
+        st.textContent = `
+        #tm-missed-fab {
+            position: relative;
+            display: inline-flex; align-items: center; justify-content: center;
+            flex: 0 0 auto; align-self: center;
+            width: 28px; height: 28px; padding: 0; margin: 0 8px;
+            border: none; border-radius: 50%;
+            background: linear-gradient(135deg,#e11d48,#9f1239); color: #fff;
+            cursor: pointer; vertical-align: middle; box-sizing: border-box;
+            box-shadow: 0 1px 4px rgba(225,29,72,.4);
+            transition: filter .12s ease, box-shadow .15s ease;
+        }
+        #tm-missed-fab:hover { filter: brightness(1.08); box-shadow: 0 2px 8px rgba(225,29,72,.55); }
+        #tm-missed-fab svg { width: 14px; height: 14px; flex: 0 0 auto; }
+        .tm-missed-count {
+            position: absolute; top: -6px; right: -6px;
+            min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+            background: #fff; color: #9f1239; font-weight: 800; font-size: 10px; line-height: 16px;
+            display: inline-flex; align-items: center; justify-content: center;
+            box-shadow: 0 0 0 1.5px #9f1239;
+        }
+        .tm-missed-count.tm-missed-zero { background: #94a3b8; color: #fff; box-shadow: none; }
+        #tm-missed-panel {
+            position: fixed; top: 52px; right: 16px; z-index: 99999;
+            width: 360px; max-height: 70vh; display: flex; flex-direction: column;
+            background: #0f172a; color: #e2e8f0; border: 1px solid #1e293b;
+            border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.45); overflow: hidden;
+        }
+        .tm-missed-head {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 10px 12px; font-weight: 700; font-size: 13px;
+            background: linear-gradient(135deg,#e11d48,#9f1239); color: #fff;
+        }
+        .tm-missed-head button {
+            background: rgba(255,255,255,.15); border: none; color: #fff; cursor: pointer;
+            width: 24px; height: 24px; border-radius: 6px; font-size: 13px; margin-left: 6px;
+        }
+        .tm-missed-head button:hover { background: rgba(255,255,255,.3); }
+        .tm-missed-body { overflow-y: auto; padding: 6px; }
+        .tm-missed-empty { padding: 22px 12px; text-align: center; color: #94a3b8; font-size: 13px; }
+        .tm-missed-row {
+            display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
+            padding: 8px 10px; border-radius: 8px; margin-bottom: 4px; background: #1e293b;
+        }
+        .tm-missed-row-main { display: flex; align-items: center; gap: 8px; }
+        .tm-missed-phone { font-weight: 700; font-size: 14px; color: #fff; }
+        .tm-missed-badge { background: #e11d48; color: #fff; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 10px; }
+        .tm-missed-time { grid-column: 2; grid-row: 1 / span 2; align-self: center; font-size: 12px; color: #94a3b8; white-space: nowrap; }
+        .tm-missed-name { grid-column: 1; font-size: 12.5px; color: #38bdf8; }
+        .tm-missed-resolving { color: #64748b; font-style: italic; }
+        .tm-missed-unknown { color: #64748b; }
+        .tm-missed-section { padding: 8px 6px 4px; font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .4px; }
+        .tm-missed-row.tm-missed-done { opacity: .55; }
+        .tm-missed-row.tm-missed-done .tm-missed-phone { text-decoration: line-through; }
+        .tm-missed-ok { background: #16a34a; color: #fff; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 10px; }
+        `;
+        document.head.appendChild(st);
+    }
+
+    function tmMissedFetch() {
+        return new Promise((resolve) => {
+            if (typeof GM_xmlhttpRequest !== 'function') { resolve(null); return; }
+            // Clé API envoyée en en-tête X-Api-Key (pas dans l'URL => pas de fuite dans les logs/historique).
+            // GM_xmlhttpRequest contourne CORS pour les domaines @connect, donc pas de preflight bloquant.
+            const url = PORTAL_MISSED_CALLS_URL + '?scope=today';
+            try {
+                GM_xmlhttpRequest({
+                    method: 'GET', url, timeout: 15000, anonymous: false,
+                    headers: { 'X-Api-Key': PORTAL_API_KEY },
+                    onload: (resp) => {
+                        try {
+                            if (resp && resp.status === 200) { resolve(JSON.parse(resp.responseText)); return; }
+                        } catch (_) {}
+                        resolve(null);
+                    },
+                    onerror: () => resolve(null),
+                    ontimeout: () => resolve(null)
+                });
+            } catch (_) { resolve(null); }
+        });
+    }
+
+    function tmMissedUpdateBadge() {
+        const el = document.getElementById('tm-missed-count');
+        if (!el) return;
+        const c = _tmMissedData ? Number(_tmMissedData.count || 0) : 0;
+        el.textContent = String(c);
+        el.classList.toggle('tm-missed-zero', c === 0);
+    }
+
+    async function tmMissedRefresh(force) {
+        const now = Date.now();
+        if (!force && _tmMissedData && (now - _tmMissedLastFetch) < 60000) { tmMissedUpdateBadge(); return; }
+        if (_tmMissedLoading) return;
+        _tmMissedLoading = true;
+        const data = await tmMissedFetch();
+        _tmMissedLoading = false;
+        if (data && data.ok) { _tmMissedData = data; _tmMissedLastFetch = now; }
+        tmMissedUpdateBadge();
+        if (document.getElementById('tm-missed-panel')) tmMissedRenderPanel();
+    }
+
+    async function tmMissedResolveNames(panel, entries) {
+        for (const g of entries) {
+            if (g.partner_name) continue;
+            const digits = (g.phone || '').replace(/\D/g, '');
+            if (!digits) continue;
+            let name = _tmMissedNameCache[digits];
+            if (name === undefined) {
+                try {
+                    const recs = await tmTelSearchPartner(g.phone, 1);
+                    name = recs && recs.length ? (recs[0].display_name || '') : '';
+                } catch (_) { name = ''; }
+                _tmMissedNameCache[digits] = name;
+            }
+            if (!panel.isConnected) return;
+            panel.querySelectorAll(`.tm-missed-row[data-digits="${digits}"] [data-name]`).forEach(cell => {
+                cell.innerHTML = name ? tmMissedEsc(name) : '<span class="tm-missed-unknown">Numéro inconnu</span>';
+            });
+        }
+    }
+
+    function tmMissedRowHtml(g, resolved) {
+        const digits = (g.phone || '').replace(/\D/g, '');
+        const att = Number(g.attempts || 1);
+        const nameHtml = g.partner_name
+            ? tmMissedEsc(g.partner_name)
+            : '<span class="tm-missed-resolving">Recherche client…</span>';
+        return `<div class="tm-missed-row${resolved ? ' tm-missed-done' : ''}" data-digits="${digits}">`
+            + `<div class="tm-missed-row-main"><span class="tm-missed-phone">${tmMissedEsc(g.phone || '')}</span>`
+            + (att > 1 ? `<span class="tm-missed-badge">${att} manqués</span>` : '')
+            + (resolved ? '<span class="tm-missed-ok">✓ rappelé</span>' : '') + `</div>`
+            + `<div class="tm-missed-name" data-name>${nameHtml}</div>`
+            + `<div class="tm-missed-time">${tmMissedFmtTime(g.last_time)}</div>`
+            + `</div>`;
+    }
+
+    function tmMissedRenderPanel() {
+        let panel = document.getElementById('tm-missed-panel');
+        if (!panel) { panel = document.createElement('div'); panel.id = 'tm-missed-panel'; document.body.appendChild(panel); }
+
+        const data = _tmMissedData;
+        const pending = data && Array.isArray(data.pending) ? data.pending : [];
+        const resolved = data && Array.isArray(data.resolved) ? data.resolved : [];
+        const head = `<div class="tm-missed-head"><span>📞 À rappeler aujourd'hui</span>`
+            + `<div><button id="tm-missed-reload" title="Rafraîchir">⟳</button>`
+            + `<button id="tm-missed-close" title="Fermer">✕</button></div></div>`;
+
+        let body;
+        if (!data) body = `<div class="tm-missed-empty">Chargement…</div>`;
+        else if (!pending.length && !resolved.length) body = `<div class="tm-missed-empty">Aucun appel manqué aujourd'hui 🎉</div>`;
+        else if (!pending.length) body = `<div class="tm-missed-empty">Tous les appels manqués ont été rappelés 👍</div>`
+            + `<div class="tm-missed-section">Déjà rappelés (${resolved.length})</div>`
+            + resolved.map(g => tmMissedRowHtml(g, true)).join('');
+        else {
+            body = pending.map(g => tmMissedRowHtml(g, false)).join('');
+            if (resolved.length) {
+                body += `<div class="tm-missed-section">Déjà rappelés (${resolved.length})</div>`
+                    + resolved.map(g => tmMissedRowHtml(g, true)).join('');
+            }
+        }
+
+        panel.innerHTML = head + `<div class="tm-missed-body">${body}</div>`;
+        panel.querySelector('#tm-missed-close')?.addEventListener('click', () => panel.remove());
+        panel.querySelector('#tm-missed-reload')?.addEventListener('click', () => tmMissedRefresh(true));
+        const toResolve = pending.concat(resolved);
+        if (toResolve.length) tmMissedResolveNames(panel, toResolve);
+    }
+
+    function tmMissedTogglePanel() {
+        const existing = document.getElementById('tm-missed-panel');
+        if (existing) { existing.remove(); return; }
+        tmMissedRenderPanel();
+        tmMissedRefresh(true);
+    }
+
+    function tmMissedFindAnchor() {
+        // Conteneur de navigation de la barre de contrôle (PAS le groupe de boutons de vue,
+        // qui est un .btn-group et applique un style de groupe à ses voisins).
+        const nav = document.querySelector('.o_control_panel_navigation');
+        if (nav) return { el: nav, mode: 'prepend' };
+        const pager = document.querySelector('.o_pager');
+        if (pager) return { el: pager, mode: 'before' };
+        return null;
+    }
+
+    function ensureMissedCallsButton() {
+        if (!isTicketList()) {
+            document.getElementById('tm-missed-fab')?.remove();
+            document.getElementById('tm-missed-panel')?.remove();
+            return;
+        }
+        if (document.getElementById('tm-missed-fab')) return;
+        const anchor = tmMissedFindAnchor();
+        if (!anchor) return; // barre pas encore prête : on retentera au prochain runAll
+        tmMissedInjectStyles();
+
+        const fab = document.createElement('button');
+        fab.id = 'tm-missed-fab';
+        fab.type = 'button';
+        fab.title = "Appels manqués non rappelés (aujourd'hui)";
+        fab.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">'
+            + '<path d="M6.62 10.79a15.15 15.15 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.24.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2z"/>'
+            + '<path d="M16 2l6 6M22 2l-6 6" stroke="currentColor" stroke-width="2" fill="none"/></svg>'
+            + '<span class="tm-missed-count" id="tm-missed-count">…</span>';
+        fab.addEventListener('click', tmMissedTogglePanel);
+
+        if (anchor.mode === 'prepend') anchor.el.insertBefore(fab, anchor.el.firstChild);
+        else anchor.el.parentNode.insertBefore(fab, anchor.el);
+        tmMissedRefresh(true);
+    }
+
+    // =========================================================
     // OBSERVER PRINCIPAL + INITIALISATION
     // =========================================================
     let lastUrl = window.location.href;
@@ -5815,6 +6052,7 @@
         addInitialesButton();
         addClearAssignButton();
         ensurePhoneSearchUI(); // Recherche client par téléphone (champ Client)
+        ensureMissedCallsButton(); // Bouton flottant "Appels manqués" (liste tickets uniquement)
         addHistoryAndProductsButtons(); // Nouvelle fonction pour l'historique et les produits
         hideConvertToOpportunityButton(); // Cacher le bouton "Convertir en opportunité"
         hookDeleteAuditClicks();
@@ -5941,6 +6179,8 @@
     sessionStorage.removeItem('pendingReasonPanel'); // éviter ouverture fantôme au reload
     injectStyles();
     startClosureWatcher();
+    // Rafraîchir le compteur d'appels manqués toutes les 60s (uniquement sur la liste tickets)
+    setInterval(() => { if (isTicketList() && document.getElementById('tm-missed-fab')) tmMissedRefresh(); }, 60000);
     // Appliquer les couleurs immédiatement sans attendre le DOM complet
     scanCategoryStyles();
     applyInternetBlink();
