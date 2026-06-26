@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      4.0.8
+// @version      4.0.9
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -468,6 +468,21 @@
         if (/\/odoo\/[^?#]*ticket[s]?(\/|$|\?)/i.test(h) && !/\/odoo\/[^?#]*ticket[s]?\/\d+/i.test(h)) return true;
         // v16-v18: paramètres classiques
         return h.includes('model=helpdesk.ticket') && h.includes('view_type=list');
+    }
+    function isPartnerForm() {
+        const h = window.location.href;
+        // v19: fiche contact /odoo/contacts/4031
+        if (/\/odoo\/contacts\/\d+/i.test(h)) return true;
+        // v16-v18
+        return h.includes('model=res.partner') &&
+            (h.includes('view_type=form') || /[#&?]id=\d+/.test(h));
+    }
+    function isPartnerList() {
+        const h = window.location.href;
+        // v19: liste contacts (sans id dans le chemin)
+        if (/\/odoo\/contacts\/?(?:[?#]|$)/i.test(h) && !/\/odoo\/contacts\/\d+/i.test(h)) return true;
+        // v16-v18
+        return h.includes('model=res.partner') && h.includes('view_type=list');
     }
     function isCreatingTicket() {
         const h = window.location.href;
@@ -1233,11 +1248,20 @@
             // Essayer différentes méthodes pour parser l'URL Odoo
             let params, model, id;
 
-            // Méthode 1: v19 - Parser l'URL directement (ex: /odoo/all-tickets/76045)
-            const v19Match = window.location.href.match(/\/odoo\/[^/]*tickets[^/]*\/(\d+)/);
-            if (v19Match) {
-                model = 'helpdesk.ticket';
-                id = v19Match[1];
+            // Méthode 1a: v19 - fiche contact /odoo/contacts/4031
+            const contactsMatch = window.location.href.match(/\/odoo\/contacts\/(\d+)/);
+            if (contactsMatch) {
+                model = 'res.partner';
+                id = contactsMatch[1];
+            }
+
+            // Méthode 1b: v19 - ticket /odoo/all-tickets/76045
+            if (!model || !id) {
+                const v19Match = window.location.href.match(/\/odoo\/[^/]*tickets[^/]*\/(\d+)/);
+                if (v19Match) {
+                    model = 'helpdesk.ticket';
+                    id = v19Match[1];
+                }
             }
 
             // Méthode 2: URLSearchParams sur le hash (v16-v18)
@@ -1311,15 +1335,15 @@
 
         // v16-v18: paramètres classiques dans le hash
         const isTicketPage = hash.includes("model=helpdesk.ticket") && hash.includes("view_type=form");
-        const isPartnerPage = hash.includes("model=res.partner") && hash.includes("view_type=form");
+        const isPartnerPage = isPartnerForm();
         const isSaleOrderPage = hash.includes("model=sale.order") && hash.includes("view_type=form");
         return isTicketPage || isPartnerPage || isSaleOrderPage;
     }
 
     // Fonction pour récupérer les tickets d'un client
-    async function fetchClientTickets() {
+    async function fetchClientTickets(explicitPartnerId) {
         try {
-            const partnerId = await getIdToProcess();
+            const partnerId = explicitPartnerId || await getIdToProcess();
 
             if (!partnerId) {
                 return null;
@@ -1845,6 +1869,92 @@
             flex: 1;
             display: flex;
             justify-content: flex-end;
+        }
+
+        /* === HISTORIQUE TICKETS — LISTE CLIENTS === */
+        .btn-partner-list-history {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            margin-right: 8px;
+            padding: 0;
+            border: none;
+            border-radius: 5px;
+            background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
+            color: #fff !important;
+            cursor: pointer;
+            vertical-align: middle;
+            flex-shrink: 0;
+            box-shadow: 0 1px 4px rgba(0,160,157,0.3);
+            transition: all 0.2s ease;
+        }
+        .btn-partner-list-history:hover {
+            background: linear-gradient(135deg, #008F8C 0%, #007F7D 100%);
+            transform: translateY(-1px);
+        }
+        .partner-history-modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.55);
+            z-index: 2147483645;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .partner-history-modal {
+            background: #ffffff;
+            border-radius: 12px;
+            width: min(960px, 95vw);
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+        }
+        .partner-history-modal-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 18px;
+            background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
+            color: #fff;
+            font-weight: 600;
+        }
+        .partner-history-modal-close {
+            border: none;
+            background: rgba(255,255,255,0.15);
+            color: #fff;
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .partner-history-modal-close:hover {
+            background: rgba(255,255,255,0.25);
+        }
+        .partner-history-modal-body {
+            display: flex !important;
+            height: 70vh;
+            min-height: 420px;
+            max-height: calc(90vh - 60px);
+            margin: 0 !important;
+            border: none !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            resize: none !important;
+        }
+        .dark-theme .partner-history-modal {
+            background: #1f2937;
+        }
+        .dark-theme .partner-history-modal-toolbar {
+            background: linear-gradient(135deg, #0f766e 0%, #115e59 100%);
         }
 
         /* === LISTES === */
@@ -5163,21 +5273,8 @@
     }
 
     // Fonction pour ajouter l'historique des tickets
-    async function addTicketHistory() {
-        if (historyAdded) return;
-
-        const formSheet = document.querySelector('.o_form_sheet');
-        if (!formSheet) return;
-
-        const buttonContainer = document.querySelector('.buttons-container');
-        if (!buttonContainer) return;
-
-        // Créer la zone d'historique
-        const historyContainer = document.createElement('div');
-        historyContainer.id = 'zone_historique_tickets';
-        historyContainer.className = 'history-container';
-
-        historyContainer.innerHTML = `
+    function buildHistoryPanelHTML() {
+        return `
             <div class="historique-header">
                 <div class="historique-header-left">
                     <span>Historique des tickets</span>
@@ -5206,38 +5303,153 @@
                 <div class="no-tickets">Chargement des tickets...</div>
             </div>
         `;
+    }
 
-        buttonContainer.insertAdjacentElement('afterend', historyContainer);
+    function setupHistoryThemeToggle(scopeEl) {
+        const root = scopeEl || document;
+        const themeToggle = root.querySelector('#theme-toggle');
+        if (!themeToggle || themeToggle.dataset.bound) return;
+        themeToggle.dataset.bound = '1';
 
-        // Ajouter la logique du bouton de thème sombre
-        const themeToggle = document.getElementById('theme-toggle');
-        if (themeToggle) {
-            // Vérifier l'état actuel du thème
-            const isDark = localStorage.getItem('odoo-history-theme') === 'dark';
-            if (isDark) {
+        const isDark = localStorage.getItem('odoo-history-theme') === 'dark';
+        if (isDark) {
+            document.body.classList.add('dark-theme');
+            themeToggle.classList.add('active');
+            themeToggle.innerHTML = '<i class="fa fa-sun-o"></i>';
+        }
+
+        themeToggle.addEventListener('click', () => {
+            const isCurrentlyDark = document.body.classList.contains('dark-theme');
+            if (isCurrentlyDark) {
+                document.body.classList.remove('dark-theme');
+                themeToggle.classList.remove('active');
+                themeToggle.innerHTML = '<i class="fa fa-moon-o"></i>';
+                localStorage.setItem('odoo-history-theme', 'light');
+            } else {
                 document.body.classList.add('dark-theme');
                 themeToggle.classList.add('active');
                 themeToggle.innerHTML = '<i class="fa fa-sun-o"></i>';
+                localStorage.setItem('odoo-history-theme', 'dark');
             }
+        });
+    }
 
-            themeToggle.addEventListener('click', () => {
-                const isCurrentlyDark = document.body.classList.contains('dark-theme');
-
-                if (isCurrentlyDark) {
-                    // Passer en mode clair
-                    document.body.classList.remove('dark-theme');
-                    themeToggle.classList.remove('active');
-                    themeToggle.innerHTML = '<i class="fa fa-moon-o"></i>';
-                    localStorage.setItem('odoo-history-theme', 'light');
-                } else {
-                    // Passer en mode sombre
-                    document.body.classList.add('dark-theme');
-                    themeToggle.classList.add('active');
-                    themeToggle.innerHTML = '<i class="fa fa-sun-o"></i>';
-                    localStorage.setItem('odoo-history-theme', 'dark');
-                }
-            });
+    function extractPartnerIdFromRow(row) {
+        const rowId = row.getAttribute('data-id') || (row.dataset ? row.dataset.id : null);
+        if (rowId && /^\d+$/.test(String(rowId))) return Number(rowId);
+        const link = row.querySelector('a[href*="contacts/"], a[href*="res.partner"], a[href*="model=res.partner"]');
+        if (link) {
+            const id = extractPartnerIdFromHref(link.getAttribute('href') || link.href);
+            if (id) return id;
         }
+        return null;
+    }
+
+    function extractPartnerNameFromRow(row) {
+        const firstCell = row.querySelector('td');
+        if (!firstCell) return '';
+        const clone = firstCell.cloneNode(true);
+        clone.querySelectorAll('.btn-partner-list-history').forEach(el => el.remove());
+        return clone.textContent.replace(/\s+/g, ' ').trim();
+    }
+
+    async function openPartnerHistoryModal(partnerId, partnerName) {
+        document.getElementById('partner-history-modal')?.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'partner-history-modal';
+        overlay.className = 'partner-history-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'partner-history-modal';
+
+        const title = document.createElement('div');
+        title.className = 'partner-history-modal-toolbar';
+        title.innerHTML = `<span>${partnerName || ('Client #' + partnerId)} — Historique des tickets</span>`;
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'partner-history-modal-close';
+        closeBtn.title = 'Fermer';
+        closeBtn.innerHTML = '<i class="fa fa-times"></i>';
+        closeBtn.addEventListener('click', () => overlay.remove());
+        title.appendChild(closeBtn);
+
+        const historyContainer = document.createElement('div');
+        historyContainer.id = 'zone_historique_tickets';
+        historyContainer.className = 'history-container visible partner-history-modal-body';
+        historyContainer.innerHTML = buildHistoryPanelHTML();
+
+        modal.appendChild(title);
+        modal.appendChild(historyContainer);
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) overlay.remove();
+        });
+
+        setupHistoryThemeToggle(historyContainer);
+
+        const tickets = await fetchClientTickets(partnerId);
+        if (tickets) {
+            updateTicketsList(tickets);
+        } else {
+            const ticketsList = historyContainer.querySelector('#ticketsList');
+            if (ticketsList) ticketsList.innerHTML = '<div class="no-tickets">Aucun ticket trouvé</div>';
+        }
+        setupTicketFilters();
+    }
+
+    function ensurePartnerListHistoryButtons() {
+        if (!isPartnerList()) return;
+
+        const table = document.querySelector('.o_list_view table, table.o_list_table, .o_list_renderer table');
+        if (!table) return;
+
+        table.querySelectorAll('tbody tr.o_data_row').forEach(row => {
+            if (row.querySelector('.btn-partner-list-history')) return;
+
+            const partnerId = extractPartnerIdFromRow(row);
+            if (!partnerId) return;
+
+            const firstCell = row.querySelector('td');
+            if (!firstCell) return;
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn-partner-list-history';
+            btn.title = 'Historique des tickets';
+            btn.innerHTML = '<i class="fa fa-history"></i>';
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                openPartnerHistoryModal(partnerId, extractPartnerNameFromRow(row));
+            });
+
+            firstCell.insertBefore(btn, firstCell.firstChild);
+        });
+    }
+
+    async function addTicketHistory() {
+        if (historyAdded) return;
+
+        const formSheet = document.querySelector('.o_form_sheet');
+        if (!formSheet) return;
+
+        const buttonContainer = document.querySelector('.buttons-container');
+        if (!buttonContainer) return;
+
+        // Créer la zone d'historique
+        const historyContainer = document.createElement('div');
+        historyContainer.id = 'zone_historique_tickets';
+        historyContainer.className = 'history-container';
+
+        historyContainer.innerHTML = buildHistoryPanelHTML();
+
+        buttonContainer.insertAdjacentElement('afterend', historyContainer);
+
+        setupHistoryThemeToggle(historyContainer);
 
         // Charger les tickets
         const tickets = await fetchClientTickets();
@@ -5483,9 +5695,12 @@
                 existingProductsButton.remove();
             }
 
+            document.getElementById('partner-history-modal')?.remove();
+
             // Ajouter les boutons immédiatement
             setTimeout(() => {
                 addHistoryAndProductsButtons();
+                ensurePartnerListHistoryButtons();
 
                 // Si l'état est sauvegardé comme visible, créer immédiatement l'historique et les produits
                 if (getHistoryState()) {
@@ -6053,7 +6268,8 @@
         addClearAssignButton();
         ensurePhoneSearchUI(); // Recherche client par téléphone (champ Client)
         ensureMissedCallsButton(); // Bouton flottant "Appels manqués" (liste tickets uniquement)
-        addHistoryAndProductsButtons(); // Nouvelle fonction pour l'historique et les produits
+        addHistoryAndProductsButtons(); // Historique et produits (fiche client / ticket)
+        ensurePartnerListHistoryButtons(); // Historique tickets dans la liste clients
         hideConvertToOpportunityButton(); // Cacher le bouton "Convertir en opportunité"
         hookDeleteAuditClicks();
         hookOdooDeleteRpcAudit();
