@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      4.0.9
+// @version      4.1.4
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -18,6 +18,7 @@
 // @grant        GM_addStyle
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        unsafeWindow
 // @connect      hotline.sippharma.fr
 // @connect      winprovence.odoo.com
 // @connect      *.odoo.com
@@ -337,7 +338,8 @@
         timerStopRunning: false, // verrou arrêt timer après clôture
         timerShortcutRunning: false, // verrou raccourcis clavier timer
         timerStoppedForTicket: null, // ticket dont le timer vient d'être arrêté
-        timerStoppedAt: 0            // timestamp de l'arrêt
+        timerStoppedAt: 0,           // timestamp de l'arrêt
+        traiterStartedAt: 0          // timestamp du dernier clic "Traiter l'appel" (anti-verrou bloqué)
     };
 
     // =========================================================
@@ -2654,10 +2656,37 @@
         }
     }
 
+    // Délégation globale du clic sur le bouton "Traiter l'appel".
+    // Odoo (Owl) recrée fréquemment la barre de statut : un écouteur attaché directement
+    // au bouton disparaît avec lui, ce qui obligeait à cliquer plusieurs fois.
+    // En écoutant sur document (phase capture), le clic est toujours capté, quel que soit
+    // le nombre de fois où le bouton est recréé.
+    let _traiterDelegationHooked = false;
+    function hookTraiterDelegation() {
+        if (_traiterDelegationHooked) return;
+        _traiterDelegationHooked = true;
+        document.addEventListener('click', (e) => {
+            const target = e.target instanceof Element ? e.target : null;
+            if (!target) return;
+            // closest() gère aussi les clics sur l'icône SVG à l'intérieur du bouton
+            const btn = target.closest('#btn-traiter-appel');
+            if (!btn) return;
+            e.preventDefault();
+            e.stopPropagation();
+            handleTraiterClick(btn);
+        }, true);
+    }
+
     async function handleTraiterClick(btn) {
-        if (state.isProcessing) return;
+        // Anti-verrou bloqué : si un traitement précédent est resté "en cours" plus de 8s
+        // (ex: appel réseau interrompu), on considère le verrou périmé et on repart.
+        // Sinon un clic perdu obligeait à recharger la page (F5) pour réutiliser le bouton.
+        if (state.isProcessing) {
+            if (Date.now() - (state.traiterStartedAt || 0) < 8000) return;
+        }
         state.isProcessing = true;
-        btn.disabled = true;
+        state.traiterStartedAt = Date.now();
+        if (btn) btn.disabled = true;
 
         const ticketId = getTicketIdFromPage();
         if (!ticketId) {
@@ -2703,7 +2732,9 @@
             alert('Erreur lors du traitement de l\'appel: ' + e.message);
         } finally {
             await wait(200);
-            btn.disabled = false;
+            // Réactiver le bouton actuellement présent dans le DOM (il a pu être recréé par Owl)
+            const liveBtn = document.getElementById('btn-traiter-appel') || btn;
+            if (liveBtn) liveBtn.disabled = false;
             state.isProcessing = false;
         }
     }
@@ -2760,14 +2791,9 @@
         // Mettre à jour le bouton selon la présence du texte
         updateTraiterBtn(btn, textPresent);
 
-        btn.addEventListener('click', (e) => {
-            console.log('[BOUTON] Click event triggered!');
-            console.log('[BOUTON] Event:', e);
-            console.log('[BOUTON] Button:', btn);
-            e.preventDefault();
-            e.stopPropagation();
-            handleTraiterClick(btn);
-        });
+        // Le clic est géré par une délégation globale (hookTraiterDelegation), pas par un
+        // écouteur attaché ici : ainsi le clic fonctionne même quand Owl recrée le bouton.
+        hookTraiterDelegation();
 
         statusbar.insertBefore(btn, statusbar.firstChild);
 
@@ -6283,6 +6309,213 @@
         if (isTicketPage() && !_reasonListsCache) fetchReasonLists().catch(() => {});
     }
 
+    // =========================================================
+    // AUTO-REFRESH INVISIBLE DE LA LISTE DES TICKETS
+    // =========================================================
+    // Odoo ne rafraîchit plus automatiquement la liste : on recharge périodiquement les
+    // données du contrôleur liste via son modèle Owl. C'est totalement invisible (pas de
+    // F5, pas de flash, le scroll est conservé) car Owl ne re-render que les lignes changées.
+    const TM_AR_DEBUG = false; // logs dans la console pour diagnostiquer (repasser à true si besoin)
+    function _arLog(...a) { if (TM_AR_DEBUG) { try { console.log('[AutoRefresh]', ...a); } catch (_) {} } }
+
+    // Le vrai window de la page (Odoo/Owl y posent leurs globals). Dans Tampermonkey, le
+    // script tourne dans un bac à sable où window ne reflète pas toujours ces globals.
+    function _pageWin() {
+        try { if (typeof unsafeWindow !== 'undefined' && unsafeWindow) return unsafeWindow; } catch (_) {}
+        return window;
+    }
+
+    // Convertit un composant Owl (instance) en "node" (ComponentNode) exploitable pour le walk.
+    function _toOwlNode(obj) {
+        if (!obj) return null;
+        if (obj.children && obj.component) return obj;   // déjà un node
+        if (obj.__owl__) return obj.__owl__;             // instance de composant -> node
+        return obj;
+    }
+
+    // Récupère les racines de l'arbre Owl depuis toutes les sources connues.
+    function getOwlRootNodes() {
+        const w = _pageWin();
+        const roots = [];
+        const pushApp = (app) => {
+            const r = app && (app.root || app.__root);
+            const node = _toOwlNode(r);
+            if (node && !roots.includes(node)) roots.push(node);
+        };
+        try {
+            const sets = [
+                w.__owl__ && w.__owl__.apps,
+                w.__OWL_DEVTOOLS__ && w.__OWL_DEVTOOLS__.apps,
+                w.__OWL__ && w.__OWL__.apps
+            ];
+            for (const set of sets) {
+                if (!set) continue;
+                if (typeof set.forEach === 'function') set.forEach(pushApp);
+                else if (set.values) { for (const a of set.values()) pushApp(a); }
+            }
+        } catch (_) {}
+        // Mode debug Odoo : composant racine exposé
+        try {
+            const dbg = w.odoo && w.odoo.__WOWL_DEBUG__;
+            if (dbg && dbg.root) {
+                const node = _toOwlNode(dbg.root);
+                if (node && !roots.includes(node)) roots.push(node);
+            }
+        } catch (_) {}
+        return roots;
+    }
+
+    // Sonde de diagnostic : quels globals Owl sont disponibles ? (à lancer depuis la console)
+    function owlProbe() {
+        const w = _pageWin();
+        const size = (s) => { try { return s ? (s.size != null ? s.size : (s.length != null ? s.length : 'set?')) : null; } catch (_) { return 'err'; } };
+        return {
+            usingUnsafeWindow: (typeof unsafeWindow !== 'undefined' && _pageWin() === unsafeWindow),
+            has_owl: !!w.__owl__,
+            owl_apps: w.__owl__ ? size(w.__owl__.apps) : null,
+            has_OWL_DEVTOOLS: !!w.__OWL_DEVTOOLS__,
+            devtools_apps: w.__OWL_DEVTOOLS__ ? size(w.__OWL_DEVTOOLS__.apps) : null,
+            has_OWL: !!w.__OWL__,
+            has_odoo: !!w.odoo,
+            has_wowl_debug: !!(w.odoo && w.odoo.__WOWL_DEBUG__),
+            rootNodes: getOwlRootNodes().length
+        };
+    }
+
+    // Parcourt l'arbre des composants Owl et applique visit(component) à chacun.
+    function walkOwlNodes(node, visit, depth) {
+        depth = depth || 0;
+        if (!node || depth > 600) return;
+        try { if (node.component) visit(node.component); } catch (_) {}
+        const children = node && node.children;
+        if (children) {
+            for (const k in children) {
+                walkOwlNodes(children[k], visit, depth + 1);
+            }
+        }
+    }
+
+    function _modelResModel(m) {
+        try {
+            return (m.config && m.config.resModel)
+                || (m.root && m.root.resModel)
+                || (m.rootParams && m.rootParams.resModel)
+                || (m.env && m.env.config && m.env.config.resModel)
+                || null;
+        } catch (_) { return null; }
+    }
+
+    // Un modèle "liste" a une racine avec records OU groups (liste groupée), pas un simple resId (form).
+    function _isListModel(m) {
+        try {
+            const r = m && m.root;
+            if (!r) return false;
+            if (Array.isArray(r.records)) return true;
+            if (Array.isArray(r.groups)) return true;
+            if (typeof r.count === 'number' && r.resId === undefined) return true;
+            return false;
+        } catch (_) { return false; }
+    }
+
+    // Collecte tous les modèles Owl accessibles (avec une méthode de rechargement).
+    function collectOwlModels() {
+        const models = [];
+        for (const root of getOwlRootNodes()) {
+            walkOwlNodes(root, (comp) => {
+                try {
+                    const m = comp.model || (comp.props && comp.props.model) || (comp.env && comp.env.model) || null;
+                    if (m && m.root && !models.includes(m)) models.push(m);
+                } catch (_) {}
+            });
+        }
+        return models;
+    }
+
+    // Retrouve le modèle Owl du contrôleur liste helpdesk.ticket actuellement affiché.
+    function findTicketListModel() {
+        const models = collectOwlModels();
+        if (!models.length) { _arLog('aucun modèle Owl trouvé'); return null; }
+        if (TM_AR_DEBUG) {
+            _arLog('modèles trouvés:', models.map(m => ({ resModel: _modelResModel(m), list: _isListModel(m), hasLoad: typeof m.load === 'function' })));
+        }
+        return models.find(m => _isListModel(m) && _modelResModel(m) === 'helpdesk.ticket')
+            || models.find(m => _modelResModel(m) === 'helpdesk.ticket')
+            || models.find(m => _isListModel(m))
+            || null;
+    }
+
+    // Recharge un modèle en essayant les différentes API selon la version d'Odoo.
+    async function _reloadModel(model) {
+        const tries = [
+            () => model.load && model.load({}),
+            () => model.load && model.load(),
+            () => model.root && model.root.load && model.root.load(),
+            () => model.root && model.root.model && model.root.model.load && model.root.model.load({})
+        ];
+        for (const fn of tries) {
+            try {
+                const p = fn();
+                if (p !== undefined) {
+                    if (p && typeof p.then === 'function') await p;
+                    try { model.notify && model.notify(); } catch (_) {}
+                    return true;
+                }
+            } catch (e) { _arLog('méthode de reload échouée:', e && e.message); }
+        }
+        return false;
+    }
+
+    let _autoRefreshRunning = false;
+    async function autoRefreshTicketList(force) {
+        if (_autoRefreshRunning) return false;
+        if (!force && document.hidden) return false;   // onglet en arrière-plan : inutile
+        if (!force && !isTicketList()) { _arLog('pas sur la liste des tickets, skip'); return false; }
+
+        // Ne rien faire si l'utilisateur est en pleine interaction (sinon on le perturberait).
+        // On bloque UNIQUEMENT quand il tape réellement (saisie dans la recherche ou édition
+        // inline d'une ligne) — pas quand une simple ligne/cellule a le focus.
+        if (!force) {
+            if (document.querySelector('.modal.show, .o_dialog, .o_technical_modal')) { _arLog('modal ouverte, skip'); return false; }
+            if (document.querySelector('.o_data_row.o_selected_row, .o_list_record_selector input:checked')) { _arLog('lignes sélectionnées, skip'); return false; }
+            if (document.querySelector('.o-autocomplete--dropdown-menu, .o_datetime_picker')) { _arLog('menu déroulant ouvert, skip'); return false; }
+            const ae = document.activeElement;
+            const typing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
+            if (typing && ae.closest('.o_searchview, .o_cp_searchview, .o_control_panel, .o_data_row')) { _arLog('saisie en cours, skip'); return false; }
+        }
+
+        const model = findTicketListModel();
+        if (!model) return false;
+
+        _autoRefreshRunning = true;
+        try {
+            const ok = await _reloadModel(model);
+            _arLog(ok ? '✅ liste rechargée' : '❌ aucune méthode de reload n\'a fonctionné');
+            return ok;
+        } finally {
+            _autoRefreshRunning = false;
+        }
+    }
+
+    // Test manuel depuis la console : __tmForceRefresh()
+    // Exposé sur unsafeWindow (le vrai window de la page) car la console s'exécute hors du
+    // bac à sable Tampermonkey. Fallback sur window si unsafeWindow indisponible.
+    (function exposeForceRefresh() {
+        const fn = () => autoRefreshTicketList(true);
+        try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.__tmForceRefresh = fn; } catch (_) {}
+        try { window.__tmForceRefresh = fn; } catch (_) {}
+        try { window.__tmListModels = () => collectOwlModels().map(m => ({ resModel: _modelResModel(m), list: _isListModel(m), hasLoad: typeof m.load === 'function' })); } catch (_) {}
+        try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.__tmListModels = window.__tmListModels; } catch (_) {}
+        try { window.__tmOwlProbe = owlProbe; } catch (_) {}
+        try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.__tmOwlProbe = owlProbe; } catch (_) {}
+    })();
+
+    // Tick automatique avec log (permet de voir qu'il tente bien toutes les 15s).
+    function autoRefreshTick() {
+        if (!isTicketList()) return;
+        _arLog('tick auto (15s)…');
+        autoRefreshTicketList(false);
+    }
+
     // Observer DOM mutations — relance runAll quand le DOM change significativement
     let _runAllDebounce = null;
     const mainObserver = new MutationObserver(() => {
@@ -6390,6 +6623,12 @@
     setInterval(scheduleDevisUpdate, 5000);
     setInterval(scheduleOpenTicketsUpdate, 3000);
     setInterval(watchStageChanges, 500); // Surveiller les changements de stage
+    setInterval(autoRefreshTick, 15000); // Auto-refresh invisible de la liste des tickets (nouveaux tickets)
+
+    // Rafraîchir aussi dès que l'utilisateur revient sur l'onglet (retour rapide sans attendre 15s)
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) setTimeout(autoRefreshTick, 300);
+    });
 
     // Démarrage
     sessionStorage.removeItem('pendingReasonPanel'); // éviter ouverture fantôme au reload
