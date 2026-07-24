@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      4.1.4
+// @version      4.1.5
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -466,8 +466,10 @@
     }
     function isTicketList() {
         const h = window.location.href;
-        // v19: URL liste (sans numéro de ticket)
-        if (/\/odoo\/[^?#]*ticket[s]?(\/|$|\?)/i.test(h) && !/\/odoo\/[^?#]*ticket[s]?\/\d+/i.test(h)) return true;
+        // Jamais une liste si on est en création (/new) ou sur un formulaire (id numérique, view_type=form)
+        if (isCreatingTicket() || isTicketForm()) return false;
+        // v19: URL liste (sans numéro de ticket ni /new/.../create)
+        if (/\/odoo\/[^?#]*ticket[s]?(\/|$|\?)/i.test(h) && !/\/odoo\/[^?#]*ticket[s]?\/(\d+|new|create)/i.test(h)) return true;
         // v16-v18: paramètres classiques
         return h.includes('model=helpdesk.ticket') && h.includes('view_type=list');
     }
@@ -6438,9 +6440,10 @@
         if (TM_AR_DEBUG) {
             _arLog('modèles trouvés:', models.map(m => ({ resModel: _modelResModel(m), list: _isListModel(m), hasLoad: typeof m.load === 'function' })));
         }
+        // IMPORTANT : ne JAMAIS retomber sur un modèle qui n'est pas une vraie liste
+        // (sinon sur un formulaire/création de ticket, on recharge le modèle du FORMULAIRE
+        // et ça efface tout ce que l'utilisateur vient de saisir).
         return models.find(m => _isListModel(m) && _modelResModel(m) === 'helpdesk.ticket')
-            || models.find(m => _modelResModel(m) === 'helpdesk.ticket')
-            || models.find(m => _isListModel(m))
             || null;
     }
 
@@ -6469,6 +6472,9 @@
     async function autoRefreshTicketList(force) {
         if (_autoRefreshRunning) return false;
         if (!force && document.hidden) return false;   // onglet en arrière-plan : inutile
+        // Garde-fou absolu : jamais d'auto-refresh sur un formulaire (création ou édition d'un ticket).
+        // C'est ce cas précis qui effaçait la saisie en cours lors de la création d'un ticket.
+        if (isTicketForm() || isCreatingTicket()) { _arLog('formulaire ticket ouvert, skip'); return false; }
         if (!force && !isTicketList()) { _arLog('pas sur la liste des tickets, skip'); return false; }
 
         // Ne rien faire si l'utilisateur est en pleine interaction (sinon on le perturberait).
