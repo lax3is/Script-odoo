@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      4.1.5
+// @version      4.1.6
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -1821,11 +1821,11 @@
         .dark-theme .ticket-status.annule { background: #7f1d1d; color: #fca5a5; }
 
         /* === ÉQUIPES EN THÈME SOMBRE === */
-        .dark-theme .ticket-team[data-team="Logiciel"] {
+        .dark-theme .ticket-team[data-team="Hotline"] {
             background: rgba(76, 175, 80, 0.2);
             color: #81c784;
         }
-        .dark-theme .ticket-team[data-team="Materiel"] {
+        .dark-theme .ticket-team[data-team="LogicielN2"] {
             background: rgba(33, 150, 243, 0.2);
             color: #64b5f6;
         }
@@ -2008,17 +2008,17 @@
         }
 
         /* Couleurs par équipe */
-        .ticket-item[data-team="Logiciel"]::before { background: #4CAF50; }
-        .ticket-item[data-team="Materiel"]::before { background: #2196F3; }
+        .ticket-item[data-team="Hotline"]::before { background: #4CAF50; }
+        .ticket-item[data-team="LogicielN2"]::before { background: #2196F3; }
         .ticket-item[data-team="RMA"]::before { background: #FF9800; }
         .ticket-item[data-team="MaterielN2"]::before { background: #9C27B0; }
         .ticket-item[data-team="MailSAV"]::before { background: #E91E63; }
         .ticket-item[data-team="Winteam"]::before { background: #00BCD4; }
 
-        .ticket-item[data-team="Logiciel"]:hover {
+        .ticket-item[data-team="Hotline"]:hover {
             box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
         }
-        .ticket-item[data-team="Materiel"]:hover {
+        .ticket-item[data-team="LogicielN2"]:hover {
             box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
         }
         .ticket-item[data-team="RMA"]:hover {
@@ -2088,11 +2088,11 @@
             font-size: 11px;
             font-weight: 600;
         }
-        .ticket-team[data-team="Logiciel"] {
+        .ticket-team[data-team="Hotline"] {
             background: rgba(76, 175, 80, 0.1);
             color: #4CAF50;
         }
-        .ticket-team[data-team="Materiel"] {
+        .ticket-team[data-team="LogicielN2"] {
             background: rgba(33, 150, 243, 0.1);
             color: #2196F3;
         }
@@ -4841,8 +4841,8 @@
     // =========================================================
     // accent = couleur principale ; le fond est dérivé automatiquement (transparence).
     const CATEGORY_STYLES = {
-        'LOGICIEL':              { accent:'#10b981', emoji:'💻' },
-        'MATERIEL':              { accent:'#8b5cf6', emoji:'🛠️' },
+        'HOTLINE':               { accent:'#10b981', emoji:'📞' },
+        'LOGICIEL N2':           { accent:'#8b5cf6', emoji:'💻' },
         'MATERIEL N2':           { accent:'#ef4444', emoji:'🧰' },
         'RMA/SAV TECH EN COURS': { accent:'#f59e0b', emoji:'📦' },
         'RMA':                   { accent:'#f59e0b', emoji:'📦' },
@@ -4865,7 +4865,10 @@
     function resolveCategoryKey(raw) {
         const base = normLabel(raw);
         if (CATEGORY_STYLES[base]) return base;
-        if (base.startsWith('MATERIEL')) return /\bN2\b/i.test(raw) ? 'MATERIEL N2' : 'MATERIEL';
+        // Seules les équipes N2 sont colorées : "Logiciel" et "Matériel" (N1) n'existent plus.
+        if (base.startsWith('LOGICIEL')) return /\bN2\b/i.test(raw) ? 'LOGICIEL N2' : null;
+        if (base.startsWith('MATERIEL')) return /\bN2\b/i.test(raw) ? 'MATERIEL N2' : null;
+        if (base.startsWith('HOTLINE')) return 'HOTLINE';
         if (base.startsWith('RMA')) return 'RMA/SAV TECH EN COURS';
         if (base.startsWith('MAIL SAV') || base.startsWith('MAILSAV')) return 'MAIL SAV';
         return null;
@@ -4963,14 +4966,15 @@
         console.log('[HISTORY] Team data:', { teamId, rawTeamName, normalizedTeamName });
 
         // Correspondances basées sur les noms exacts d'Odoo
+        // /!\ "logiciel n2" doit être testé avant tout autre motif contenant "logiciel".
+        if (normalizedTeamName.includes('logiciel n2')) {
+            return { icon: 'fa-laptop', class: 'LogicielN2', name: 'LogicielN2', label: 'Logiciel N2' };
+        }
         if (normalizedTeamName.includes('materiel n2')) {
             return { icon: 'fa-wrench', class: 'MaterielN2', name: 'MaterielN2', label: 'Matériel N2' };
         }
-        if (normalizedTeamName.includes('logiciel')) {
-            return { icon: 'fa-laptop', class: 'Logiciel', name: 'Logiciel', label: 'Logiciel' };
-        }
-        if (normalizedTeamName.includes('materiel') && !normalizedTeamName.includes('n2')) {
-            return { icon: 'fa-wrench', class: 'Materiel', name: 'Materiel', label: 'Matériel' };
+        if (normalizedTeamName.includes('hotline')) {
+            return { icon: 'fa-phone', class: 'Hotline', name: 'Hotline', label: 'Hotline' };
         }
         if (normalizedTeamName.includes('rma') || normalizedTeamName.includes('sav')) {
             return { icon: 'fa-exchange', class: 'RMA', name: 'RMA', label: 'RMA/SAV' };
@@ -4983,11 +4987,8 @@
         }
 
         // Correspondances par ID (fallback)
+        // Les anciennes équipes "Logiciel" (8) et "Matériel" (1) ne sont plus référencées.
         switch(teamId) {
-            case 8:
-                return { icon: 'fa-laptop', class: 'Logiciel', name: 'Logiciel', label: 'Logiciel' };
-            case 1:
-                return { icon: 'fa-wrench', class: 'Materiel', name: 'Materiel', label: 'Matériel' };
             case 9:
                 return { icon: 'fa-exchange', class: 'RMA', name: 'RMA', label: 'RMA/SAV' };
             case 10:
@@ -5317,8 +5318,8 @@
                         <input type="text" class="filter-input" placeholder="Rechercher (titre, description, notes, utilisateur)..." id="ticketSearch">
                         <select class="filter-input" id="teamFilter">
                             <option value="">Toutes les équipes</option>
-                            <option value="Logiciel">Logiciel</option>
-                            <option value="Materiel">Matériel</option>
+                            <option value="Hotline">Hotline</option>
+                            <option value="LogicielN2">Logiciel N2</option>
                             <option value="MaterielN2">Matériel N2</option>
                             <option value="RMA">RMA/SAV</option>
                             <option value="MailSAV">Mail SAV</option>
