@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      4.1.6
+// @version      4.2.0
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -228,6 +228,9 @@
     // =========================================================
     const PORTAL_DELETE_INGEST_URL = 'https://hotline.sippharma.fr/odoospeek/portal/api/odoo_deleted_ingest.php';
     const PORTAL_MISSED_CALLS_URL = 'https://hotline.sippharma.fr/odoospeek/portal/api/missed_calls.php';
+    // Jauge de performance : le portail calcule tout (objectifs, score, série).
+    // Aucun seuil ne doit figurer dans ce script, qui est lisible par les hotliners.
+    const PORTAL_HOTLINER_SCORE_URL = 'https://hotline.sippharma.fr/odoospeek/portal/api/hotliner_score.php';
     const PORTAL_API_KEY = 'spk_1_2E6RrG4l2gQ6j1o0vQxV3p9mN8yAqK5lVZ3c4rB1uS7dT9wX0yZ2a';
     const DELETE_AUDIT_STORAGE_KEY = 'tm_delete_audit_pending_v2';
     let _pendingDeleteAudit = null;
@@ -1845,6 +1848,14 @@
             background: rgba(0, 188, 212, 0.2);
             color: #4dd0e1;
         }
+        .dark-theme .ticket-team[data-team="Logiciel"] {
+            background: rgba(148, 163, 184, 0.18);
+            color: #cbd5e1;
+        }
+        .dark-theme .ticket-team[data-team="Materiel"] {
+            background: rgba(148, 163, 184, 0.18);
+            color: #b8c2cf;
+        }
 
         /* === EN-TÊTES === */
         .historique-header, .produits-header {
@@ -2014,6 +2025,9 @@
         .ticket-item[data-team="MaterielN2"]::before { background: #9C27B0; }
         .ticket-item[data-team="MailSAV"]::before { background: #E91E63; }
         .ticket-item[data-team="Winteam"]::before { background: #00BCD4; }
+        /* Équipes supprimées d'Odoo, encore présentes dans l'historique : gris */
+        .ticket-item[data-team="Logiciel"]::before { background: #64748B; }
+        .ticket-item[data-team="Materiel"]::before { background: #94A3B8; }
 
         .ticket-item[data-team="Hotline"]:hover {
             box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
@@ -2111,6 +2125,15 @@
         .ticket-team[data-team="Winteam"] {
             background: rgba(0, 188, 212, 0.1);
             color: #00BCD4;
+        }
+        /* Équipes supprimées d'Odoo : grisées, l'historique reste lisible */
+        .ticket-team[data-team="Logiciel"] {
+            background: rgba(100, 116, 139, 0.12);
+            color: #64748B;
+        }
+        .ticket-team[data-team="Materiel"] {
+            background: rgba(148, 163, 184, 0.12);
+            color: #6B7280;
         }
 
         .ticket-assignee {
@@ -4848,7 +4871,11 @@
         'RMA':                   { accent:'#f59e0b', emoji:'📦' },
         'MSAV':                  { accent:'#ec4899', emoji:'✉️' },
         'MAIL SAV':              { accent:'#ec4899', emoji:'✉️' },
-        'WINTEAM':               { accent:'#0ea5e9', emoji:'⭐' }
+        'WINTEAM':               { accent:'#0ea5e9', emoji:'⭐' },
+        // Équipes supprimées d'Odoo : en gris, pour qu'un groupe historique se
+        // distingue d'un groupe actif sans pour autant rester sans style.
+        'LOGICIEL':              { accent:'#64748b', emoji:'🗄️' },
+        'MATERIEL':              { accent:'#94a3b8', emoji:'🗄️' }
     };
 
     function normLabel(text) {
@@ -4865,12 +4892,13 @@
     function resolveCategoryKey(raw) {
         const base = normLabel(raw);
         if (CATEGORY_STYLES[base]) return base;
-        // Seules les équipes N2 sont colorées : "Logiciel" et "Matériel" (N1) n'existent plus.
-        if (base.startsWith('LOGICIEL')) return /\bN2\b/i.test(raw) ? 'LOGICIEL N2' : null;
-        if (base.startsWith('MATERIEL')) return /\bN2\b/i.test(raw) ? 'MATERIEL N2' : null;
+        // Les variantes N2 d'abord : sinon un libellé "Logiciel N2 bis" serait
+        // rangé avec l'ancienne équipe "Logiciel".
+        if (base.startsWith('LOGICIEL')) return /N2/i.test(base) ? 'LOGICIEL N2' : 'LOGICIEL';
+        if (base.startsWith('MATERIEL')) return /N2/i.test(base) ? 'MATERIEL N2' : 'MATERIEL';
         if (base.startsWith('HOTLINE')) return 'HOTLINE';
-        if (base.startsWith('RMA')) return 'RMA/SAV TECH EN COURS';
         if (base.startsWith('MAIL SAV') || base.startsWith('MAILSAV')) return 'MAIL SAV';
+        if (base.startsWith('RMA')) return 'RMA/SAV TECH EN COURS';
         return null;
     }
 
@@ -4965,8 +4993,12 @@
 
         console.log('[HISTORY] Team data:', { teamId, rawTeamName, normalizedTeamName });
 
-        // Correspondances basées sur les noms exacts d'Odoo
-        // /!\ "logiciel n2" doit être testé avant tout autre motif contenant "logiciel".
+        // Correspondances basées sur les noms exacts d'Odoo.
+        // L'ORDRE EST SIGNIFICATIF, deux pièges :
+        //  - "logiciel n2" / "materiel n2" avant les motifs "logiciel" / "materiel"
+        //    seuls, sinon les N2 seraient fusionnés avec les anciennes équipes ;
+        //  - "mail sav" avant "rma || sav", sinon "Mail SAV" contient "sav" et
+        //    tombe dans la branche RMA (les styles MailSAV devenaient du code mort).
         if (normalizedTeamName.includes('logiciel n2')) {
             return { icon: 'fa-laptop', class: 'LogicielN2', name: 'LogicielN2', label: 'Logiciel N2' };
         }
@@ -4976,22 +5008,34 @@
         if (normalizedTeamName.includes('hotline')) {
             return { icon: 'fa-phone', class: 'Hotline', name: 'Hotline', label: 'Hotline' };
         }
+        if (normalizedTeamName.includes('mail sav') || normalizedTeamName.includes('mailsav')) {
+            return { icon: 'fa-envelope', class: 'MailSAV', name: 'MailSAV', label: 'Mail SAV' };
+        }
         if (normalizedTeamName.includes('rma') || normalizedTeamName.includes('sav')) {
             return { icon: 'fa-exchange', class: 'RMA', name: 'RMA', label: 'RMA/SAV' };
-        }
-        if (normalizedTeamName.includes('mail sav')) {
-            return { icon: 'fa-envelope', class: 'MailSAV', name: 'MailSAV', label: 'Mail SAV' };
         }
         if (normalizedTeamName.includes('winteam')) {
             return { icon: 'fa-star', class: 'Winteam', name: 'Winteam', label: 'Winteam' };
         }
+        // Équipes supprimées d'Odoo, encore portées par les tickets historiques.
+        // Sans ces deux branches elles tombaient dans le `default` : icône « ? »
+        // et surtout data-team="Matriel" (l'accent était mangé par le
+        // replace(/[^a-zA-Z0-9]/g)), donc aucune règle CSS ne s'appliquait.
+        if (normalizedTeamName.includes('logiciel')) {
+            return { icon: 'fa-laptop', class: 'Logiciel', name: 'Logiciel', label: 'Logiciel (hist.)' };
+        }
+        if (normalizedTeamName.includes('materiel')) {
+            return { icon: 'fa-wrench', class: 'Materiel', name: 'Materiel', label: 'Matériel (hist.)' };
+        }
 
         // Correspondances par ID (fallback)
         // Les anciennes équipes "Logiciel" (8) et "Matériel" (1) ne sont plus référencées.
-        switch(teamId) {
-            case 9:
+        // `String(teamId)` : un id arrivant sous forme de chaîne ("9") ne matchait
+        // pas le switch, qui compare en ===.
+        switch (String(teamId)) {
+            case '9':
                 return { icon: 'fa-exchange', class: 'RMA', name: 'RMA', label: 'RMA/SAV' };
-            case 10:
+            case '10':
                 return { icon: 'fa-wrench', class: 'MaterielN2', name: 'MaterielN2', label: 'Matériel N2' };
             default:
                 // Utiliser le nom brut comme fallback
@@ -5324,6 +5368,8 @@
                             <option value="RMA">RMA/SAV</option>
                             <option value="MailSAV">Mail SAV</option>
                             <option value="Winteam">Winteam</option>
+                            <option value="Logiciel">Logiciel (hist.)</option>
+                            <option value="Materiel">Matériel (hist.)</option>
                         </select>
                     </div>
                 </div>
@@ -6286,6 +6332,255 @@
     }
 
     // =========================================================
+    // JAUGE DE PERFORMANCE HOTLINER (portail Winlink)
+    // =========================================================
+    // Pastille flottante en haut au centre, visible uniquement sur la LISTE des
+    // tickets. Tout le calcul est fait côté portail (api/hotliner_score.php) :
+    // ce script ne reçoit qu'un remplissage de 0 à 10, une couleur, une série et
+    // les deux chiffres que le hotliner a le droit de voir. Les objectifs ne
+    // transitent jamais jusqu'ici — ce fichier est lisible depuis l'éditeur
+    // Tampermonkey, n'y remettez aucun seuil.
+    const HS_FLAME = '\uD83D\uDD25';   // emoji flamme via escape (encodage sûr)
+    const HS_REFRESH_MS = 300000;      // 5 min entre deux relevés
+    const HS_MIN_GAP_MS = 10000;       // plancher anti-rafale, même sur demande explicite
+    let _hsData = null;
+    let _hsLoading = false;
+    let _hsLastAttempt = 0;
+    let _hsStylesInjected = false;
+    let _hsUnavailable = false;        // compte sans poste hotline : on n'affiche rien
+
+    function hsEsc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function hsInjectStyles() {
+        if (_hsStylesInjected) return; _hsStylesInjected = true;
+        const st = document.createElement('style');
+        st.textContent = `
+        #tm-hs-gauge {
+            position: fixed; top: 6px; left: 50%; transform: translateX(-50%);
+            z-index: 99998;
+            display: inline-flex; align-items: center; gap: 9px;
+            height: 26px; padding: 0 11px; box-sizing: border-box;
+            border-radius: 13px; cursor: pointer;
+            -webkit-user-select: none; user-select: none;
+            background: rgba(15,23,42,.86);
+            border: 1px solid rgba(148,163,184,.3);
+            box-shadow: 0 2px 10px rgba(0,0,0,.35);
+            transition: box-shadow .15s ease, border-color .25s ease;
+        }
+        #tm-hs-gauge:hover { box-shadow: 0 4px 16px rgba(0,0,0,.45); }
+        #tm-hs-gauge:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+        .tm-hs-bars { display: inline-flex; align-items: center; gap: 3px; }
+        .tm-hs-seg {
+            display: block; width: 7px; height: 13px; border-radius: 2px;
+            background: rgba(148,163,184,.25); transition: background .25s ease;
+        }
+        #tm-hs-gauge[data-level="red"]   .tm-hs-seg.on { background: #ef4444; }
+        #tm-hs-gauge[data-level="amber"] .tm-hs-seg.on { background: #f59e0b; }
+        #tm-hs-gauge[data-level="green"] .tm-hs-seg.on { background: #22c55e; }
+        #tm-hs-gauge[data-level="amber"] { border-color: rgba(245,158,11,.5); }
+        #tm-hs-gauge[data-level="green"] {
+            border-color: rgba(34,197,94,.6); box-shadow: 0 2px 14px rgba(34,197,94,.3);
+        }
+        .tm-hs-flame { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; line-height: 1; }
+        .tm-hs-flame b { font-size: 11px; font-weight: 800; color: #fed7aa; }
+
+        #tm-hs-panel {
+            position: fixed; top: 40px; left: 50%; transform: translateX(-50%);
+            z-index: 99999; width: 268px;
+            background: #0f172a; color: #e2e8f0;
+            border: 1px solid #1e293b; border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,.45); overflow: hidden;
+        }
+        .tm-hs-head {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 9px 12px; font-weight: 700; font-size: 13px;
+            background: linear-gradient(135deg,#334155,#1e293b); color: #fff;
+        }
+        #tm-hs-panel[data-level="red"]   .tm-hs-head { background: linear-gradient(135deg,#dc2626,#991b1b); }
+        #tm-hs-panel[data-level="amber"] .tm-hs-head { background: linear-gradient(135deg,#d97706,#b45309); }
+        #tm-hs-panel[data-level="green"] .tm-hs-head { background: linear-gradient(135deg,#16a34a,#15803d); }
+        .tm-hs-head button {
+            background: rgba(255,255,255,.18); border: none; color: #fff; cursor: pointer;
+            width: 22px; height: 22px; border-radius: 6px; font-size: 12px; line-height: 1;
+        }
+        .tm-hs-head button:hover { background: rgba(255,255,255,.32); }
+        .tm-hs-body { padding: 10px 12px 12px; }
+        .tm-hs-row {
+            display: flex; align-items: baseline; justify-content: space-between;
+            gap: 10px; padding: 5px 0; font-size: 12.5px; color: #94a3b8;
+        }
+        .tm-hs-row b { font-size: 15px; font-weight: 800; color: #fff; white-space: nowrap; }
+        .tm-hs-msg {
+            margin-top: 8px; padding-top: 9px; border-top: 1px solid #1e293b;
+            font-size: 12px; color: #cbd5e1; text-align: center;
+        }
+        .tm-hs-warn { margin-top: 6px; font-size: 11px; color: #fbbf24; text-align: center; }
+        `;
+        document.head.appendChild(st);
+    }
+
+    // Niveau affiché. 'idle' (gris) tant qu'on n'a pas de données, ou quand le
+    // portail signale que les clôtures Odoo n'ont pas pu être lues : mieux vaut
+    // ne rien trancher qu'afficher un rouge dû à une panne d'API.
+    function hsLevel() {
+        const d = _hsData;
+        if (!d || d.odoo_ok === false) return 'idle';
+        return (d.level === 'red' || d.level === 'amber' || d.level === 'green') ? d.level : 'idle';
+    }
+
+    function hsGaugeHtml() {
+        const d = _hsData || {};
+        const seg = Math.max(0, Math.min(10, Number(d.segments) || 0));
+        const streak = Math.max(0, Number(d.streak) || 0);
+        let bars = '';
+        for (let i = 0; i < 10; i++) bars += `<i class="tm-hs-seg${i < seg ? ' on' : ''}"></i>`;
+        const flame = streak >= 2 ? `<span class="tm-hs-flame">${HS_FLAME}<b>${streak}</b></span>` : '';
+        return `<span class="tm-hs-bars">${bars}</span>${flame}`;
+    }
+
+    function hsRenderGauge() {
+        const g = document.getElementById('tm-hs-gauge');
+        if (!g) return;
+        g.dataset.level = hsLevel();
+        g.innerHTML = hsGaugeHtml();
+        const streak = _hsData ? Math.max(0, Number(_hsData.streak) || 0) : 0;
+        g.setAttribute('aria-label', streak >= 2
+            ? `Ma journée, série de ${streak} jours. Ouvrir le détail.`
+            : 'Ma journée. Ouvrir le détail.');
+    }
+
+    function hsRenderPanel() {
+        let p = document.getElementById('tm-hs-panel');
+        if (!p) {
+            p = document.createElement('div');
+            p.id = 'tm-hs-panel';
+            p.setAttribute('role', 'dialog');
+            p.setAttribute('aria-label', 'Ma journée');
+            document.body.appendChild(p);
+        }
+        const d = _hsData;
+        const level = hsLevel();
+        p.dataset.level = level;
+
+        const head = `<div class="tm-hs-head"><span>Ma journée</span>`
+            + `<button type="button" id="tm-hs-close" title="Fermer" aria-label="Fermer">✕</button></div>`;
+
+        if (!d) {
+            p.innerHTML = head + `<div class="tm-hs-body"><div class="tm-hs-msg">Chargement…</div></div>`;
+        } else {
+            const streak = Math.max(0, Number(d.streak) || 0);
+            const msg = level === 'green' ? 'Objectif du jour atteint, beau travail.'
+                      : level === 'amber' ? 'Bonne dynamique, continue comme ça.'
+                      : level === 'red'   ? 'La journée est encore devant toi.'
+                      : 'Relevé partiel pour le moment.';
+            p.innerHTML = head
+                + `<div class="tm-hs-body">`
+                + `<div class="tm-hs-row"><span>Appels clôturés</span><b>${d.closed == null ? '—' : Math.max(0, Number(d.closed) || 0)}</b></div>`
+                + `<div class="tm-hs-row"><span>Temps au téléphone</span><b>${hsEsc(d.talk_human || '0min')}</b></div>`
+                + `<div class="tm-hs-row"><span>Série en cours</span><b>${streak >= 2 ? HS_FLAME + ' ' + streak + ' jours' : '—'}</b></div>`
+                + `<div class="tm-hs-msg">${msg}</div>`
+                + (d.odoo_ok === false ? `<div class="tm-hs-warn">Clôtures Odoo momentanément indisponibles.</div>` : '')
+                + `</div>`;
+        }
+        p.querySelector('#tm-hs-close')?.addEventListener('click', () => p.remove());
+    }
+
+    function hsFetch(userName) {
+        return new Promise((resolve) => {
+            if (typeof GM_xmlhttpRequest !== 'function') { resolve(null); return; }
+            // Clé API en en-tête (pas dans l'URL) et domaine déjà déclaré en @connect.
+            const url = PORTAL_HOTLINER_SCORE_URL + '?user=' + encodeURIComponent(userName);
+            try {
+                GM_xmlhttpRequest({
+                    method: 'GET', url, timeout: 20000, anonymous: false,
+                    headers: { 'X-Api-Key': PORTAL_API_KEY },
+                    onload: (resp) => {
+                        try {
+                            if (resp && resp.status === 200) { resolve(JSON.parse(resp.responseText)); return; }
+                        } catch (_) {}
+                        resolve(null);
+                    },
+                    onerror: () => resolve(null),
+                    ontimeout: () => resolve(null)
+                });
+            } catch (_) { resolve(null); }
+        });
+    }
+
+    async function hsRefresh(force) {
+        if (_hsUnavailable) return;
+        const now = Date.now();
+        // La fenêtre porte sur la dernière TENTATIVE, pas sur le dernier succès :
+        // sinon, portail injoignable, chaque passage de runAll relancerait une
+        // requête (runAll est déclenché par l'observer DOM, donc très souvent).
+        if (!force && (now - _hsLastAttempt) < HS_REFRESH_MS) return;
+        if ((now - _hsLastAttempt) < HS_MIN_GAP_MS) return;
+        if (_hsLoading) return;
+        _hsLoading = true;
+        _hsLastAttempt = now;
+        try {
+            const user = getOdooCurrentUserName() || await warmCurrentUserName();
+            if (!user) return;
+            const data = await hsFetch(user);
+            // Échec réseau : on conserve le dernier état connu plutôt que de
+            // repasser la jauge à zéro, ce qui serait interprété comme un recul.
+            if (!data || data.ok !== true) return;
+            if (data.known === false) {
+                // Aucun poste hotline rattaché à ce compte : la jauge ne le concerne pas.
+                _hsUnavailable = true;
+                hsRemoveWidgets();
+                return;
+            }
+            _hsData = data;
+            hsRenderGauge();
+            if (document.getElementById('tm-hs-panel')) hsRenderPanel();
+        } finally {
+            _hsLoading = false;
+        }
+    }
+
+    function hsRemoveWidgets() {
+        document.getElementById('tm-hs-gauge')?.remove();
+        document.getElementById('tm-hs-panel')?.remove();
+    }
+
+    function hsTogglePanel() {
+        if (document.getElementById('tm-hs-panel')) {
+            document.getElementById('tm-hs-panel').remove();
+            return;
+        }
+        hsRenderPanel();
+        hsRefresh(true);
+    }
+
+    function ensureHotlinerGauge() {
+        if (!isTicketList() || _hsUnavailable) { hsRemoveWidgets(); return; }
+        if (!document.getElementById('tm-hs-gauge')) {
+            hsInjectStyles();
+            const g = document.createElement('div');
+            g.id = 'tm-hs-gauge';
+            g.dataset.level = 'idle';
+            g.title = 'Ma journée';
+            g.setAttribute('role', 'button');
+            g.setAttribute('tabindex', '0');
+            g.addEventListener('click', hsTogglePanel);
+            g.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+                    e.preventDefault();
+                    hsTogglePanel();
+                }
+            });
+            document.body.appendChild(g);
+            hsRenderGauge();
+        }
+        hsRefresh(false);
+    }
+
+    // =========================================================
     // OBSERVER PRINCIPAL + INITIALISATION
     // =========================================================
     let lastUrl = window.location.href;
@@ -6297,6 +6592,7 @@
         addClearAssignButton();
         ensurePhoneSearchUI(); // Recherche client par téléphone (champ Client)
         ensureMissedCallsButton(); // Bouton flottant "Appels manqués" (liste tickets uniquement)
+        ensureHotlinerGauge(); // Jauge de performance du jour (liste tickets uniquement)
         addHistoryAndProductsButtons(); // Historique et produits (fiche client / ticket)
         ensurePartnerListHistoryButtons(); // Historique tickets dans la liste clients
         hideConvertToOpportunityButton(); // Cacher le bouton "Convertir en opportunité"
@@ -6634,7 +6930,10 @@
 
     // Rafraîchir aussi dès que l'utilisateur revient sur l'onglet (retour rapide sans attendre 15s)
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) setTimeout(autoRefreshTick, 300);
+        if (document.hidden) return;
+        setTimeout(autoRefreshTick, 300);
+        // La jauge a pu vieillir pendant l'absence : on la remet à jour au retour.
+        if (isTicketList()) setTimeout(() => hsRefresh(true), 600);
     });
 
     // Démarrage
@@ -6643,6 +6942,8 @@
     startClosureWatcher();
     // Rafraîchir le compteur d'appels manqués toutes les 60s (uniquement sur la liste tickets)
     setInterval(() => { if (isTicketList() && document.getElementById('tm-missed-fab')) tmMissedRefresh(); }, 60000);
+    // Rafraîchir la jauge de performance toutes les 5 min (uniquement sur la liste tickets)
+    setInterval(() => { if (isTicketList() && document.getElementById('tm-hs-gauge')) hsRefresh(false); }, HS_REFRESH_MS);
     // Appliquer les couleurs immédiatement sans attendre le DOM complet
     scanCategoryStyles();
     applyInternetBlink();
