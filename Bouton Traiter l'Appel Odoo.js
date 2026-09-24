@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      4.2.0
+// @version      4.2.1
 // @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
@@ -6347,7 +6347,12 @@
     let _hsLoading = false;
     let _hsLastAttempt = 0;
     let _hsStylesInjected = false;
-    let _hsUnavailable = false;        // compte sans poste hotline : on n'affiche rien
+    const HS_RETRY_MS = 900000;        // 15 min avant de retenter quand il n'y a pas de jauge
+    // Pas de verrou définitif : la jauge peut être indisponible parce que le compte
+    // n'a pas de poste Speek, mais aussi parce qu'un administrateur l'a masquée
+    // depuis le portail. Si on abandonnait pour de bon, une réactivation ne
+    // reviendrait qu'après un rechargement complet de la page Odoo.
+    let _hsUnavailableUntil = 0;
 
     function hsEsc(s) {
         return String(s == null ? '' : s)
@@ -6512,8 +6517,10 @@
     }
 
     async function hsRefresh(force) {
-        if (_hsUnavailable) return;
         const now = Date.now();
+        // Un appel forcé (clic, retour sur l'onglet) ignore la fenêtre d'attente :
+        // c'est le bon moment pour revérifier.
+        if (!force && now < _hsUnavailableUntil) return;
         // La fenêtre porte sur la dernière TENTATIVE, pas sur le dernier succès :
         // sinon, portail injoignable, chaque passage de runAll relancerait une
         // requête (runAll est déclenché par l'observer DOM, donc très souvent).
@@ -6530,12 +6537,16 @@
             // repasser la jauge à zéro, ce qui serait interprété comme un recul.
             if (!data || data.ok !== true) return;
             if (data.known === false) {
-                // Aucun poste hotline rattaché à ce compte : la jauge ne le concerne pas.
-                _hsUnavailable = true;
+                // Deux cas : aucun poste Speek rattaché à ce compte, ou jauge masquée
+                // depuis le portail. On retente dans 15 min au lieu d'abandonner.
+                _hsUnavailableUntil = now + HS_RETRY_MS;
+                _hsData = null;
                 hsRemoveWidgets();
                 return;
             }
+            _hsUnavailableUntil = 0;
             _hsData = data;
+            hsMountGauge();
             hsRenderGauge();
             if (document.getElementById('tm-hs-panel')) hsRenderPanel();
         } finally {
@@ -6557,26 +6568,35 @@
         hsRefresh(true);
     }
 
+    // Crée la pastille si elle n'existe pas encore. Idempotent.
+    function hsMountGauge() {
+        if (document.getElementById('tm-hs-gauge')) return;
+        hsInjectStyles();
+        const g = document.createElement('div');
+        g.id = 'tm-hs-gauge';
+        g.dataset.level = 'idle';
+        g.title = 'Ma journée';
+        g.setAttribute('role', 'button');
+        g.setAttribute('tabindex', '0');
+        g.addEventListener('click', hsTogglePanel);
+        g.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+                e.preventDefault();
+                hsTogglePanel();
+            }
+        });
+        document.body.appendChild(g);
+        hsRenderGauge();
+    }
+
     function ensureHotlinerGauge() {
-        if (!isTicketList() || _hsUnavailable) { hsRemoveWidgets(); return; }
-        if (!document.getElementById('tm-hs-gauge')) {
-            hsInjectStyles();
-            const g = document.createElement('div');
-            g.id = 'tm-hs-gauge';
-            g.dataset.level = 'idle';
-            g.title = 'Ma journée';
-            g.setAttribute('role', 'button');
-            g.setAttribute('tabindex', '0');
-            g.addEventListener('click', hsTogglePanel);
-            g.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
-                    e.preventDefault();
-                    hsTogglePanel();
-                }
-            });
-            document.body.appendChild(g);
-            hsRenderGauge();
-        }
+        if (!isTicketList()) { hsRemoveWidgets(); return; }
+        // Pendant la fenêtre d'attente, on ne montre rien et on ne demande rien.
+        if (Date.now() < _hsUnavailableUntil) { hsRemoveWidgets(); return; }
+        // La pastille n'est montée qu'une fois les données obtenues : sinon un rond
+        // gris apparaîtrait puis disparaîtrait à chaque nouvelle tentative sur les
+        // comptes qui n'ont pas de jauge.
+        if (_hsData) hsMountGauge();
         hsRefresh(false);
     }
 
@@ -6942,8 +6962,10 @@
     startClosureWatcher();
     // Rafraîchir le compteur d'appels manqués toutes les 60s (uniquement sur la liste tickets)
     setInterval(() => { if (isTicketList() && document.getElementById('tm-missed-fab')) tmMissedRefresh(); }, 60000);
-    // Rafraîchir la jauge de performance toutes les 5 min (uniquement sur la liste tickets)
-    setInterval(() => { if (isTicketList() && document.getElementById('tm-hs-gauge')) hsRefresh(false); }, HS_REFRESH_MS);
+    // Rafraîchir la jauge toutes les 5 min (uniquement sur la liste tickets).
+    // Volontairement sans exiger que la pastille existe : c'est aussi ce qui permet
+    // à une jauge réactivée depuis le portail de réapparaître sans recharger la page.
+    setInterval(() => { if (isTicketList()) ensureHotlinerGauge(); }, HS_REFRESH_MS);
     // Appliquer les couleurs immédiatement sans attendre le DOM complet
     scanCategoryStyles();
     applyInternetBlink();
