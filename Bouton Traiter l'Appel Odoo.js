@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bouton Traiter l'Appel Odoo
 // @namespace    http://tampermonkey.net/
-// @version      4.2.1
-// @description  Traitement d'appel Odoo – full API, timer, étiquettes, badges, RDV, historique et produits clients - Compatible v16-v19
+// @version      4.4.2
+// @description  Outils hotline Odoo – badges clients, doublons, ventes, RDV, historique tickets + appels Winlink, produits clients - Compatible v16-v19
 // @author       Alexis.sair
 // @match        https://winprovence.odoo.com/*
 // @match        http://winprovence.odoo.com/*
@@ -12,8 +12,8 @@
 // @match        https://winprovence.fr/*
 // @match        http://winprovence.fr/*
 // @match        https://*.winprovence.fr/*
-// @updateURL    https://raw.githubusercontent.com/lax3is/Script-odoo/refs/heads/main/Bouton%20Traiter%20l'Appel%20Odoo.js
-// @downloadURL  https://raw.githubusercontent.com/lax3is/Script-odoo/refs/heads/main/Bouton%20Traiter%20l'Appel%20Odoo.js
+// @updateURL    https://hotline.sippharma.fr/odoospeek/odoo/traiter.meta.js
+// @downloadURL  https://hotline.sippharma.fr/odoospeek/odoo/traiter.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_setValue
@@ -289,13 +289,14 @@
         try { return getSessionInfo().user_context || {}; } catch (e) { return {}; }
     }
 
-    async function odooRpc(model, method, args = [], kwargs = {}) {
+    async function odooRpc(model, method, args = [], kwargs = {}, requestOptions = {}) {
         // v16 → v19 : requête sur le MÊME domaine que la page (session = cookie).
         // On n'utilise plus l'URL codée en dur (_ru) car l'instance v19 peut être sur un autre domaine
         // => sinon le fetch part en cross-origin, les cookies ne sont pas envoyés et l'appel échoue.
         try {
             const res = await fetch(window.location.origin + '/web/dataset/call_kw/' + model + '/' + method, {
                 method: 'POST',
+                signal: requestOptions.signal,
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Requested-With': 'XMLHttpRequest'
@@ -333,19 +334,6 @@
     }
 
     // =========================================================
-    // ÉTAT GLOBAL
-    // =========================================================
-    const state = {
-        isProcessing: false,   // verrou global actions
-        closureRunning: false, // verrou clôture
-        timerStopRunning: false, // verrou arrêt timer après clôture
-        timerShortcutRunning: false, // verrou raccourcis clavier timer
-        timerStoppedForTicket: null, // ticket dont le timer vient d'être arrêté
-        timerStoppedAt: 0,           // timestamp de l'arrêt
-        traiterStartedAt: 0          // timestamp du dernier clic "Traiter l'appel" (anti-verrou bloqué)
-    };
-
-    // =========================================================
     // ÉTAT HISTORIQUE ET PRODUITS CLIENTS
     // =========================================================
     let historyAdded = false;
@@ -355,78 +343,6 @@
     let isProcessingNavigation = false;
 
     function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-    function dispatchAltShortcut(key, code) {
-        document.dispatchEvent(new KeyboardEvent('keydown', {
-            key,
-            code,
-            altKey: true,
-            bubbles: true,
-            cancelable: true
-        }));
-    }
-
-    function simulerRaccourciTimer() {
-        if (state.timerShortcutRunning) return;
-        state.timerShortcutRunning = true;
-        dispatchAltShortcut('z', 'KeyZ');
-        setTimeout(() => { state.timerShortcutRunning = false; }, 1000);
-    }
-
-    // Alt+W sert de "toggle pause/resume" selon l'état du timer
-    function simulerRaccourciPause() {
-        if (state.timerShortcutRunning) return;
-        state.timerShortcutRunning = true;
-        dispatchAltShortcut('w', 'KeyW');
-        setTimeout(() => { state.timerShortcutRunning = false; }, 1000);
-    }
-
-    function simulerRaccourciStop() {
-        if (state.timerShortcutRunning) return;
-        state.timerShortcutRunning = true;
-        dispatchAltShortcut('q', 'KeyQ');
-        setTimeout(() => { state.timerShortcutRunning = false; }, 1000);
-    }
-
-    async function waitForDomTimerState(expected, timeoutMs = 8000, pollMs = 250) {
-        const deadline = Date.now() + timeoutMs;
-        while (Date.now() < deadline) {
-            const s = domTimerState();
-            if (s === expected) return true;
-            await wait(pollMs);
-        }
-        return false;
-    }
-
-    // Sauvegarde fiable : attend que le bouton soit dispo, réessaie jusqu'à 3 fois
-    async function saveForm() {
-        // Attendre que le bouton save soit présent et actif (max 3s)
-        let saveBtn = null;
-        for (let i = 0; i < 15; i++) {
-            saveBtn = document.querySelector('button.o_form_button_save, button[data-hotkey="s"], .o_form_button_save');
-            if (saveBtn && !saveBtn.disabled) break;
-            await wait(200);
-            saveBtn = null;
-        }
-
-        if (saveBtn && !saveBtn.disabled) {
-            saveBtn.click();
-            await wait(400);
-            // Vérifier que le bouton a disparu (formulaire sauvegardé) — sinon réessayer
-            for (let retry = 0; retry < 3; retry++) {
-                const stillDirty = document.querySelector('button.o_form_button_save:not([disabled]), button[data-hotkey="s"]:not([disabled])');
-                if (!stillDirty) break; // sauvegardé
-                await wait(400);
-                stillDirty.click();
-            }
-        } else {
-            // Fallback : simuler Ctrl+S
-            document.dispatchEvent(new KeyboardEvent('keydown', {
-                key: 's', code: 'KeyS', ctrlKey: true, bubbles: true, cancelable: true
-            }));
-            await wait(500);
-        }
-    }
 
     // =========================================================
     // HELPERS URL / TICKET ID
@@ -1151,52 +1067,8 @@
     }
 
     // =========================================================
-    // ÉTAT TRAITEMENT (localStorage)
-    // =========================================================
-    function saveState(ticketId, val) {
-        if (!ticketId) return;
-        // val: 'running' | 'paused' | 'stopped'
-        localStorage.setItem('etatTraitement_' + ticketId, val);
-    }
-    function loadState(ticketId) {
-        if (!ticketId) return 'stopped';
-        return localStorage.getItem('etatTraitement_' + ticketId) || 'stopped';
-    }
-
-    // =========================================================
-    // ACTIONS API TIMER
-    // =========================================================
-    async function apiTimerStart(ticketId) {
-        return odooCall('helpdesk.ticket', 'action_timer_start', [Number(ticketId)]);
-    }
-    async function apiTimerPause(ticketId) {
-        return odooCall('helpdesk.ticket', 'action_timer_pause', [Number(ticketId)]);
-    }
-    async function apiTimerResume(ticketId) {
-        return odooCall('helpdesk.ticket', 'action_timer_resume', [Number(ticketId)]);
-    }
-    async function apiTimerStop(ticketId) {
-        return odooCall('helpdesk.ticket', 'action_timer_stop', [Number(ticketId)]);
-    }
-
-    async function apiTicketStop(ticketId) {
-        return odooCall('helpdesk.ticket', 'stop_ticket', [Number(ticketId)]);
-    }
-
-    // =========================================================
     // ACTIONS API TICKET
     // =========================================================
-    async function apiAssignToSelf(ticketId) {
-        return odooCall('helpdesk.ticket', 'assign_ticket_to_self', [Number(ticketId)]);
-    }
-
-    async function apiGetTicketInfo(ticketId) {
-        return odooRead('helpdesk.ticket', Number(ticketId), [
-            'user_id', 'partner_id', 'stage_id', 'timer_start', 'is_timer_running',
-            'material_reason_tag_ids', 'software_reason_tag_ids'
-        ]);
-    }
-
     async function apiGetTicketDeleteSnapshot(ticketId) {
         return odooRead('helpdesk.ticket', Number(ticketId), [
             'name', 'user_id', 'partner_id', 'team_id', 'stage_id',
@@ -1490,11 +1362,26 @@
     }
 
     // Fonction pour initialiser le thème
+    // Le thème suit Odoo (clair / sombre) : on lit la couleur de fond réelle de la page.
+    // L'ancien bouton « thème sombre » de l'historique n'existe plus.
+    function tmSyncTheme() {
+        try {
+            let bg = '';
+            for (let n = document.querySelector('.o_action_manager') || document.querySelector('.o_web_client') || document.body; n; n = n.parentElement) {
+                const c = getComputedStyle(n).backgroundColor;
+                if (c && c !== 'transparent' && !/rgba\(0, 0, 0, 0\)/.test(c)) { bg = c; break; }
+            }
+            const m = bg.match(/[\d.]+/g);
+            if (!m || m.length < 3) return;
+            const [r, g, b] = m.map(Number);
+            const theme = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.45 ? 'dark' : 'light';
+            if (document.documentElement.dataset.tmTheme !== theme) document.documentElement.dataset.tmTheme = theme;
+        } catch (_) {}
+    }
+
     function initializeTheme() {
-        const savedTheme = localStorage.getItem('odoo-history-theme');
-        if (savedTheme === 'dark') {
-            document.body.classList.add('dark-theme');
-        }
+        document.body.classList.remove('dark-theme');
+        tmSyncTheme();
     }
 
     // Fonction pour ouvrir un ticket dans un nouvel onglet
@@ -1504,1382 +1391,453 @@
         window.open(ticketUrl, '_blank');
     }
 
-    // Vérifie si le timer est en cours via API
-    async function apiGetTimerState(ticketId) {
-        const info = await odooRead('helpdesk.ticket', Number(ticketId), ['is_timer_running', 'timer_start']);
-        if (!info) return 'unknown';
-        return info.is_timer_running ? 'running' : 'stopped';
-    }
-
-    async function getEffectiveTimerState(ticketId) {
-        const domState = domTimerState();
-        if (domState === 'running' || domState === 'paused' || domState === 'stopped') {
-            return domState;
-        }
-
-        const apiState = await apiGetTimerState(ticketId);
-        if (apiState === 'running') return 'running';
-        if (apiState === 'stopped') {
-            return loadState(ticketId) === 'paused' ? 'paused' : 'stopped';
-        }
-
-        return loadState(ticketId);
-    }
-
-    // =========================================================
-    // DÉTECTION ÉTAT DOM (fallback)
-    // =========================================================
-    function domTimerState() {
-        // v19 + v16-v18: Chercher les boutons timer Odoo
-        const pauseBtn = document.querySelector('button[name="action_timer_pause"][type="object"], button[name="action_timer_pause"], button[data-method="action_timer_pause"]');
-        const resumeBtn = document.querySelector('button[name="action_timer_resume"][type="object"], button[name="action_timer_resume"], button[data-method="action_timer_resume"]');
-        const startBtn = document.querySelector('button[name="action_timer_start"][type="object"], button[name="action_timer_start"], button[data-method="action_timer_start"]');
-
-        if (pauseBtn) {
-            return 'running';
-        }
-        if (resumeBtn) {
-            return 'paused';
-        }
-        if (startBtn) {
-            return 'stopped';
-        }
-
-        return 'unknown';
-    }
-
-    function normalizeStageText(text) {
-        return (text || '')
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .toLowerCase();
-    }
-
-    function isResolvedStageText(text) {
-        const txt = normalizeStageText(text);
-        return txt.includes('resolu') || txt.includes('resolved') || txt.includes('ferme') || txt.includes('cloture');
-    }
-
-    function isTicketResolved() {
-        // On se fie UNIQUEMENT au libellé du stage actif (Résolu/Fermé/Clôturé).
-        // (L'ancien test data-value="4" était faux en v19 : data-value = id/position du stage,
-        //  pas "résolu" — ce qui ouvrait le panneau des raisons à tort sur des tickets en cours.)
-        const currentStageEls = document.querySelectorAll(
-            '.o_arrow_button_current, .o_statusbar_status .btn-primary, .o_statusbar_status button[aria-pressed="true"]'
-        );
-
-        return Array.from(currentStageEls).some(el => isResolvedStageText(el.textContent || ''));
-    }
-
-    function findAssignButton() {
-        // v19: Chercher le bouton "Me l'assigner"
-        const btn1 = document.querySelector('button[name="assign_ticket_to_self"]');
-        if (btn1) return btn1;
-
-        // Chercher par texte
-        return Array.from(document.getElementsByTagName('button')).find(b => {
-            const s = b.querySelector('span');
-            const text = s ? s.textContent.trim().toLowerCase() : b.textContent.trim().toLowerCase();
-            return text === "me l'assigner" || text === "assign to me";
-        });
-    }
-
-    // Clique automatiquement le bouton natif "Me l'assigner" s'il apparaît (UI v19).
-    // Attend qu'il soit visible et actif (jusqu'à ~1,5 s), puis clique une seule fois.
-    async function clickAssignSelfIfPresent() {
-        for (let i = 0; i < 10; i++) {
-            const b = findAssignButton();
-            if (b && b.offsetParent !== null && !b.disabled) {
-                b.click();
-                return true;
-            }
-            await wait(150);
-        }
-        return false;
-    }
-
-    // =========================================================
-    // RELOAD PROPRE APRÈS ACTION API
-    // =========================================================
-    function reloadView() {
-        // Déclenche un refresh Odoo sans rechargement complet de page
-        try {
-            const actionManager = document.querySelector('.o_action_manager');
-            if (actionManager) {
-                // Simuler F5 Odoo (raccourci interne)
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F5', bubbles: true }));
-            }
-        } catch (_) {}
-        // Fallback: reload léger après 800ms
-        setTimeout(() => {
-            const saveBtn = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
-            if (saveBtn) saveBtn.click();
-        }, 400);
-    }
-
 
     // =========================================================
     // STYLES GLOBAUX
     // =========================================================
     function injectStyles() {
+        if (document.getElementById('tm-main-styles')) return;
         const s = document.createElement('style');
+        s.id = 'tm-main-styles';
         s.textContent = `
-        /* === BOUTONS STATUSBAR — harmonisés, plus aérés === */
-        #btn-traiter-appel, #btn-inserer-initiales {
-            height: 32px !important;
-            display: inline-flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            gap: 7px !important;
-            line-height: 1 !important;
-            border-radius: 7px !important;
-            font-weight: 600 !important;
-            font-size: 12.5px !important;
-            letter-spacing: .2px !important;
-            padding: 0 15px !important;
-            border: none !important;
-            cursor: pointer !important;
-            transition: transform .1s ease, box-shadow .15s ease, filter .12s ease !important;
-            margin-right: 8px !important;
-            vertical-align: middle !important;
-            white-space: nowrap !important;
-            box-shadow: 0 1px 2px rgba(0,0,0,.18) !important;
+        /* =====================================================================
+           DESIGN — calqué sur Odoo : mêmes couleurs, même typo, mêmes composants.
+           Le thème (clair / sombre) suit Odoo : html[data-tm-theme] est posé par
+           tmSyncTheme() d'après la couleur de fond réelle de la page. Les couleurs
+           reprennent les variables Bootstrap d'Odoo quand elles existent.
+           Règles : pas de cartes à liseré coloré, pas de dégradé, pas d'emoji,
+           pas de majuscules forcées ; la couleur ne sert qu'à porter un sens.
+           ===================================================================== */
+        :root {
+            --tm-bg: var(--bs-body-bg, #ffffff);
+            --tm-bg-elevated: var(--bs-body-bg, #ffffff);
+            --tm-bg-subtle: var(--bs-tertiary-bg, #f6f7f9);
+            --tm-bg-hover: rgba(0,0,0,.035);
+            --tm-border: var(--bs-border-color, #dee2e6);
+            --tm-text: #2b3340;
+            --tm-strong: #111827;
+            --tm-muted: #5b6472;
+            --tm-link: var(--bs-link-color, #017e84);
+            --tm-danger: #d23f3a;  --tm-danger-bg: rgba(210,63,58,.10);
+            --tm-warning: #b7791f; --tm-warning-bg: rgba(233,157,0,.13);
+            --tm-success: #1f8a4c; --tm-success-bg: rgba(40,167,69,.11);
+            --tm-info: #2f6fb7;    --tm-info-bg: rgba(47,111,183,.10);
+            --tm-live: #22a052;
+            --tm-radius: 6px;
+            --tm-shadow: 0 6px 24px rgba(0,0,0,.14), 0 1px 3px rgba(0,0,0,.08);
         }
-        #btn-traiter-appel svg, #btn-inserer-initiales svg { flex: 0 0 auto !important; }
-        #btn-traiter-appel:hover, #btn-inserer-initiales:hover {
-            filter: brightness(1.08) !important;
-            transform: translateY(-1px) !important;
-            box-shadow: 0 3px 9px rgba(0,0,0,.26) !important;
+        html[data-tm-theme="dark"] {
+            --tm-bg: var(--bs-body-bg, #262a36);
+            --tm-bg-elevated: #2f3441;
+            --tm-bg-subtle: rgba(255,255,255,.04);
+            --tm-bg-hover: rgba(255,255,255,.05);
+            --tm-border: var(--bs-border-color, #3d4250);
+            --tm-text: #e4e6ea;
+            --tm-strong: #ffffff;
+            --tm-muted: #b4b9c2;
+            --tm-link: var(--bs-link-color, #4fb8bd);
+            --tm-danger: #f06a64;  --tm-danger-bg: rgba(240,106,100,.14);
+            --tm-warning: #e3b04b; --tm-warning-bg: rgba(227,176,75,.14);
+            --tm-success: #5cc685; --tm-success-bg: rgba(92,198,133,.13);
+            --tm-info: #78a9e6;    --tm-info-bg: rgba(120,169,230,.14);
+            --tm-live: #4cc777;
+            --tm-shadow: 0 8px 28px rgba(0,0,0,.45), 0 1px 3px rgba(0,0,0,.3);
         }
-        #btn-traiter-appel:active, #btn-inserer-initiales:active { transform: translateY(0) !important; }
-        #btn-traiter-appel.en-cours {
-            background: #f59e0b !important; color: #fff !important;
-            animation: pulseWarning 2s infinite;
-        }
-        #btn-traiter-appel.en-attente {
-            background: #2563eb !important; color: #fff !important;
-            animation: pulseAttente 2s ease-in-out infinite;
-        }
-        #btn-traiter-appel.en-pause   { background: #6c757d !important; color: #fff !important; }
-        @keyframes pulseWarning {
-            0%,100% { box-shadow: 0 0 0 0 rgba(245,158,11,.5); }
-            70%      { box-shadow: 0 0 0 6px rgba(245,158,11,0); }
-        }
-        @keyframes pulseAttente {
-            0%,100% { box-shadow: 0 0 0 0 rgba(37,99,235,.5); }
-            70%      { box-shadow: 0 0 0 6px rgba(37,99,235,0); }
-        }
-        #btn-inserer-initiales { background: #17b6b2 !important; color: #fff !important; }
-
-        /* === BOUTONS HISTORIQUE ET PRODUITS === */
-        #showHistoryButton, #showProductsButton {
-            position: relative;
-            display: inline-flex !important;
-            align-items: center;
-            gap: 8px;
-            margin: 10px 10px 10px 0;
-            padding: 10px 18px;
-            background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
-            color: white !important;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 600;
-            box-shadow: 0 2px 8px rgba(0,160,157,0.25);
-            transition: all 0.2s ease;
-            text-transform: none;
-            letter-spacing: 0.3px;
-        }
-        #showHistoryButton:hover, #showProductsButton:hover {
-            background: linear-gradient(135deg, #008F8C 0%, #007F7D 100%);
-            box-shadow: 0 4px 12px rgba(0,160,157,0.35);
-            transform: translateY(-1px);
-        }
-        #showHistoryButton:active, #showProductsButton:active {
-            transform: translateY(0px);
-            box-shadow: 0 2px 6px rgba(0,160,157,0.25);
-        }
-        #showHistoryButton i, #showProductsButton i {
-            font-size: 15px;
-            margin-right: 4px;
+        @media (prefers-reduced-motion: reduce) {
+            .internet-blink, .rdv-clignote-orange::after, .rdv-clignote-rouge::after, .rdv-clignote-depasse::after { animation: none !important; }
         }
 
-        /* === CONTENEURS HISTORIQUE ET PRODUITS === */
-        #zone_historique_tickets, #zone_produits_client {
-            border: 1px solid #e0e0e0;
-            padding: 20px;
-            margin: 20px 0;
-            background-color: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-            height: 70vh;
-            min-height: 500px;
-            max-height: 800px;
-            overflow: hidden;
-            display: none;
-            flex-direction: column;
-            color: #333333;
-            position: relative;
-            resize: vertical;
-        }
-        #zone_historique_tickets.visible, #zone_produits_client.visible {
-            display: flex !important;
-        }
-
-        /* === BOUTON THÈME SOMBRE === */
-        .theme-toggle-container {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-left: 15px;
-        }
-        .theme-toggle-btn {
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            border: 2px solid #e0e0e0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            background: #ffffff;
-            color: #666666;
-        }
-        .theme-toggle-btn:hover {
-            transform: scale(1.1);
-            border-color: #00A09D;
-            color: #00A09D;
-        }
-        .theme-toggle-btn.active {
-            background: #00A09D;
-            color: white;
-            border-color: #00A09D;
-        }
-
-        /* === THÈME SOMBRE === */
-        .dark-theme #zone_historique_tickets,
-        .dark-theme #zone_produits_client {
-            background-color: #1f2937;
-            border-color: #374151;
-            color: #e5e7eb;
-        }
-        .dark-theme .historique-header,
-        .dark-theme .produits-header {
-            background: #1f2937;
-            border-bottom-color: #374151;
-            color: #e5e7eb;
-        }
-        .dark-theme .historique-header-left,
-        .dark-theme .produits-header-left {
-            color: #60a5fa;
-        }
-        .dark-theme .ticket-item,
-        .dark-theme .product-item {
-            background-color: #1f2937;
-            border-color: #374151;
-            color: #e5e7eb;
-        }
-        .dark-theme .ticket-item:hover,
-        .dark-theme .product-item:hover {
-            background-color: #2d3748;
-        }
-        .dark-theme .ticket-title,
-        .dark-theme .product-title {
-            color: #f3f4f6 !important;
-        }
-        .dark-theme .ticket-date,
-        .dark-theme .product-date {
-            color: #d1d5db !important;
-        }
-        .dark-theme .ticket-assignee {
-            color: #d1d5db !important;
-        }
-        .dark-theme .ticket-description,
-        .dark-theme .product-description {
-            color: #e5e7eb !important;
-        }
-        .dark-theme .filter-input {
-            background-color: #374151;
-            border-color: #4b5563;
-            color: #e5e7eb;
-        }
-        .dark-theme .filter-input::placeholder {
-            color: #9ca3af;
-        }
-        .dark-theme .no-tickets,
-        .dark-theme .no-products {
-            color: #9ca3af;
-        }
-
-        /* === STATUTS EN THÈME SOMBRE === */
-        .dark-theme .ticket-status.nouveau { background: #1e3a8a; color: #93c5fd; }
-        .dark-theme .ticket-status.en-cours { background: #92400e; color: #fbbf24; }
-        .dark-theme .ticket-status.en-attente { background: #581c87; color: #c084fc; }
-        .dark-theme .ticket-status.resolu { background: #14532d; color: #86efac; }
-        .dark-theme .ticket-status.ferme { background: #374151; color: #d1d5db; }
-        .dark-theme .ticket-status.annule { background: #7f1d1d; color: #fca5a5; }
-
-        /* === ÉQUIPES EN THÈME SOMBRE === */
-        .dark-theme .ticket-team[data-team="Hotline"] {
-            background: rgba(76, 175, 80, 0.2);
-            color: #81c784;
-        }
-        .dark-theme .ticket-team[data-team="LogicielN2"] {
-            background: rgba(33, 150, 243, 0.2);
-            color: #64b5f6;
-        }
-        .dark-theme .ticket-team[data-team="RMA"] {
-            background: rgba(255, 152, 0, 0.2);
-            color: #ffb74d;
-        }
-        .dark-theme .ticket-team[data-team="MaterielN2"] {
-            background: rgba(156, 39, 176, 0.2);
-            color: #ba68c8;
-        }
-        .dark-theme .ticket-team[data-team="MailSAV"] {
-            background: rgba(233, 30, 99, 0.2);
-            color: #f06292;
-        }
-        .dark-theme .ticket-team[data-team="Winteam"] {
-            background: rgba(0, 188, 212, 0.2);
-            color: #4dd0e1;
-        }
-        .dark-theme .ticket-team[data-team="Logiciel"] {
-            background: rgba(148, 163, 184, 0.18);
-            color: #cbd5e1;
-        }
-        .dark-theme .ticket-team[data-team="Materiel"] {
-            background: rgba(148, 163, 184, 0.18);
-            color: #b8c2cf;
-        }
-
-        /* === EN-TÊTES === */
-        .historique-header, .produits-header {
-            position: sticky;
-            top: 0;
-            background: #ffffff;
-            z-index: 10;
-            padding-bottom: 15px;
-            margin-bottom: 15px;
-            border-bottom: 2px solid #f0f0f0;
-            color: #333333;
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .historique-header-left, .produits-header-left {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            font-weight: 700;
-            font-size: 16px;
-            color: #00A09D;
-        }
-        .historique-header-right, .produits-header-right {
-            flex: 1;
-            display: flex;
-            justify-content: flex-end;
-        }
-
-        /* === HISTORIQUE TICKETS — LISTE CLIENTS === */
-        .btn-partner-list-history {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 28px;
-            height: 28px;
-            margin-right: 8px;
-            padding: 0;
-            border: none;
-            border-radius: 5px;
-            background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
-            color: #fff !important;
-            cursor: pointer;
-            vertical-align: middle;
-            flex-shrink: 0;
-            box-shadow: 0 1px 4px rgba(0,160,157,0.3);
-            transition: all 0.2s ease;
-        }
-        .btn-partner-list-history:hover {
-            background: linear-gradient(135deg, #008F8C 0%, #007F7D 100%);
-            transform: translateY(-1px);
-        }
-        .partner-history-modal-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(15, 23, 42, 0.55);
-            z-index: 2147483645;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        .partner-history-modal {
-            background: #ffffff;
-            border-radius: 12px;
-            width: min(960px, 95vw);
-            max-height: 90vh;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.35);
-        }
-        .partner-history-modal-toolbar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 12px;
-            padding: 14px 18px;
-            background: linear-gradient(135deg, #00A09D 0%, #008F8C 100%);
-            color: #fff;
-            font-weight: 600;
-        }
-        .partner-history-modal-close {
-            border: none;
-            background: rgba(255,255,255,0.15);
-            color: #fff;
-            width: 32px;
-            height: 32px;
-            border-radius: 6px;
-            cursor: pointer;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .partner-history-modal-close:hover {
-            background: rgba(255,255,255,0.25);
-        }
-        .partner-history-modal-body {
-            display: flex !important;
-            height: 70vh;
-            min-height: 420px;
-            max-height: calc(90vh - 60px);
-            margin: 0 !important;
-            border: none !important;
-            border-radius: 0 !important;
-            box-shadow: none !important;
-            resize: none !important;
-        }
-        .dark-theme .partner-history-modal {
-            background: #1f2937;
-        }
-        .dark-theme .partner-history-modal-toolbar {
-            background: linear-gradient(135deg, #0f766e 0%, #115e59 100%);
-        }
-
-        /* === LISTES === */
-        #ticketsList, #productsList {
-            overflow-y: auto;
-            flex: 1;
-            padding-right: 10px;
-        }
-        #ticketsList::-webkit-scrollbar, #productsList::-webkit-scrollbar {
-            width: 8px;
-        }
-        #ticketsList::-webkit-scrollbar-track, #productsList::-webkit-scrollbar-track {
-            background: #f1f1f1;
-            border-radius: 4px;
-        }
-        #ticketsList::-webkit-scrollbar-thumb, #productsList::-webkit-scrollbar-thumb {
-            background: #c1c1c1;
-            border-radius: 4px;
-        }
-
-        /* === ÉLÉMENTS TICKET AVEC COULEURS PAR ÉQUIPE === */
-        .ticket-item {
-            padding: 16px;
-            background-color: #ffffff;
-            margin-bottom: 12px;
-            border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            transition: all 0.3s ease;
-            color: #333333;
-            cursor: pointer;
-            position: relative;
-            overflow: hidden;
-        }
-        .ticket-item::before {
-            content: '';
-            position: absolute;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            width: 4px;
-            background: #6B7280;
-        }
-        .ticket-item:hover {
-            background-color: #f8f9fa;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
-
-        /* Couleurs par équipe */
-        .ticket-item[data-team="Hotline"]::before { background: #4CAF50; }
-        .ticket-item[data-team="LogicielN2"]::before { background: #2196F3; }
-        .ticket-item[data-team="RMA"]::before { background: #FF9800; }
-        .ticket-item[data-team="MaterielN2"]::before { background: #9C27B0; }
-        .ticket-item[data-team="MailSAV"]::before { background: #E91E63; }
-        .ticket-item[data-team="Winteam"]::before { background: #00BCD4; }
-        /* Équipes supprimées d'Odoo, encore présentes dans l'historique : gris */
-        .ticket-item[data-team="Logiciel"]::before { background: #64748B; }
-        .ticket-item[data-team="Materiel"]::before { background: #94A3B8; }
-
-        .ticket-item[data-team="Hotline"]:hover {
-            box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
-        }
-        .ticket-item[data-team="LogicielN2"]:hover {
-            box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
-        }
-        .ticket-item[data-team="RMA"]:hover {
-            box-shadow: 0 4px 12px rgba(255, 152, 0, 0.3);
-        }
-        .ticket-item[data-team="MaterielN2"]:hover {
-            box-shadow: 0 4px 12px rgba(156, 39, 176, 0.3);
-        }
-        .ticket-item[data-team="MailSAV"]:hover {
-            box-shadow: 0 4px 12px rgba(233, 30, 99, 0.3);
-        }
-        .ticket-item[data-team="Winteam"]:hover {
-            box-shadow: 0 4px 12px rgba(0, 188, 212, 0.3);
-        }
-
-        .ticket-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 12px;
-        }
-        .ticket-title {
-            font-weight: 600;
-            color: #333333;
-            font-size: 15px;
-            line-height: 1.4;
-            flex: 1;
-            margin-right: 15px;
-        }
-        .ticket-date {
-            color: #666666;
-            font-size: 12px;
-            white-space: nowrap;
-        }
-        .ticket-info {
-            display: flex;
-            gap: 15px;
-            margin-top: 12px;
-            color: #333333;
-            font-size: 13px;
-            flex-wrap: wrap;
-        }
-
-        /* === STATUTS COLORÉS === */
-        .ticket-status {
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .ticket-status.nouveau { background: #E3F2FD; color: #1976D2; }
-        .ticket-status.en-cours { background: #FFF3E0; color: #F57C00; }
-        .ticket-status.en-attente { background: #F3E5F5; color: #7B1FA2; }
-        .ticket-status.resolu { background: #E8F5E8; color: #388E3C; }
-        .ticket-status.ferme { background: #FAFAFA; color: #616161; }
-        .ticket-status.annule { background: #FFEBEE; color: #D32F2F; }
-
-        /* === ÉQUIPES COLORÉES === */
-        .ticket-team {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 3px 8px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: 600;
-        }
-        .ticket-team[data-team="Hotline"] {
-            background: rgba(76, 175, 80, 0.1);
-            color: #4CAF50;
-        }
-        .ticket-team[data-team="LogicielN2"] {
-            background: rgba(33, 150, 243, 0.1);
-            color: #2196F3;
-        }
-        .ticket-team[data-team="RMA"] {
-            background: rgba(255, 152, 0, 0.1);
-            color: #FF9800;
-        }
-        .ticket-team[data-team="MaterielN2"] {
-            background: rgba(156, 39, 176, 0.1);
-            color: #9C27B0;
-        }
-        .ticket-team[data-team="MailSAV"] {
-            background: rgba(233, 30, 99, 0.1);
-            color: #E91E63;
-        }
-        .ticket-team[data-team="Winteam"] {
-            background: rgba(0, 188, 212, 0.1);
-            color: #00BCD4;
-        }
-        /* Équipes supprimées d'Odoo : grisées, l'historique reste lisible */
-        .ticket-team[data-team="Logiciel"] {
-            background: rgba(100, 116, 139, 0.12);
-            color: #64748B;
-        }
-        .ticket-team[data-team="Materiel"] {
-            background: rgba(148, 163, 184, 0.12);
-            color: #6B7280;
-        }
-
-        .ticket-assignee {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            color: #666666;
-        }
-
-        /* === ÉLÉMENTS PRODUIT === */
-        .product-item {
-            padding: 16px;
-            background-color: #ffffff;
-            margin-bottom: 12px;
-            border: 1px solid #e0e0e0;
-            border-left: 4px solid #6B7280;
-            border-radius: 8px;
-            transition: all 0.3s ease;
-            color: #333333;
-        }
-        .product-item:hover {
-            background-color: #f8f9fa;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(107, 114, 128, 0.2);
-        }
-        .product-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 12px;
-        }
-        .product-title {
-            font-weight: 600;
-            color: #333333;
-            font-size: 15px;
-            line-height: 1.4;
-            flex: 1;
-            margin-right: 15px;
-        }
-        .product-date {
-            color: #666666;
-            font-size: 12px;
-            white-space: nowrap;
-        }
-        .product-info {
-            display: flex;
-            gap: 15px;
-            margin-top: 12px;
-            color: #333333;
-            font-size: 13px;
-            flex-wrap: wrap;
-        }
-        .product-type {
-            background-color: #6B7280;
-            color: white;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        /* === FILTRES === */
-        .ticket-filters, .product-filters {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-            flex-wrap: wrap;
-        }
-        .filter-input {
-            padding: 8px 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 13px;
-            background-color: #ffffff;
-            color: #333333;
-            transition: all 0.3s ease;
-            min-width: 150px;
-        }
-        .filter-input:focus {
-            outline: none;
-            border-color: #00A09D;
-            box-shadow: 0 0 0 3px rgba(0,160,157,0.1);
-        }
-        .filter-input::placeholder {
-            color: #999999;
-        }
-
-        /* === MESSAGES VIDES === */
-        .no-tickets, .no-products {
-            text-align: center;
-            padding: 40px 20px;
-            color: #666666;
-            font-style: italic;
-            font-size: 15px;
-        }
-
-        /* === CONTENEUR BOUTONS === */
-        .buttons-container {
-            margin: 20px 0 5px 0;
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-
-        /* Bouton "ME L'ASSIGNER" natif Odoo — harmonisé avec les autres */
+        /* === FORMULAIRE TICKET : boutons natifs, ajustements minimes === */
+        button[name="close_ticket"][type="object"] { background: var(--tm-danger) !important; border-color: var(--tm-danger) !important; color: #fff !important; }
+        /* « Me l'assigner » : le violet plein d'Odoo jurait à côté de « Clôturer » */
         button[name="assign_ticket_to_self"] {
-            height: 32px !important;
-            line-height: 1 !important;
-            border-radius: 7px !important;
-            font-size: 12.5px !important;
-            letter-spacing: .2px !important;
-            padding: 0 15px !important;
-            font-weight: 600 !important;
-            vertical-align: middle !important;
-            box-sizing: border-box !important;
-            color: #fff !important;
-            background: #3b4658 !important;
-            border: none !important;
-            margin-right: 8px !important;
-            box-shadow: 0 1px 2px rgba(0,0,0,.18) !important;
-            transition: background .12s ease, transform .1s ease, box-shadow .15s ease !important;
+            background: transparent !important; color: var(--tm-link) !important;
+            border: 1px solid var(--tm-link) !important; box-shadow: none !important;
         }
-        button[name="assign_ticket_to_self"]:hover {
-            background: #2c3543 !important;
-            transform: translateY(-1px) !important;
-            box-shadow: 0 3px 9px rgba(0,0,0,.26) !important;
-        }
-        button[name="assign_ticket_to_self"]:active { transform: translateY(0) !important; }
-        /* Bouton désassignation */
+        button[name="assign_ticket_to_self"]::before { content: '\\f234'; font-family: FontAwesome; margin-right: 6px; }
+        button[name="assign_ticket_to_self"]:hover { background: var(--tm-link) !important; color: #fff !important; }
+        .tm-initiales-btn-container { margin-bottom: 6px; }
         .clear-assign-button {
-            background: none; border: none; color: #dc3545;
-            cursor: pointer; font-size: 14px; padding: 0;
-            position: absolute; right: 34px; top: 50%;
-            transform: translateY(-50%); z-index: 2; line-height: 1;
+            position: absolute; right: 34px; top: 50%; transform: translateY(-50%); z-index: 2;
+            width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: transparent;
+            color: var(--tm-muted); font-size: 12px; line-height: 20px; cursor: pointer;
         }
-        /* === INDICATEUR EN COURS — dans le formulaire (texte simple, sans halo) === */
-        #texte-clignotant-container {
-            display: block;
-            margin: 0 0 6px 0;
-            color: #7c3aed;
-            font-weight: 600;
-            background: none !important;
-            border: none !important;
-            box-shadow: none !important;
-            padding: 0 !important;
-            border-radius: 0 !important;
-        }
-        #texte-clignotant-container span {
-            color: inherit; font-weight: inherit; font-size: inherit;
-        }
-        @keyframes letterWave {
-            0%, 60%, 100% { transform: translateY(0); }
-            30% { transform: translateY(-2px); }
-        }
-        /* === BOUTON CLÔTURER === */
-        button[name="close_ticket"][type="object"] {
-            background: #dc2626 !important; color: #fff !important;
-            border: none !important; border-radius: 4px !important; font-weight: 600 !important;
-        }
-        /* === MASQUER BOUTONS TIMER NATIFS === */
-        button[name="action_timer_start"],
-        button[name="action_timer_pause"],
-        button[name="action_timer_resume"],
-        button[name="action_timer_stop"] {
+        .clear-assign-button:hover { color: var(--tm-danger); background: var(--tm-danger-bg); }
+        /* Boutons timer natifs masqués (comportement inchangé) */
+        button[name="action_timer_start"], button[name="action_timer_pause"],
+        button[name="action_timer_resume"], button[name="action_timer_stop"] {
             visibility: hidden !important; position: absolute !important; left: -9999px !important;
         }
-        /* === ANIMATIONS LISTE TICKETS === */
-        @keyframes ticketEnTraitement {
-            0%,100% { box-shadow: 0 0 0 0 rgba(139,92,246,.35); background-color: rgba(139,92,246,.07); }
-            50%      { box-shadow: 0 0 10px 0 rgba(139,92,246,.55); background-color: rgba(139,92,246,.14); }
+
+        /* === BOUTONS DU SCRIPT : contour fin, fond transparent, icône en couleur === */
+        .tm-btn {
+            display: inline-flex !important; align-items: center; gap: 7px; height: 30px; padding: 0 12px; box-sizing: border-box;
+            border: 1px solid var(--tm-border) !important; border-radius: 6px !important; background: transparent !important;
+            color: var(--tm-text) !important; font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap; cursor: pointer;
+            box-shadow: none !important; transition: border-color .12s ease, color .12s ease, background-color .12s ease;
         }
-        .o_list_view .o_data_row.ticket-en-traitement {
-            position: relative !important; z-index: 1 !important;
-            border: 2px solid rgba(139,92,246,.7) !important; border-radius: 4px !important;
+        .tm-btn .fa { color: var(--tm-link); font-size: 13px; }
+        .tm-btn:hover { border-color: var(--tm-link) !important; color: var(--tm-strong) !important; background: var(--tm-bg-hover) !important; }
+        .tm-btn:focus-visible { outline: 2px solid var(--tm-link); outline-offset: 1px; }
+        .tm-btn.is-active { border-color: var(--tm-link) !important; color: var(--tm-link) !important; }
+        .tm-btn-icon { width: 30px; padding: 0; justify-content: center; }
+
+        /* === BOUTONS STATISTIQUES (Ventes, Doublons) — gabarit des stat buttons Odoo === */
+        #badge-devis-client, #badge-tickets-ouverts { display: flex; align-items: stretch; flex-shrink: 0; }
+        .tm-stat.oe_stat_button {
+            display: flex; align-items: center; gap: 8px; height: 100%; min-height: 44px; padding: 0 16px;
+            background: transparent; border: 0; border-left: 1px solid var(--tm-border); border-radius: 0;
+            color: var(--tm-text); text-align: left; cursor: pointer;
         }
-        .o_list_view .o_data_row.ticket-en-traitement::after {
-            content: ''; position: absolute; inset: -1px; pointer-events: none;
-            border-radius: 3px; animation: ticketEnTraitement 2s ease-in-out infinite; z-index: 1 !important;
+        .tm-stat.oe_stat_button:hover { background: var(--tm-bg-hover); }
+        .tm-stat .o_button_icon { font-size: 18px; color: var(--tm-muted); width: 20px; text-align: center; }
+        .tm-stat .o_stat_info { display: flex; flex-direction: column; line-height: 1.2; }
+        .tm-stat .o_stat_value { font-weight: 600; color: var(--tm-strong); font-variant-numeric: tabular-nums; }
+        .tm-stat .o_stat_text { font-size: 12px; color: var(--tm-muted); }
+        .tm-stat.tm-stat-empty { cursor: default; }
+        #badge-devis-client .tm-stat:not(.tm-stat-empty) .o_stat_value,
+        #badge-devis-client .tm-stat:not(.tm-stat-empty) .o_button_icon { color: var(--tm-link); }
+        .tm-stat.tm-stat-empty .o_stat_value { color: var(--tm-muted); font-weight: 500; }
+        .tm-stat.tm-stat-alert .o_button_icon, .tm-stat.tm-stat-alert .o_stat_value { color: var(--tm-danger); }
+
+        /* === PANNEAUX FLOTTANTS (ventes, doublons, appels manqués, journée) === */
+        .tm-pop {
+            position: fixed; top: 76px; right: 16px; z-index: 6000;
+            display: flex; flex-direction: column; overflow: hidden;
+            background: var(--tm-bg-elevated); color: var(--tm-text);
+            border: 1px solid var(--tm-border); border-radius: var(--tm-radius); box-shadow: var(--tm-shadow);
+            font-size: 13px; line-height: 1.45;
         }
-        @keyframes ticketBloquant {
-            0%,100% { box-shadow: 0 0 0 0 rgba(220,53,69,.4); }
-            50%      { box-shadow: 0 0 8px 0 rgba(220,53,69,.6); }
+        .tm-pop-head {
+            display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+            padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--tm-border);
         }
-        .o_list_view .o_data_row.ticket-bloquant {
-            position: relative !important; z-index: 1 !important;
-            border: 2px solid rgba(220,53,69,.8) !important; border-radius: 4px !important;
+        .tm-pop-title { font-weight: 600; color: var(--tm-strong); }
+        .tm-pop-count { color: var(--tm-muted); font-variant-numeric: tabular-nums; }
+        .tm-pop-head .tm-pop-actions { margin-left: auto; display: flex; gap: 2px; }
+        .tm-icon-btn {
+            width: 28px; height: 28px; padding: 0; border: 0; border-radius: 4px; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
+            background: transparent; color: var(--tm-muted); font-size: 14px;
         }
-        .o_list_view .o_data_row.ticket-bloquant::after {
-            content: ''; position: absolute; inset: -1px; pointer-events: none;
-            border-radius: 3px; animation: ticketBloquant 2s infinite; z-index: 1 !important;
+        .tm-icon-btn:hover { background: var(--tm-bg-hover); color: var(--tm-strong); }
+        .tm-pop-body { overflow-y: auto; min-height: 0; }
+        .tm-pop-empty { padding: 20px 16px; color: var(--tm-muted); text-align: center; }
+        .tm-pop-section { padding: 10px 16px 4px; font-size: 12px; font-weight: 500; color: var(--tm-muted); }
+
+        /* Ventes */
+        .popup-devis-odoobtn { width: min(860px, calc(100vw - 32px)); max-height: 70vh; }
+        .tm-so { border-bottom: 1px solid var(--tm-border); border-left: 3px solid transparent; }
+        .tm-so.st-sale   { border-left-color: #00c864; }
+        .tm-so.st-done   { border-left-color: #1a6640; }
+        .tm-so.st-sent   { border-left-color: #1e64c8; }
+        .tm-so.st-cancel { border-left-color: #e53935; }
+        .tm-so:last-child { border-bottom: 0; }
+        .tm-so-row {
+            display: grid; grid-template-columns: 76px minmax(0,1fr) 150px 96px 28px; align-items: center; gap: 12px;
+            padding: 9px 12px 9px 16px; cursor: pointer;
         }
-        @keyframes rdvOrangeBg { from { background: rgba(255,152,0,.15); } to { background: rgba(255,152,0,.25); } }
-        @keyframes rdvRougeBg  { from { background: rgba(229,57,53,.15); } to { background: rgba(229,57,53,.25); } }
-        @keyframes rdvDepasseBg {
-            0%   { background: rgba(229,57,53,.25); box-shadow: 0 0 8px rgba(229,57,53,.5); }
-            50%  { background: rgba(183,28,28,.35);  box-shadow: 0 0 12px rgba(229,57,53,.6); }
-            100% { background: rgba(229,57,53,.25); box-shadow: 0 0 8px rgba(229,57,53,.5); }
+        .tm-so-row:hover { background: var(--tm-bg-hover); }
+        .tm-so-ref { color: var(--tm-link); font-weight: 500; font-variant-numeric: tabular-nums; }
+        .tm-so-main { min-width: 0; }
+        .tm-so-title { color: var(--tm-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tm-so-date { font-size: 12px; color: var(--tm-muted); }
+        .tm-so-amount { text-align: right; font-variant-numeric: tabular-nums; color: var(--tm-strong); }
+        .tm-so.is-cancel .tm-so-title, .tm-so.is-cancel .tm-so-amount { color: var(--tm-muted); text-decoration: line-through; }
+        .tm-so.is-open .tm-so-row { background: var(--tm-bg-subtle); }
+        .tm-so-lines { padding: 4px 16px 12px 104px; background: var(--tm-bg-subtle); }
+        .tm-so-lines table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+        .tm-so-lines th { text-align: left; font-weight: 500; color: var(--tm-muted); padding: 6px 8px 6px 0; border-bottom: 1px solid var(--tm-border); }
+        .tm-so-lines td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--tm-border); vertical-align: top; }
+        .tm-so-lines tr:last-child td { border-bottom: 0; }
+        .tm-so-lines .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+        /* Statut : point coloré + libellé, sans pastille */
+        .tm-state {
+            display: inline-flex; align-items: center; justify-self: start; padding: 2px 9px; border-radius: 10px;
+            font-size: 12px; font-weight: 600; white-space: nowrap; background: var(--tm-bg-subtle); color: var(--tm-muted);
         }
-        .o_list_view .rdv-clignote-orange::after { animation: rdvOrangeBg 1.5s infinite alternate; }
-        .o_list_view .rdv-clignote-rouge::after  { animation: rdvRougeBg 1.2s infinite alternate; }
-        .o_list_view .rdv-clignote-depasse::after { animation: rdvDepasseBg 1s infinite alternate; }
-        .o_list_view .rdv-clignote-orange::after,
-        .o_list_view .rdv-clignote-rouge::after,
-        .o_list_view .rdv-clignote-depasse::after {
-            content: ''; position: absolute; inset: -1px; pointer-events: none;
-            border-radius: 2px; z-index: 1 !important;
+        .tm-state.is-success { background: rgba(0,200,100,.15); color: #138a4a; }
+        .tm-state.is-info    { background: rgba(30,100,200,.14); color: #1e5bb8; }
+        .tm-state.is-warning { background: rgba(255,152,0,.16);  color: #b26a00; }
+        .tm-state.is-danger  { background: rgba(229,57,53,.14);  color: #c62828; }
+        html[data-tm-theme="dark"] .tm-state.is-success { color: #5ee0a0; }
+        html[data-tm-theme="dark"] .tm-state.is-info    { color: #8fb8f5; }
+        html[data-tm-theme="dark"] .tm-state.is-warning { color: #ffb74d; }
+        html[data-tm-theme="dark"] .tm-state.is-danger  { color: #ff8a80; }
+
+        /* Doublons */
+        .popup-tickets-ouverts { width: min(560px, calc(100vw - 32px)); max-height: 60vh; z-index: 6100; }
+        .popup-tickets-ouverts .tm-pop-title i { color: var(--tm-warning); margin-right: 6px; }
+        .tm-dup {
+            display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 2px 12px; align-items: baseline;
+            padding: 9px 16px; border-bottom: 1px solid var(--tm-border); cursor: pointer;
         }
-        .o_list_view .rdv-clignote-orange,
-        .o_list_view .rdv-clignote-rouge,
-        .o_list_view .rdv-clignote-depasse { position: relative !important; z-index: 1 !important; }
-        /* === CLIGNOTEMENT TAG INTERNET — orange vif très visible === */
+        .tm-dup:last-child { border-bottom: 0; }
+        .tm-dup:hover { background: var(--tm-bg-hover); }
+        .tm-dup-name { color: var(--tm-link); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tm-dup-date { font-size: 12px; color: var(--tm-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .tm-dup-meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--tm-text); }
+        .tm-dup-meta .ticket-team { font-size: 11.5px; padding: 1px 8px; }
+
+        /* === HISTORIQUE / PRODUITS DU CLIENT === */
+        .buttons-container { margin: 16px 0 4px; display: flex; gap: 8px; flex-wrap: wrap; }
+        #zone_historique_tickets, #zone_produits_client {
+            display: none; flex-direction: column; position: relative;
+            margin: 12px 0; height: 70vh; min-height: 460px; max-height: 820px; overflow: hidden; resize: vertical;
+            background: var(--tm-bg); color: var(--tm-text);
+            border: 1px solid var(--tm-border); border-radius: var(--tm-radius);
+        }
+        #zone_historique_tickets.visible, #zone_produits_client.visible { display: flex !important; }
+        .historique-header, .produits-header {
+            display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between;
+            padding: 12px 16px; border-bottom: 1px solid var(--tm-border); background: var(--tm-bg);
+        }
+        .historique-header-left, .produits-header-left { font-weight: 600; font-size: 14px; color: var(--tm-strong); }
+        .historique-header-right, .produits-header-right { flex: 1; display: flex; justify-content: flex-end; }
+        .ticket-filters, .product-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+        .ticket-filters .form-control, .product-filters .form-control { width: 280px; max-width: 100%; }
+        .ticket-filters .form-select, .product-filters .form-select { width: auto; min-width: 170px; }
+        #ticketsList, #productsList { flex: 1; overflow-y: auto; padding: 0 16px; }
+        .no-tickets, .no-products { padding: 32px 0; text-align: center; color: var(--tm-muted); }
+
+        /* Couleurs d'équipe d'origine (v4.2.1) : liseré gauche, pastille d'équipe, survol teinté */
+        .ticket-item {
+            --team: #6b7280; --team-bg: rgba(107,114,128,.12); --team-text: #4b5563;
+        }
+        .ticket-item[data-team="Hotline"],    .ticket-team[data-team="Hotline"]    { --team: #4CAF50; --team-bg: rgba(76,175,80,.14);  --team-text: #2e7d32; }
+        .ticket-item[data-team="LogicielN2"], .ticket-team[data-team="LogicielN2"] { --team: #2196F3; --team-bg: rgba(33,150,243,.14); --team-text: #1565c0; }
+        .ticket-item[data-team="RMA"],        .ticket-team[data-team="RMA"]        { --team: #FF9800; --team-bg: rgba(255,152,0,.16);  --team-text: #b26a00; }
+        .ticket-item[data-team="MaterielN2"], .ticket-team[data-team="MaterielN2"] { --team: #9C27B0; --team-bg: rgba(156,39,176,.13); --team-text: #7b1fa2; }
+        .ticket-item[data-team="MailSAV"],    .ticket-team[data-team="MailSAV"]    { --team: #E91E63; --team-bg: rgba(233,30,99,.13);  --team-text: #c2185b; }
+        .ticket-item[data-team="Winteam"],    .ticket-team[data-team="Winteam"]    { --team: #00BCD4; --team-bg: rgba(0,188,212,.15);  --team-text: #00838f; }
+        .ticket-item[data-team="Logiciel"],   .ticket-team[data-team="Logiciel"]   { --team: #64748B; --team-bg: rgba(100,116,139,.14); --team-text: #475569; }
+        .ticket-item[data-team="Materiel"],   .ticket-team[data-team="Materiel"]   { --team: #94A3B8; --team-bg: rgba(148,163,184,.16); --team-text: #64748b; }
+        html[data-tm-theme="dark"] .ticket-item[data-team="Hotline"],    html[data-tm-theme="dark"] .ticket-team[data-team="Hotline"]    { --team-bg: rgba(76,175,80,.2);   --team-text: #81c784; }
+        html[data-tm-theme="dark"] .ticket-item[data-team="LogicielN2"], html[data-tm-theme="dark"] .ticket-team[data-team="LogicielN2"] { --team-bg: rgba(33,150,243,.2);  --team-text: #64b5f6; }
+        html[data-tm-theme="dark"] .ticket-item[data-team="RMA"],        html[data-tm-theme="dark"] .ticket-team[data-team="RMA"]        { --team-bg: rgba(255,152,0,.2);   --team-text: #ffb74d; }
+        html[data-tm-theme="dark"] .ticket-item[data-team="MaterielN2"], html[data-tm-theme="dark"] .ticket-team[data-team="MaterielN2"] { --team-bg: rgba(156,39,176,.24); --team-text: #ce93d8; }
+        html[data-tm-theme="dark"] .ticket-item[data-team="MailSAV"],    html[data-tm-theme="dark"] .ticket-team[data-team="MailSAV"]    { --team-bg: rgba(233,30,99,.2);   --team-text: #f48fb1; }
+        html[data-tm-theme="dark"] .ticket-item[data-team="Winteam"],    html[data-tm-theme="dark"] .ticket-team[data-team="Winteam"]    { --team-bg: rgba(0,188,212,.2);   --team-text: #4dd0e1; }
+        html[data-tm-theme="dark"] .ticket-item[data-team="Logiciel"],   html[data-tm-theme="dark"] .ticket-team[data-team="Logiciel"],
+        html[data-tm-theme="dark"] .ticket-item[data-team="Materiel"],   html[data-tm-theme="dark"] .ticket-team[data-team="Materiel"]   { --team-bg: rgba(148,163,184,.18); --team-text: #cbd5e1; }
+
+        .ticket-item, .product-item {
+            margin: 8px 0; padding: 12px 14px 12px 14px; color: var(--tm-text);
+            background: var(--tm-bg); border: 1px solid var(--tm-border); border-radius: 4px;
+        }
+        .ticket-item { border-left: 4px solid var(--team); cursor: pointer; transition: background .12s ease; }
+        .ticket-item:hover { background: var(--team-bg); }
+        .product-item { border-left: 4px solid var(--tm-muted); }
+        .product-item.express-product { border-left-color: #FF9800; }
+        .ticket-header, .product-header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+        .ticket-title, .product-title { flex: 1; min-width: 0; font-weight: 600; color: var(--tm-strong); line-height: 1.4; }
+        .ticket-date, .product-date { font-size: 12px; color: var(--tm-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .ticket-date .fa, .product-date .fa { margin-right: 3px; }
+        .ticket-date .fa-arrow-right { font-size: 10px; margin: 0 5px; }
+        .ticket-info, .product-info {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 6px; font-size: 12.5px; color: var(--tm-text);
+        }
+        .ticket-team {
+            display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 10px;
+            background: var(--team-bg); color: var(--team-text); font-weight: 600;
+        }
+        .ticket-assignee { display: inline-flex; align-items: center; gap: 6px; color: var(--tm-text); }
+        .ticket-assignee .fa { font-size: 11px; color: var(--tm-muted); }
+        .ticket-status {
+            display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 10px; font-weight: 600;
+            background: var(--tm-bg-subtle); color: var(--tm-muted);
+        }
+        .ticket-status.nouveau    { background: rgba(25,118,210,.14); color: #1565c0; }
+        .ticket-status.en-cours   { background: rgba(245,124,0,.16);  color: #c25e00; }
+        .ticket-status.en-attente { background: rgba(123,31,162,.13); color: #7b1fa2; }
+        .ticket-status.resolu     { background: rgba(56,142,60,.15);  color: #2e7d32; }
+        .ticket-status.ferme      { background: rgba(97,97,97,.13);   color: #555; }
+        .ticket-status.annule     { background: rgba(211,47,47,.13);  color: #c62828; }
+        html[data-tm-theme="dark"] .ticket-status.nouveau    { background: rgba(59,130,246,.22);  color: #93c5fd; }
+        html[data-tm-theme="dark"] .ticket-status.en-cours   { background: rgba(249,115,22,.22);  color: #fdba74; }
+        html[data-tm-theme="dark"] .ticket-status.en-attente { background: rgba(168,85,247,.22);  color: #d8b4fe; }
+        html[data-tm-theme="dark"] .ticket-status.resolu     { background: rgba(34,197,94,.2);    color: #86efac; }
+        html[data-tm-theme="dark"] .ticket-status.ferme      { background: rgba(148,163,184,.2);  color: #d1d5db; }
+        html[data-tm-theme="dark"] .ticket-status.annule     { background: rgba(239,68,68,.22);   color: #fca5a5; }
+        .ticket-description, .product-description {
+            margin-top: 8px; font-size: 13px; line-height: 1.5; color: var(--tm-text); overflow-wrap: anywhere;
+        }
+        .ticket-description > strong, .product-description > strong { font-weight: 600; font-size: 12px; color: var(--tm-muted); }
+        .ticket-response { margin-top: 8px; padding: 8px 12px; border-radius: 4px; background: var(--tm-bg-subtle); border: 1px solid var(--tm-border); }
+        .ticket-response-header { font-size: 12px; font-weight: 500; color: var(--tm-muted); margin-bottom: 2px; }
+        .ticket-response-header .fa { margin-right: 4px; }
+        .ticket-response-content { font-size: 13px; line-height: 1.5; color: var(--tm-text); overflow-wrap: anywhere; }
+        .ticket-response-content p { margin: 0; }
+        .ticket-response-content p:empty, .ticket-response-content p:has(> br:only-child) { display: none; }
+
+        /* Appels Winlink rattachés au ticket */
+        .tk-talk { display: inline-flex; align-items: center; gap: 6px; color: var(--tm-link); cursor: pointer; }
+        .tk-talk:hover { text-decoration: underline; }
+        .tk-talk b { font-weight: 500; }
+        .tk-talk-ico { display: none; }
+        .tk-talk::before { content: '\\f095'; font-family: FontAwesome; font-size: 12px; }
+        .tk-talk.is-open::after { content: '\\f106'; font-family: FontAwesome; font-size: 12px; }
+        .tk-talk:not(.is-open)[role="button"]::after { content: '\\f107'; font-family: FontAwesome; font-size: 12px; }
+        .tk-talk:focus-visible { outline: 2px solid var(--tm-link); outline-offset: 2px; border-radius: 2px; }
+        .tk-talk.is-empty { display: none; }
+        .tk-talk.is-loading, .tk-talk.is-error { color: var(--tm-muted); cursor: default; text-decoration: none; }
+        .tk-talk.is-loading::before, .tk-talk.is-error::before { content: none; }
+        .tk-calls { margin-top: 8px; border-top: 1px solid var(--tm-border); cursor: default; }
+        .tk-calls[hidden] { display: none; }
+        .tk-call {
+            display: grid; grid-template-columns: 18px 130px minmax(0,1fr) 72px auto; align-items: center; gap: 2px 12px;
+            padding: 6px 0; border-bottom: 1px solid var(--tm-border); font-size: 12.5px;
+        }
+        .tk-call:last-child { border-bottom: 0; }
+        .tk-call-dir { display: inline-flex; color: var(--tm-muted); }
+        .tk-call-dir.in { color: var(--tm-success); }
+        .tk-call-dir.out { color: var(--tm-info); }
+        .tk-call-when { color: var(--tm-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .tk-call-who { color: var(--tm-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tk-call-dur { text-align: right; color: var(--tm-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .tk-play {
+            display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid var(--tm-border);
+            border-radius: 4px; background: transparent; color: var(--tm-text); font-size: 12px; cursor: pointer; white-space: nowrap;
+        }
+        .tk-play::before { content: '\\f04b'; font-family: FontAwesome; font-size: 9px; color: var(--tm-link); }
+        .tk-play:hover { background: var(--tm-bg-hover); border-color: var(--tm-muted); }
+        .tk-play:disabled { cursor: progress; opacity: .75; }
+        .tk-play.is-error { border-color: transparent; color: var(--tm-danger); cursor: default; }
+        .tk-play.is-error::before { content: none; }
+        .tk-norec { font-size: 12px; color: var(--tm-muted); white-space: nowrap; }
+        .tk-audio-slot { grid-column: 2 / -1; }
+        .tk-audio-slot:empty { display: none; }
+        .tk-audio { width: 100%; height: 32px; margin: 2px 0; }
+
+        /* Produits */
+        .product-type { color: var(--tm-muted); }
+        .product-type { padding: 2px 9px; border-radius: 10px; background: var(--tm-bg-subtle); font-weight: 600; }
+        .express-product .product-type { background: rgba(255,152,0,.16); color: #c25e00; }
+        html[data-tm-theme="dark"] .express-product .product-type { color: #ffb74d; }
+        .product-ref, .product-category { display: inline-flex; align-items: center; gap: 6px; }
+        .product-ref .fa, .product-category .fa { font-size: 11px; opacity: .8; }
+
+        /* Historique depuis la liste des clients */
+        .btn-partner-list-history {
+            width: 24px; height: 24px; margin-right: 6px; padding: 0; border: 0; border-radius: 4px; vertical-align: middle;
+            display: inline-flex; align-items: center; justify-content: center; background: transparent;
+            color: var(--tm-muted); cursor: pointer;
+        }
+        .btn-partner-list-history:hover { background: var(--tm-bg-hover); color: var(--tm-link); }
+        .partner-history-modal-overlay {
+            position: fixed; inset: 0; z-index: 2147483645; padding: 24px;
+            display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.5);
+        }
+        .partner-history-modal {
+            width: min(980px, 96vw); max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;
+            background: var(--tm-bg); border: 1px solid var(--tm-border); border-radius: var(--tm-radius); box-shadow: var(--tm-shadow);
+        }
+        .partner-history-modal-toolbar {
+            display: flex; justify-content: space-between; align-items: center; gap: 12px;
+            padding: 12px 12px 12px 16px; border-bottom: 1px solid var(--tm-border);
+            font-size: 15px; font-weight: 600; color: var(--tm-strong);
+        }
+        .partner-history-modal-body {
+            display: flex !important; height: 70vh; min-height: 420px; max-height: calc(90vh - 54px);
+            margin: 0 !important; border: 0 !important; border-radius: 0 !important; resize: none !important;
+        }
+
+        /* === LISTE DES TICKETS === */
+        .o_list_view .o_data_row.ticket-bloquant > td { background-color: rgba(220,53,69,.12) !important; }
+        .o_list_view .o_data_row.ticket-bloquant { outline: 2px solid rgba(220,53,69,.8); outline-offset: -2px; }
+        /* Cellule « Nouveau rendez-vous » : orange (aujourd'hui), orange vif (< 10 min), rouge (dépassé) */
+        @keyframes rdvOrange { from { background: rgba(255,152,0,.15); } to { background: rgba(255,152,0,.28); } }
+        @keyframes rdvRouge  { from { background: rgba(229,57,53,.16); } to { background: rgba(229,57,53,.30); } }
+        @keyframes rdvLate   { from { background: rgba(229,57,53,.24); } to { background: rgba(183,28,28,.42); } }
+        .o_list_view .rdv-clignote-orange, .o_list_view .rdv-clignote-rouge, .o_list_view .rdv-clignote-depasse {
+            position: relative !important; z-index: 1 !important; font-weight: 600;
+        }
+        .o_list_view .rdv-clignote-orange::after, .o_list_view .rdv-clignote-rouge::after, .o_list_view .rdv-clignote-depasse::after {
+            content: ''; position: absolute; inset: 0; pointer-events: none; z-index: -1 !important;
+        }
+        .o_list_view .rdv-clignote-orange::after  { animation: rdvOrange 1.5s ease-in-out infinite alternate; box-shadow: inset 3px 0 0 #ff9800; }
+        .o_list_view .rdv-clignote-rouge::after   { animation: rdvRouge 1.1s ease-in-out infinite alternate; box-shadow: inset 3px 0 0 #f4511e; }
+        .o_list_view .rdv-clignote-depasse::after { animation: rdvLate .9s ease-in-out infinite alternate; box-shadow: inset 3px 0 0 #e53935; }
+        .o_list_view .rdv-clignote-depasse { color: #e53935 !important; }
+
         @keyframes internetBlink {
-            0%,100% { background-color: rgba(255,140,0,.25); box-shadow: 0 0 0 0 rgba(255,140,0,0); color: #ff8c00; }
-            50%      { background-color: rgba(255,140,0,.55); box-shadow: 0 0 10px 2px rgba(255,140,0,.6); color: #fff; }
+            0%,100% { background-color: rgba(255,140,0,.25); color: #ff8c00; }
+            50%     { background-color: rgba(255,140,0,.6);  color: #fff; }
         }
         .internet-blink {
-            animation: internetBlink 1s infinite;
-            position: relative; z-index: 1;
-            border: 1px solid rgba(255,140,0,.7) !important;
-            font-weight: 700 !important;
+            animation: internetBlink 1s ease-in-out infinite; font-weight: 700 !important;
+            border: 1px solid rgba(255,140,0,.75) !important;
         }
-        /* === BADGE CLIENT PRIORITAIRE === */
-        .badge-client-prioritaire {
-            display: block;
-            background: rgba(220,38,38,.18);
-            color: #ef4444;
-            border: 1px solid rgba(220,38,38,.7);
-            border-radius: 4px;
-            font-size: 10px;
-            font-weight: 700;
-            padding: 1px 6px;
-            margin-top: 3px;
-            white-space: nowrap;
-            letter-spacing: .3px;
-            text-transform: uppercase;
-            box-shadow: 0 0 6px 2px rgba(220,38,38,.55), 0 0 14px 4px rgba(220,38,38,.25);
-            position: relative;
-            z-index: 10;
-            animation: none !important;
-            isolation: isolate;
-            opacity: 1 !important;
+
+        /* Étiquettes client. Les lignes de la liste Odoo imposent leur couleur de texte
+           (décorations de ligne) : couleurs et fond sont donc forcés. */
+        .tm-client-badges { display: flex !important; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+        .tm-client-badges .tm-tag, .o_list_renderer .o_data_row td .tm-client-badges .tm-tag.tm-tag {
+            display: inline-flex !important; align-items: center; padding: 0 8px !important; border-radius: 10px !important;
+            font-size: 11.5px !important; font-weight: 600 !important; line-height: 18px !important; white-space: nowrap;
+            color: #fff !important; text-decoration: none !important;
         }
-        .badge-client-new {
-            display: inline-block;
-            background: rgba(6,182,212,.18);
-            color: #22d3ee;
-            border: 1px solid rgba(6,182,212,.7);
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 700;
-            padding: 1px 7px;
-            margin-top: 3px;
-            white-space: nowrap;
-            letter-spacing: .3px;
-            text-transform: uppercase;
-            box-shadow: 0 0 5px 1px rgba(6,182,212,.4);
-            position: relative;
-            z-index: 10;
-            animation: none !important;
-            isolation: isolate;
-            opacity: 1 !important;
+        .tm-client-badges .tm-tag-prio, .o_list_renderer .o_data_row td .tm-client-badges .tm-tag.tm-tag-prio { background: #dc2626 !important; }
+        .tm-client-badges .tm-tag-new, .o_list_renderer .o_data_row td .tm-client-badges .tm-tag.tm-tag-new { background: #0891b2 !important; }
+
+        /* En-têtes de groupe par équipe : simple point de couleur */
+        .tm-cat-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; vertical-align: middle; }
+
+        /* === OPÉRATEUR EN LIGNE AVEC LE CLIENT === */
+        .o_list_view .o_data_row.tm-live-row > td:first-child { box-shadow: inset 3px 0 0 var(--tm-live); }
+        .o_list_renderer .o_data_row > td.tm-live-cell,
+        .o_list_view .o_data_row > td.tm-live-cell {
+            background-image: linear-gradient(110deg, rgba(34, 197, 94, .11), rgba(34, 197, 94, .025)) !important;
+            box-shadow: inset 0 0 0 1px rgba(34, 197, 94, .30), inset 0 0 18px rgba(34, 197, 94, .08), 0 0 9px rgba(34, 197, 94, .08);
+            border-radius: 8px;
         }
-        .rdv-notif-odoo {
-            position: fixed; bottom: 24px; right: 24px;
-            background: #1e2330; color: #e8eaf0;
-            border-radius: 12px; font-size: 13px; font-weight: 500;
-            z-index: 99999; box-shadow: 0 8px 32px rgba(0,0,0,.45);
-            min-width: 320px; max-width: 420px;
-            border-left: 4px solid #f59e0b;
-            overflow: hidden;
+        .o_list_view img.tm-live-ring,
+        .o_list_renderer img.tm-live-ring {
+            box-shadow: 0 0 0 1.5px var(--tm-bg), 0 0 0 3px var(--tm-live), 0 0 10px rgba(34, 197, 94, .30);
         }
-        .rdv-notif-odoo.depasse { border-left-color: #ef4444; animation: notifPulse 1.5s infinite alternate; }
-        .rdv-notif-odoo.rouge   { border-left-color: #f97316; }
-        @keyframes notifPulse {
-            0%   { box-shadow: 0 8px 32px rgba(239,68,68,.3); }
-            100% { box-shadow: 0 8px 40px rgba(239,68,68,.6); }
+        .tm-live-chip {
+            display: flex; align-items: center; gap: 6px; margin-top: 3px;
+            width: max-content; max-width: 100%; padding: 2px 7px;
+            border: 1px solid rgba(34, 197, 94, .22); border-radius: 999px;
+            background: rgba(34, 197, 94, .08); box-shadow: 0 0 8px rgba(34, 197, 94, .10);
+            font-size: 12px; line-height: 16px; color: var(--tm-live); font-variant-numeric: tabular-nums; white-space: nowrap;
         }
-        .rdv-notif-inner { padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
-        .rdv-notif-header { display: flex; align-items: center; gap: 8px; }
-        .rdv-notif-icon { font-size: 18px; flex-shrink: 0; }
-        .rdv-notif-title { font-weight: 700; font-size: 13px; color: #fff; flex: 1; }
-        .rdv-notif-close { background: none; border: none; color: #6b7280; cursor: pointer; font-size: 16px; padding: 0; line-height: 1; }
-        .rdv-notif-close:hover { color: #e5e7eb; }
-        .rdv-notif-body { display: flex; flex-direction: column; gap: 2px; padding-left: 26px; }
-        .rdv-notif-pharma { font-weight: 700; color: #60a5fa; font-size: 13px; }
-        .rdv-notif-who   { color: #9ca3af; font-size: 11px; }
-        .rdv-notif-time  { color: #fbbf24; font-size: 12px; font-weight: 600; }
-        /* === DOUBLON TOAST — même style que les notifs RDV === */
-        .doublon-toast {
-            position: fixed; bottom: 24px; right: 24px;
-            background: #1e2330; color: #e8eaf0;
-            border-radius: 12px; font-size: 13px; font-weight: 500;
-            z-index: 99998; box-shadow: 0 8px 32px rgba(0,0,0,.45);
-            min-width: 280px; max-width: 420px;
-            border-left: 4px solid #f59e0b;
-            overflow: hidden;
+        .tm-live-dot {
+            display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--tm-live);
+            box-shadow: 0 0 0 3px rgba(34, 197, 94, .10), 0 0 7px rgba(34, 197, 94, .35);
         }
-        .doublon-toast .doublon-toast-inner { padding: 12px 14px; display: flex; align-items: center; gap: 10px; }
-        .doublon-toast .doublon-toast-icon { font-size: 18px; flex-shrink: 0; }
-        .doublon-toast .doublon-toast-text { flex: 1; font-weight: 600; color: #fff; font-size: 13px; }
-        .doublon-toast .close { background: none; border: none; color: #6b7280; cursor: pointer; font-size: 16px; padding: 0; line-height: 1; flex-shrink: 0; }
-        .doublon-toast .close:hover { color: #e5e7eb; }
-        /* === CATÉGORIES COLORÉES === */
-        [data-styled-category="1"] { border-radius: 6px; padding: 2px 8px; display: inline-block; font-weight: 600; }
-        /* === BADGE VENTES — style stat button Odoo, sans bulle === */
-        #badge-devis-client { display:inline-flex; align-items:stretch; vertical-align:middle; margin-left:4px; flex-shrink:0; align-self:stretch; }
-        #badge-devis-client .bd-btn {
-            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-            height: 44px; min-width: 80px; padding: 0 12px;
-            background: transparent; border: 1px solid #dee2e6;
-            border-radius: 6px; cursor: pointer; color: inherit;
-            font-size: 12px; font-weight: 500;
-            transition: background .1s;
-            box-sizing: border-box;
-            flex-shrink: 0;
+        .tm-live-op {
+            position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+            width: 18px; height: 18px; border-radius: 50%; background: var(--tm-bg-subtle); border: 1px solid var(--tm-border);
+            color: var(--tm-text); font-size: 9px; font-weight: 600; letter-spacing: .2px;
         }
-        .o_form_view.o_form_editable #badge-devis-client .bd-btn { border-color: #adb5bd; }
-        #badge-devis-client .bd-btn:hover { background: rgba(0,0,0,.04); }
-        #badge-devis-client .bd-btn.empty { opacity: .6; }
-        #badge-devis-client .bd-inner { display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.2; height:100%; }
-        #badge-devis-client .bd-num { font-size: 16px; font-weight: 700; color: #017e84; line-height:1; }
-        #badge-devis-client .bd-btn.empty .bd-num { color: #6c757d; }
-        #badge-devis-client .bd-lbl { font-size: 10px; color: #6c757d; text-transform: uppercase; letter-spacing: .4px; line-height:1; margin-top:2px; }
-        /* Popup ventes — plus compact */
-        .popup-devis-odoobtn {
-            position:fixed; top:80px; right:24px; background:#1a2030; color:#e0e6f0;
-            border-radius:8px; box-shadow:0 6px 24px rgba(0,0,0,.4); z-index:6000;
-            width:900px; max-height:65vh; overflow:auto;
-            border:1px solid rgba(255,255,255,.08);
+        .tm-live-op .tm-live-dot { position: absolute; right: -2px; bottom: -2px; width: 8px; height: 8px; box-shadow: 0 0 0 2px var(--tm-bg); }
+
+        /* === NOTIFICATIONS DE SECOURS (si le service de notification Odoo est introuvable) === */
+        #tm-toast-stack {
+            position: fixed; right: 16px; top: 64px; z-index: 99999;
+            display: flex; flex-direction: column; gap: 8px; width: min(340px, calc(100vw - 32px)); pointer-events: none;
         }
-        .popup-devis-odoobtn header { display:flex; align-items:center; justify-content:space-between; padding:8px 12px; border-bottom:1px solid rgba(255,255,255,.08); font-weight:700; font-size:13px; }
-        .popup-devis-odoobtn header button { all:unset; cursor:pointer; color:#1DE9B6; font-size:12px; }
-        .popup-devis-odoobtn ul { list-style:none; margin:0; padding:4px 0; }
-        .popup-devis-odoobtn li { padding:8px 12px; border-bottom:1px solid rgba(255,255,255,.05); display:grid; grid-template-columns:100px 1fr auto auto; gap:12px; align-items:center; font-size:12px; }
-        .popup-devis-odoobtn .so-ref { color:#8be9fd; font-weight:700; font-size:13px; }
-        .popup-devis-odoobtn .so-title { color:#ffcc80; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .popup-devis-odoobtn .muted { color:#7a8a96; font-size:11px; text-align:right; white-space:nowrap; }
-        .popup-devis-odoobtn .so-open-btn {
-            all:unset; cursor:pointer; padding:4px 10px; border-radius:4px;
-            background:rgba(29,233,182,.15); color:#1DE9B6; font-size:11px; font-weight:600;
-            border:1px solid rgba(29,233,182,.3); white-space:nowrap;
+        .tm-toast {
+            pointer-events: auto; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
+            padding: 10px 10px 10px 14px; border-radius: var(--tm-radius);
+            background: var(--tm-bg-elevated); color: var(--tm-text); border: 1px solid var(--tm-border);
+            box-shadow: var(--tm-shadow); font-size: 13px; line-height: 1.45;
         }
-        .popup-devis-odoobtn .so-open-btn:hover { background:rgba(29,233,182,.28); }
-        /* Bon de commande = vert vif, Envoyé = bleu, Terminé = vert foncé */
-        .popup-devis-odoobtn li.state-sale  { background:rgba(0,200,100,.10); border-left:3px solid #00c864; }
-        .popup-devis-odoobtn li.state-done  { background:rgba(30,80,50,.20);  border-left:3px solid #1a6640; }
-        .popup-devis-odoobtn li.state-sent  { background:rgba(30,100,200,.10); border-left:3px solid #1e64c8; }
-        .popup-devis-odoobtn li.state-cancel { background:rgba(229,57,53,.10); border-left:3px solid #e53935; }
-        .popup-devis-odoobtn li:hover { background:rgba(255,255,255,.04); }
-        .popup-devis-odoobtn li.expanded { display:flex; flex-direction:column; align-items:stretch; }
-        .popup-devis-odoobtn .so-lines { width:100%; background:rgba(255,255,255,.03); border-left:2px solid rgba(255,255,255,.08); margin:6px 0 0; padding:6px 10px; border-radius:4px; }
-        .popup-devis-odoobtn .so-lines .line { display:grid; grid-template-columns:1fr 60px 90px 100px; gap:8px; align-items:center; padding:3px 0; border-bottom:1px dashed rgba(255,255,255,.05); font-size:11px; }
-        .popup-devis-odoobtn .so-lines .line.header { font-weight:700; color:#cfd8dc; border-bottom:1px solid rgba(255,255,255,.10); }
-        .popup-devis-odoobtn .so-lines .line:last-child { border-bottom:none; }
-        .popup-devis-odoobtn .so-lines .pname { color:#eceff1; }
-        .popup-devis-odoobtn .so-lines .qty,.popup-devis-odoobtn .so-lines .price,.popup-devis-odoobtn .so-lines .subtotal { text-align:right; color:#b0bec5; }
-        /* === BADGE DOUBLONS — même style stat button Odoo, sans bulle === */
-        #badge-tickets-ouverts { display:inline-flex; align-items:stretch; vertical-align:middle; margin-left:4px; flex-shrink:0; align-self:stretch; }
-        #badge-tickets-ouverts .to-btn {
-            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-            height: 44px; min-width: 80px; padding: 0 12px;
-            background: transparent; border: 1px solid #dee2e6;
-            border-radius: 6px; cursor: pointer; color: inherit;
-            font-size: 12px; font-weight: 500;
-            transition: background .1s;
-            box-sizing: border-box;
-            flex-shrink: 0;
-            box-shadow: none;
-        }
-        #badge-tickets-ouverts .to-btn:hover { background: rgba(0,0,0,.04); }
-        #badge-tickets-ouverts .to-btn.alert {
-            border-color: rgba(220,53,69,.7);
-            animation: doublonHalo 1.8s ease-in-out infinite;
-            will-change: filter;
-        }
-        @keyframes doublonHalo {
-            0%,100% { filter: drop-shadow(0 0 2px rgba(220,53,69,.3)); }
-            50%      { filter: drop-shadow(0 0 10px rgba(220,53,69,.9)); }
-        }
-        #badge-tickets-ouverts .to-inner { display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.2; height:100%; }
-        #badge-tickets-ouverts .to-num { font-size: 16px; font-weight: 700; color: #6c757d; line-height:1; }
-        #badge-tickets-ouverts .to-btn.alert .to-num { color: #dc3545; }
-        #badge-tickets-ouverts .to-lbl { font-size: 10px; color: #6c757d; text-transform: uppercase; letter-spacing: .4px; line-height:1; margin-top:2px; }
-        .popup-tickets-ouverts {
-            position:fixed; top:80px; right:24px; background:#1a2030; color:#e0e6f0;
-            border-radius:8px; box-shadow:0 6px 24px rgba(0,0,0,.4); z-index:6100;
-            width:580px; max-height:55vh; overflow:hidden; display:flex; flex-direction:column;
-            border:1px solid rgba(255,255,255,.08);
-        }
-        .popup-tickets-ouverts header { display:flex; align-items:center; justify-content:space-between; padding:8px 12px; border-bottom:1px solid rgba(255,255,255,.08); font-weight:700; font-size:13px; }
-        .popup-tickets-ouverts header button { all:unset; cursor:pointer; color:#1DE9B6; font-size:12px; }
-        .popup-tickets-ouverts .content { display:flex; overflow:auto; }
-        .popup-tickets-ouverts ul { list-style:none; margin:0; padding:4px 0; width:100%; }
-        .popup-tickets-ouverts li { padding:7px 12px; border-bottom:1px solid rgba(255,255,255,.05); display:grid; grid-template-columns:1fr 130px 120px; gap:10px; align-items:center; cursor:pointer; font-size:12px; }
-        .popup-tickets-ouverts li:hover { background:rgba(255,255,255,.04); }
-        .popup-tickets-ouverts .muted { color:#7a8a96; font-size:11px; }
-        .popup-tickets-ouverts .team { color:#cfd8dc; font-size:11px; }
+        .tm-toast-icon { display: none; }
+        .tm-toast-title { font-weight: 600; color: var(--tm-strong); }
+        .tm-toast.tone-danger .tm-toast-title { color: var(--tm-danger); }
+        .tm-toast.tone-urgent .tm-toast-title, .tm-toast.tone-warn .tm-toast-title { color: var(--tm-warning); }
+        .tm-toast-close { grid-column: 2; grid-row: 1; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px;
+            background: transparent; color: var(--tm-muted); cursor: pointer; }
+        .tm-toast-close:hover { background: var(--tm-bg-hover); color: var(--tm-strong); }
+        .tm-toast-body { grid-column: 1 / -1; display: flex; flex-direction: column; }
+        .tm-toast-line { color: var(--tm-muted); font-size: 12.5px; }
+        .tm-toast-line.strong { color: var(--tm-text); font-weight: 500; }
+        .tm-toast-line.time { color: var(--tm-text); }
         `;
         document.head.appendChild(s);
-    }
-
-    // =========================================================
-    // TEXTE CLIGNOTANT "EN COURS"
-    // =========================================================
-    function addBlinkText() {
-        // Déjà présent ?
-        if (document.getElementById('texte-clignotant-container')) return;
-
-        // Champ "Réponse à la demande" (zone éditable)
-        const selectors = [
-            '.o_field_html[name="request_answer"] .note-editable.odoo-editor-editable',
-            '.o_field_html[name="request_answer"] .note-editable',
-            '[name="request_answer"] .note-editable',
-            '.o_field_widget[name="request_answer"] .odoo-editor-editable',
-            'div#request_answer.note-editable',
-            'div.note-editable.odoo-editor-editable[contenteditable="true"]'
-        ];
-
-        let reponseField = null;
-        for (const selector of selectors) {
-            reponseField = document.querySelector(selector);
-            if (reponseField) break;
-        }
-        if (!reponseField) return;
-
-        // Indicateur simple et propre — même balise que le marqueur enregistré en base
-        const p = document.createElement('p');
-        p.id = 'texte-clignotant-container';
-        p.setAttribute('data-tm-traitement', '1');
-        p.style.cssText = 'margin:0 0 6px 0;color:#7c3aed;font-weight:600;';
-        p.textContent = "Traitement de l'appel en cours...";
-
-        if (reponseField.firstChild) reponseField.insertBefore(p, reponseField.firstChild);
-        else reponseField.appendChild(p);
-    }
-
-    function removeBlinkText() {
-        // Retire le marqueur quel que soit son support (id injecté ou attribut persisté)
-        document.getElementById('texte-clignotant-container')?.remove();
-        document.querySelectorAll('[data-tm-traitement="1"]').forEach(el => el.remove());
-        // L'attribut data-* peut avoir été supprimé par Odoo au rechargement : retirer aussi par texte
-        const editor = document.querySelector(
-            '.o_field_html[name="request_answer"], [name="request_answer"], div#request_answer'
-        );
-        if (editor) {
-            editor.querySelectorAll('p').forEach(p => {
-                if (isMarkerText(p.textContent)) p.remove();
-            });
-        }
-    }
-
-    // Normalise un texte pour comparer le marqueur (insensible à la casse, apostrophes, espaces)
-    function normalizeMarkerText(t) {
-        return (t || '').toLowerCase().replace(/[\u2019']/g, "'").replace(/\s+/g, ' ').trim();
-    }
-    // Le texte correspond-il au marqueur "Traitement de l'appel en cours..." ?
-    function isMarkerText(t) {
-        return normalizeMarkerText(t).includes("traitement de l'appel en cours");
-    }
-
-    // Le ticket affiché est-il "en traitement" ? (marqueur présent dans l'éditeur de réponse)
-    function isTraitementActive() {
-        if (document.getElementById('texte-clignotant-container')) return true;
-        const editor = document.querySelector(
-            '.o_field_html[name="request_answer"], [name="request_answer"], div#request_answer'
-        );
-        if (editor) {
-            // Détection par attribut dédié...
-            if (editor.querySelector('[data-tm-traitement="1"]')) return true;
-            // ...ou par texte (l'attribut data-* peut être supprimé par le sanitizer Odoo)
-            if (isMarkerText(editor.textContent)) return true;
-        }
-        return false;
-    }
-
-    // =========================================================
-    // BOUTON TRAITER L'APPEL — LOGIQUE PRINCIPALE
-    // =========================================================
-    function updateTraiterBtn(btn, isTreating) {
-        const phoneIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6.62 10.79a15.15 15.15 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.24.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2z"/></svg>';
-        const pauseIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5h3v14H8zM13 5h3v14h-3z"/></svg>';
-        btn.id = 'btn-traiter-appel';
-        btn.className = '';            // pas de classe en-cours/en-attente => aucun effet de couleur / clignotement
-        if (isTreating) {
-            btn.innerHTML = pauseIcon + 'Mettre en attente';
-            btn.style.backgroundColor = '#64748b';
-        } else {
-            btn.innerHTML = phoneIcon + "Traiter l'appel";
-            btn.style.backgroundColor = '#0d9488';
-        }
-    }
-
-    // Marqueur "en traitement" géré directement en base (indépendant de l'éditeur Owl).
-    const TM_MARKER_TEXT = "Traitement de l'appel en cours...";
-    const TM_MARKER_HTML = '<p data-tm-traitement="1" style="margin:0 0 6px 0;color:#7c3aed;font-weight:600;">' + TM_MARKER_TEXT + '</p>';
-
-    async function setTraitementMarker(ticketId, add) {
-        try {
-            const rec = await odooRead('helpdesk.ticket', Number(ticketId), ['request_answer']);
-            let html = (rec && typeof rec.request_answer === 'string') ? rec.request_answer : '';
-            // Toujours retirer tout marqueur existant (évite les doublons empilés)
-            html = stripTraitementMarkerHtml(html);
-            if (add) html = TM_MARKER_HTML + html;
-            await odooWrite('helpdesk.ticket', Number(ticketId), { request_answer: html });
-            return true;
-        } catch (e) {
-            console.warn('[TRAITER] Écriture marqueur échouée:', e);
-            return false;
-        }
-    }
-
-    // Retire de l'HTML tous les marqueurs de traitement, par attribut ET par texte.
-    // (Odoo peut supprimer l'attribut data-* : on s'appuie alors sur le texte.)
-    function stripTraitementMarkerHtml(html) {
-        if (!html) return '';
-        try {
-            const doc = new DOMParser().parseFromString('<div id="__tm_wrap">' + html + '</div>', 'text/html');
-            const wrap = doc.getElementById('__tm_wrap');
-            if (!wrap) throw new Error('no wrap');
-            wrap.querySelectorAll('p').forEach(p => {
-                if (p.getAttribute('data-tm-traitement') === '1' || isMarkerText(p.textContent)) {
-                    p.remove();
-                }
-            });
-            return wrap.innerHTML;
-        } catch (e) {
-            // Fallback regex si DOMParser indisponible
-            return html.replace(/<p[^>]*data-tm-traitement="1"[^>]*>[\s\S]*?<\/p>/gi, '');
-        }
-    }
-
-    // Restaure l'état du bouton de façon fiable en lisant la base (source de vérité).
-    // Indépendant du timing de rendu de l'éditeur et du nettoyage des attributs data-*.
-    async function restoreTraiterBtnState(btn, ticketId) {
-        try {
-            const rec = await odooRead('helpdesk.ticket', Number(ticketId), ['request_answer']);
-            const html = (rec && typeof rec.request_answer === 'string') ? rec.request_answer : '';
-            const active = isMarkerText(html);
-            updateTraiterBtn(btn, active);
-            saveState(ticketId, active ? 'running' : 'stopped');
-        } catch (e) {
-            // En cas d'échec API, on garde l'état déduit du DOM/localStorage
-        }
-    }
-
-    // Délégation globale du clic sur le bouton "Traiter l'appel".
-    // Odoo (Owl) recrée fréquemment la barre de statut : un écouteur attaché directement
-    // au bouton disparaît avec lui, ce qui obligeait à cliquer plusieurs fois.
-    // En écoutant sur document (phase capture), le clic est toujours capté, quel que soit
-    // le nombre de fois où le bouton est recréé.
-    let _traiterDelegationHooked = false;
-    function hookTraiterDelegation() {
-        if (_traiterDelegationHooked) return;
-        _traiterDelegationHooked = true;
-        document.addEventListener('click', (e) => {
-            const target = e.target instanceof Element ? e.target : null;
-            if (!target) return;
-            // closest() gère aussi les clics sur l'icône SVG à l'intérieur du bouton
-            const btn = target.closest('#btn-traiter-appel');
-            if (!btn) return;
-            e.preventDefault();
-            e.stopPropagation();
-            handleTraiterClick(btn);
-        }, true);
-    }
-
-    async function handleTraiterClick(btn) {
-        // Anti-verrou bloqué : si un traitement précédent est resté "en cours" plus de 8s
-        // (ex: appel réseau interrompu), on considère le verrou périmé et on repart.
-        // Sinon un clic perdu obligeait à recharger la page (F5) pour réutiliser le bouton.
-        if (state.isProcessing) {
-            if (Date.now() - (state.traiterStartedAt || 0) < 8000) return;
-        }
-        state.isProcessing = true;
-        state.traiterStartedAt = Date.now();
-        if (btn) btn.disabled = true;
-
-        const ticketId = getTicketIdFromPage();
-        if (!ticketId) {
-            alert("Impossible de trouver l'ID du ticket. Assurez-vous d'être sur un formulaire de ticket.");
-            state.isProcessing = false;
-            btn.disabled = false;
-            return;
-        }
-
-        try {
-            const textPresent = isTraitementActive();
-
-            if (textPresent) {
-                // METTRE EN ATTENTE : retirer le marqueur (DOM + base)
-                removeBlinkText();
-                saveState(ticketId, 'stopped');
-                updateTraiterBtn(btn, false);
-                await setTraitementMarker(ticketId, false);
-            } else {
-                // TRAITER L'APPEL : s'assigner le ticket + poser le marqueur
-
-                // 1) Affichage immédiat dans l'éditeur (visuel) — survit aussi à une sauvegarde manuelle
-                addBlinkText();
-
-                // 2) S'assigner le ticket côté serveur (sans déclencher la sauvegarde du formulaire Owl)
-                await odooCall('helpdesk.ticket', 'assign_ticket_to_self', [Number(ticketId)]);
-
-                // 2b) Si le bouton natif "Me l'assigner" est affiché (UI v19), le cliquer automatiquement
-                //     pour refléter l'assignation dans le formulaire.
-                clickAssignSelfIfPresent();
-
-                // 3) Poser le marqueur directement en base (persistant, visible par tous)
-                const ok = await setTraitementMarker(ticketId, true);
-                if (!ok) {
-                    alert("L'enregistrement a échoué. Vérifie que tu es bien connecté.");
-                }
-
-                saveState(ticketId, 'running');
-                updateTraiterBtn(btn, true);
-            }
-        } catch (e) {
-            console.error('[TRAITER] Erreur:', e);
-            alert('Erreur lors du traitement de l\'appel: ' + e.message);
-        } finally {
-            await wait(200);
-            // Réactiver le bouton actuellement présent dans le DOM (il a pu être recréé par Owl)
-            const liveBtn = document.getElementById('btn-traiter-appel') || btn;
-            if (liveBtn) liveBtn.disabled = false;
-            state.isProcessing = false;
-        }
-    }
-
-    // =========================================================
-    // BOUTON "TRAITER L'APPEL" — AJOUT
-    // =========================================================
-    function addTraiterButton() {
-        console.log('[BOUTON] Ajout du bouton');
-        if (!isTicketForm()) { removeTraiterButton(); return; }
-
-        const statusbarSelectors = [
-            '.o_statusbar_buttons',
-            '.o_form_statusbar .o_statusbar_buttons',
-            '.o_control_panel_actions',
-            '.o_cp_action_menus',
-            '.o_control_panel .o_cp_buttons'
-        ];
-        let statusbar = null;
-        for (const selector of statusbarSelectors) {
-            statusbar = document.querySelector(selector);
-            if (statusbar) {
-                console.log('[BOUTON] Conteneur trouvé:', selector);
-                break;
-            }
-        }
-        if (!statusbar) {
-            console.log('[BOUTON] ❌ Pas de conteneur');
-            return;
-        }
-        if (document.getElementById('btn-traiter-appel')) {
-            console.log('[BOUTON] Bouton déjà présent');
-            return;
-        }
-
-        // Vérifier si le ticket est déjà "en traitement" (pour restaurer l'état du bouton)
-        // 1) Estimation immédiate via DOM + localStorage (évite le clignotement visuel)
-        const ticketIdForState = getTicketIdFromPage();
-        const textPresent = isTraitementActive() || (loadState(ticketIdForState) === 'running');
-        console.log('[BOUTON] En traitement (estimation) :', textPresent);
-
-        const btn = document.createElement('button');
-        btn.id = 'btn-traiter-appel';
-        btn.type = 'button';
-        btn.style.color = 'white';
-        btn.style.border = 'none';
-        btn.style.padding = '6px 12px';
-        btn.style.borderRadius = '3px';
-        btn.style.cursor = 'pointer';
-        btn.style.fontWeight = '500';
-        btn.style.display = 'inline-flex';
-        btn.style.alignItems = 'center';
-
-        // Mettre à jour le bouton selon la présence du texte
-        updateTraiterBtn(btn, textPresent);
-
-        // Le clic est géré par une délégation globale (hookTraiterDelegation), pas par un
-        // écouteur attaché ici : ainsi le clic fonctionne même quand Owl recrée le bouton.
-        hookTraiterDelegation();
-
-        statusbar.insertBefore(btn, statusbar.firstChild);
-
-        // 2) Correction fiable de l'état via lecture de la base (source de vérité).
-        //    Gère le cas où l'éditeur n'est pas encore rendu et où Odoo a nettoyé l'attribut data-*.
-        if (ticketIdForState) {
-            restoreTraiterBtnState(btn, ticketIdForState);
-        }
-        console.log('[BOUTON] ✅ Bouton inséré');
-        console.log('[BOUTON] Bouton dans le DOM:', document.getElementById('btn-traiter-appel'));
-    }
-
-    function removeTraiterButton() {
-        document.getElementById('btn-traiter-appel')?.remove();
-        removeBlinkText();
-    }
-
-    // =========================================================
-    // DÉTECTION CHANGEMENT DE STAGE POUR "METTRE EN ATTENTE"
-    // =========================================================
-    let lastStageText = '';
-
-    function watchStageChanges() {
-        // Surveiller les changements de stage dans la statusbar
-        const statusbarSelectors = [
-            '.o_statusbar_status',
-            '.o_form_statusbar .o_statusbar_status',
-            '.o_statusbar .o_statusbar_status'
-        ];
-
-        let statusbar = null;
-        for (const selector of statusbarSelectors) {
-            statusbar = document.querySelector(selector);
-            if (statusbar) break;
-        }
-
-        if (!statusbar) return;
-
-        // Trouver le stage actif
-        const activeStage = statusbar.querySelector('.o_active, button[aria-pressed="true"], .o_arrow_button_current');
-        if (!activeStage) return;
-
-        const currentStageText = (activeStage.textContent || '').trim().toLowerCase();
-
-        // Si le stage a changé et qu'il contient "attente" ou "pending"
-        if (currentStageText !== lastStageText) {
-            if (currentStageText.includes('attente') || currentStageText.includes('pending')) {
-                // Supprimer l'animation avec bulle bleue
-                removeBlinkText();
-
-                // Réinitialiser le bouton
-                const btn = document.getElementById('btn-traiter-appel');
-                if (btn) {
-                    updateTraiterBtn(btn, false, true);
-                }
-                const ticketId = getTicketIdFromPage();
-                if (ticketId) saveState(ticketId, 'paused');
-            }
-
-            lastStageText = currentStageText;
-        }
     }
 
     // =========================================================
@@ -2907,332 +1865,6 @@
         }
     }
 
-    function getOdooActionService() {
-        try {
-            return window.__owl__?.apps?.values?.()?.next?.()?.value?.env?.services?.action || null;
-        } catch (_) {
-            return null;
-        }
-    }
-
-    async function waitForTimerStopped(ticketId, timeoutMs = 10000) {
-        const deadline = Date.now() + timeoutMs;
-        while (Date.now() < deadline) {
-            const info = await odooRead('helpdesk.ticket', Number(ticketId), ['is_timer_running']);
-            if (info && !info.is_timer_running) return true;
-            await wait(400);
-        }
-        return false;
-    }
-
-    async function autoConfirmTimesheetDialog(timeoutMs = 10000) {
-        const deadline = Date.now() + timeoutMs;
-        while (Date.now() < deadline) {
-            const modal = Array.from(document.querySelectorAll('.o_timer_dialog, .modal.show, .o_dialog, .o_dialog_container .modal')).find(el => {
-                if (!(el instanceof HTMLElement)) return false;
-                if (el.offsetParent === null && !el.classList.contains('show')) return false;
-                const txt = (el.textContent || '').toLowerCase();
-                return /timesheet|feuille de temps|time spent|temps pass[eé]|minutes? spent|heures? pass[eé]es?|timer/.test(txt);
-            });
-
-            if (modal) {
-                const confirmBtn = Array.from(modal.querySelectorAll('footer button, .modal-footer button, .o_form_button_save, button.btn-primary, button')).find(btn => {
-                    if (!(btn instanceof HTMLButtonElement) || btn.disabled) return false;
-                    const txt = (btn.textContent || '').trim().toLowerCase();
-                    return btn.classList.contains('btn-primary') ||
-                        btn.classList.contains('o_form_button_save') ||
-                        /^(save|enregistrer|valider|cr[eé]er|create|confirmer|ok|fermer|close)$/.test(txt);
-                });
-                if (confirmBtn) {
-                    confirmBtn.click();
-                    await wait(400);
-                    return true;
-                }
-            }
-            await wait(150);
-        }
-        return false;
-    }
-
-    async function manualStopTimerFallback(ticketId) {
-        dispatchAltShortcut('z', 'KeyZ');
-        await wait(200);
-
-        let dialog = null;
-        for (let i = 0; i < 8; i++) {
-            dialog = document.querySelector('.o_timer_dialog, .modal.show, .o_dialog');
-            if (dialog) break;
-            await wait(150);
-        }
-
-        if (dialog) await wait(400);
-
-        dispatchAltShortcut('q', 'KeyQ');
-        await wait(300);
-
-        if (document.querySelector('.o_timer_dialog, .modal.show, .o_dialog')) {
-            dispatchAltShortcut('q', 'KeyQ');
-            await wait(300);
-        }
-
-        const saveBtn = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
-        if (saveBtn && !saveBtn.disabled) {
-            saveBtn.click();
-            await wait(250);
-        }
-
-        dispatchAltShortcut('q', 'KeyQ');
-        await wait(250);
-
-        return waitForTimerStopped(ticketId, 5000);
-    }
-
-    async function executeOdooStopAction(ticketId) {
-        const methods = ['stop_ticket', 'action_timer_stop'];
-        for (const method of methods) {
-            try {
-                const action = await odooCall('helpdesk.ticket', method, [Number(ticketId)]);
-                if (action && typeof action === 'object' && (action.target === 'new' || action.res_model || action.views)) {
-                    const actionService = getOdooActionService();
-                    if (actionService?.doAction) {
-                        try { await actionService.doAction(action); } catch (_) {}
-                    }
-                }
-
-                await wait(300);
-                await autoConfirmTimesheetDialog(4000);
-
-                const stopped = await waitForTimerStopped(ticketId, 4000);
-                if (stopped) return true;
-            } catch (e) {
-                console.warn('[Clôture] Echec méthode stop', method, e);
-            }
-        }
-
-        return manualStopTimerFallback(ticketId);
-    }
-
-    async function stopTimerUsingOdooFlow(ticketId) {
-        return executeOdooStopAction(ticketId);
-    }
-
-    async function finalizeTimerAfterClosure(ticketId = null) {
-        const targetTicketId = ticketId || sessionStorage.getItem('pendingTimerStopAfterClosure') || getTicketIdFromPage();
-        if (!targetTicketId) return false;
-        if (state.timerStopRunning) return false;
-
-        const st = await getEffectiveTimerState(targetTicketId);
-        if (st !== 'running' && st !== 'paused') {
-            sessionStorage.removeItem('pendingTimerStopAfterClosure');
-            return false;
-        }
-
-        state.timerStopRunning = true;
-        try {
-            removeBlinkText();
-            const btn = document.getElementById('btn-traiter-appel');
-            if (btn) updateTraiterBtn(btn, false, false);
-
-            const stopped = await stopTimerUsingOdooFlow(targetTicketId);
-            if (stopped) {
-                saveState(targetTicketId, 'stopped');
-                state.timerStoppedForTicket = String(targetTicketId);
-                state.timerStoppedAt = Date.now();
-                sessionStorage.removeItem('pendingTimerStopAfterClosure');
-                await saveForm();
-                if (!_reasonPanelOpen && !_reasonPanelDone && !document.getElementById('odoo-reason-overlay')) {
-                    scheduleReasonPanel(250, 40);
-                }
-                return true;
-            }
-            return false;
-        } finally {
-            state.timerStopRunning = false;
-        }
-    }
-
-    // =========================================================
-    // SÉQUENCE DE CLÔTURE — VIA RACCOURCIS (fiable)
-    // =========================================================
-    async function stopTimerAndTimesheetViaShortcuts(ticketId) {
-        const domSt = domTimerState();
-        if (domSt === 'stopped' || domSt === 'unknown') return false;
-
-        simulerRaccourciTimer();
-        await wait(150);
-
-        let ficheTemps = null;
-        let tentatives = 0;
-        while (!ficheTemps && tentatives < 4) {
-            ficheTemps = document.querySelector('.o_timer_dialog');
-            if (!ficheTemps) {
-                await wait(150);
-                tentatives++;
-            }
-        }
-
-        if (ficheTemps) await wait(400);
-
-        simulerRaccourciStop();
-        await wait(250);
-
-        if (document.querySelector('.o_timer_dialog')) {
-            simulerRaccourciStop();
-            await wait(250);
-        }
-
-        // Sauvegarde si bouton présent
-        const btnEnregistrer = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
-        if (btnEnregistrer && !btnEnregistrer.disabled) {
-            btnEnregistrer.click();
-            await wait(200);
-        }
-
-        // Dernier Q de sécurité
-        simulerRaccourciStop();
-        await wait(300);
-
-        const stopped = await waitForDomTimerState('stopped', 6000);
-        if (stopped) {
-            saveState(ticketId, 'stopped');
-            return true;
-        }
-        return false;
-    }
-
-    // Renvoie les éléments de stage "actif" (bouton courant du statusbar). Vide si le
-    // formulaire n'est pas encore chargé — ce qui permet de distinguer "pas chargé"
-    // de "réellement dans un stage ouvert".
-    function getActiveStageEls() {
-        return Array.from(document.querySelectorAll(
-            '.o_arrow_button_current, .o_statusbar_status .btn-primary, .o_statusbar_status button[aria-pressed="true"]'
-        ));
-    }
-
-    // Tickets observés dans un stage NON résolu (clé = id ticket). Sert à détecter une
-    // vraie transition "ouvert -> résolu" plutôt que la simple consultation d'un ticket déjà clos.
-    const _seenOpenTickets = new Set();
-
-    function startClosureWatcher() {
-        setInterval(async () => {
-            const ticketId = getTicketIdFromPage();
-            if (!ticketId) return;
-            const idKey = String(ticketId);
-
-            // Lire le stage actif réellement rendu
-            const stageEls = getActiveStageEls();
-            if (stageEls.length === 0) return; // formulaire pas (encore) chargé : ne rien décider
-
-            const resolved = stageEls.some(el => isResolvedStageText(el.textContent || ''));
-
-            if (!resolved) {
-                // Ticket bien chargé et dans un stage ouvert -> mémoriser pour détecter une future clôture
-                _seenOpenTickets.add(idKey);
-                return;
-            }
-
-            if (state.closureRunning) return;
-
-            // Le panneau ne doit s'ouvrir que sur une vraie transition (ouvert -> résolu)
-            // ou via une intention de clôture explicite (clic bouton "Clôturer").
-            const wasOpenBefore = _seenOpenTickets.has(idKey);
-            const hadCloseIntent = sessionStorage.getItem('pendingReasonPanelAfterClosure') === '1'
-                || sessionStorage.getItem('pendingReasonPanel') === '1';
-
-            state.closureRunning = true;
-
-            try {
-                // Nettoyage du marqueur (sûr quel que soit le cas) : si encore actif sur un ticket résolu
-                const wasActive = isTraitementActive() || loadState(ticketId) !== 'stopped';
-                removeBlinkText();
-                if (wasActive) {
-                    saveState(ticketId, 'stopped');
-                    setTraitementMarker(ticketId, false);
-                    const btn = document.getElementById('btn-traiter-appel');
-                    if (btn) updateTraiterBtn(btn, false);
-                }
-
-                // Ouvrir le panneau raisons UNIQUEMENT sur transition réelle / clôture explicite
-                if (wasOpenBefore || hadCloseIntent) {
-                    _seenOpenTickets.delete(idKey);
-                    sessionStorage.removeItem('pendingReasonPanelAfterClosure');
-                    scheduleReasonPanel(250, 40);
-                }
-            } catch (e) {
-                // Erreur silencieuse
-            } finally {
-                setTimeout(() => { state.closureRunning = false; }, 1500);
-            }
-        }, 1000);
-    }
-
-    // =========================================================
-    // BOUTON CLÔTURER — STYLE + HOOK PANNEAU
-    // =========================================================
-    function styleCloseButton() {
-        const btn = document.querySelector('button[name="close_ticket"][type="object"]');
-        if (!btn || btn.dataset.reasonPanelHooked) return;
-        btn.dataset.reasonPanelHooked = '1';
-        btn.addEventListener('click', () => {
-            const ticketId = getTicketIdFromPage();
-            if (ticketId) {
-                sessionStorage.setItem('pendingReasonPanelAfterClosure', '1');
-                sessionStorage.setItem('pendingReasonTicketId', String(ticketId));
-                _reasonPanelTicketId = String(ticketId);
-
-                // Protection contre les resets : marquer que le panneau doit rester ouvert
-                sessionStorage.setItem('reasonPanelForceOpen', '1');
-                sessionStorage.setItem('reasonPanelProtectedTicketId', String(ticketId));
-
-                // Ouvrir immédiatement le panneau des raisons
-                setTimeout(() => {
-                    if (!_reasonPanelOpen && !document.getElementById('odoo-reason-overlay')) {
-                        // Reset temporaire du flag _reasonPanelDone pour permettre l'ouverture
-                        const wasReasonPanelDone = _reasonPanelDone;
-                        _reasonPanelDone = false;
-                        openReasonPanel();
-                        // Si l'ouverture a échoué, restaurer l'état précédent
-                        if (!document.getElementById('odoo-reason-overlay')) {
-                            _reasonPanelDone = wasReasonPanelDone;
-                        }
-                    }
-                }, 50);
-            } else {
-                sessionStorage.removeItem('pendingReasonPanelAfterClosure');
-                sessionStorage.removeItem('reasonPanelForceOpen');
-                sessionStorage.removeItem('reasonPanelProtectedTicketId');
-            }
-            // Conserver aussi le chemin normal (robuste aux rerenders Odoo)
-            sessionStorage.setItem('pendingReasonPanel', '1');
-            scheduleReasonPanel(250, 40);
-        });
-    }
-
-    function hookResolvedStageButtons() {
-        document.querySelectorAll('.o_statusbar_status button, .o_arrow_button').forEach(btn => {
-            if (!(btn instanceof HTMLButtonElement) || btn.dataset.timerClosureHooked === '1') return;
-            if (!isResolvedStageText(btn.textContent || '')) return;
-
-            btn.dataset.timerClosureHooked = '1';
-            btn.addEventListener('click', () => {
-                const ticketId = getTicketIdFromPage();
-                if (!ticketId) return;
-
-                sessionStorage.setItem('pendingTimerStopAfterClosure', String(ticketId));
-                sessionStorage.setItem('pendingReasonTicketId', String(ticketId));
-                _reasonPanelTicketId = String(ticketId);
-
-                setTimeout(() => {
-                    if (!document.getElementById('odoo-reason-overlay')) {
-                        finalizeTimerAfterClosure(ticketId).catch(e => {
-                            console.warn('[Clôture] Stop timer après clic statut échoué:', e);
-                        });
-                    }
-                }, 1800);
-            });
-        });
-    }
-
     // =========================================================
     // BOUTON INSÉRER INITIALES
     // =========================================================
@@ -3243,7 +1875,8 @@
         const btn = document.createElement('button');
         btn.id = 'btn-inserer-initiales';
         btn.type = 'button';
-        btn.textContent = 'Insérer initiales';
+        btn.className = 'tm-btn';
+        btn.innerHTML = '<i class="fa fa-pencil" aria-hidden="true"></i>Insérer initiales';
 
         btn.addEventListener('click', () => {
             // Récupérer le nom de l'utilisateur connecté
@@ -3399,8 +2032,6 @@
     // =========================================================
     // BOUTON DÉSASSIGNATION (croix)
     // =========================================================
-    // BOUTON DÉSASSIGNATION (croix)
-    // =========================================================
     function addClearAssignButton() {
         // Uniquement sur le formulaire d'un ticket (pas dans la liste où "Assigné à" apparaît aussi)
         if (!isTicketForm()) { document.querySelectorAll('.clear-assign-button').forEach(b => b.remove()); return; }
@@ -3419,8 +2050,9 @@
         const btn = document.createElement('button');
         btn.className = 'clear-assign-button';
         btn.type = 'button';
-        btn.innerHTML = '❌';
+        btn.innerHTML = '<i class="fa fa-times" aria-hidden="true"></i>';
         btn.title = 'Désassigner';
+        btn.setAttribute('aria-label', 'Désassigner');
 
         btn.addEventListener('click', async (e) => {
             e.preventDefault();
@@ -3444,642 +2076,6 @@
         field.appendChild(btn);
     }
 
-
-    // =========================================================
-    // PANNEAU ÉTIQUETTES MATÉRIEL / LOGICIEL
-    // =========================================================
-    let _reasonPanelOpen = false;
-    let _reasonPanelDone = false; // une seule ouverture par clôture
-    let _reasonPanelTicketId = null;
-
-    function scheduleReasonPanel(retryMs = 400, maxTries = 15) {
-        if (_reasonPanelOpen || _reasonPanelDone) return;
-        if (document.getElementById('odoo-reason-overlay')) return;
-
-        // Vérifier si le panneau a déjà été complété pour ce ticket
-        const currentTicketId = getTicketIdFromPage();
-        if (currentTicketId && sessionStorage.getItem(`reasonPanelCompleted_${currentTicketId}`) === '1') {
-            return;
-        }
-
-        // Si le panneau est protégé (ouvert immédiatement au clic), ne pas le programmer
-        if (sessionStorage.getItem('reasonPanelForceOpen') === '1') return;
-
-        _reasonPanelTicketId = getTicketIdFromPage() || sessionStorage.getItem('pendingReasonTicketId') || sessionStorage.getItem('pendingTimerStopAfterClosure') || _reasonPanelTicketId;
-        if (_reasonPanelTicketId) sessionStorage.setItem('pendingReasonTicketId', String(_reasonPanelTicketId));
-        sessionStorage.setItem('pendingReasonPanel', '1');
-        let tries = 0;
-        const attempt = () => {
-            if (_reasonPanelOpen || _reasonPanelDone) return;
-            if (document.getElementById('odoo-reason-overlay')) {
-                sessionStorage.removeItem('pendingReasonPanel');
-                return;
-            }
-            if (sessionStorage.getItem('pendingReasonPanel') !== '1') return;
-            // Vérifier à nouveau si le panneau est protégé ou déjà complété
-            if (sessionStorage.getItem('reasonPanelForceOpen') === '1') {
-                sessionStorage.removeItem('pendingReasonPanel');
-                return;
-            }
-            const ticketId = getTicketIdFromPage();
-            if (ticketId && sessionStorage.getItem(`reasonPanelCompleted_${ticketId}`) === '1') {
-                sessionStorage.removeItem('pendingReasonPanel');
-                return;
-            }
-            tries++;
-            openReasonPanel();
-            if (!document.getElementById('odoo-reason-overlay')) {
-                if (tries < maxTries) setTimeout(attempt, retryMs);
-                else sessionStorage.removeItem('pendingReasonPanel');
-            } else {
-                sessionStorage.removeItem('pendingReasonPanel');
-            }
-        };
-        setTimeout(attempt, 100);
-    }
-
-    let _reasonListsCache = null;
-
-    async function fetchReasonLists() {
-        if (_reasonListsCache) return _reasonListsCache;
-        // Retourne { HARDWARE: [{id, name}], SOFTWARE: [{id, name}], hwRel, swRel }
-        // Fallback noms si l'API échoue
-        const HW_FALLBACK = ['TMH/TMJ','Imprimante A4','SSV','TPE','Serveur','Scanner Documents','Terminal D\'inventaire','Etiquettes électronique','Lecteur code barre','Ecran','Caméras','Imprimante etiquettes','Poste Client','FAX','Reseau','Borne file d\'attente','BAD','Robot','Antivirus','Borne de prix','Monnayeur','PAX','Onduleur'];
-        const SW_FALLBACK = ['Commandes','Télétransmisson / Rejets','Caisse / Synthese','Facturation','Droits Opérateurs / Options','Stocks / Inventaires','Clients','Robot','Etiquettes','Modules','Produits','Autres','Paramètres','Winperformance','WAP','Statistiques'];
-        let HARDWARE = HW_FALLBACK.map(n => ({ id: null, name: n }));
-        let SOFTWARE = SW_FALLBACK.map(n => ({ id: null, name: n }));
-        let hwRel = null, swRel = null;
-        try {
-            const fields = await odooRpc('helpdesk.ticket', 'fields_get', [['material_reason_tag_ids','software_reason_tag_ids'], ['relation','string']]) || {};
-            hwRel = fields.material_reason_tag_ids?.relation || null;
-            swRel = fields.software_reason_tag_ids?.relation || null;
-            if (hwRel) {
-                const recs = await odooRpc(hwRel, 'search_read', [[], ['id','name'], 0, 2000, 'name asc']) || [];
-                if (recs.length) HARDWARE = recs.map(r => ({ id: r.id, name: String(r.name||'').trim() })).filter(r => r.name);
-            }
-            if (swRel) {
-                const recs = await odooRpc(swRel, 'search_read', [[], ['id','name'], 0, 2000, 'name asc']) || [];
-                if (recs.length) SOFTWARE = recs.map(r => ({ id: r.id, name: String(r.name||'').trim() })).filter(r => r.name);
-            }
-        } catch (_) {}
-        _reasonListsCache = { HARDWARE, SOFTWARE, hwRel, swRel };
-        return _reasonListsCache;
-    }
-
-    function normalizeReasonName(s) {
-        return String(s || '')
-            .toLowerCase()
-            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-            .replace(/[\u2019']/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-    }
-
-    async function openReasonPanel() {
-        if (_reasonPanelOpen || document.getElementById('odoo-reason-overlay')) return;
-
-        // Vérifier si le panneau a déjà été complété pour ce ticket
-        const currentTicketId = getTicketIdFromPage();
-        if (currentTicketId && sessionStorage.getItem(`reasonPanelCompleted_${currentTicketId}`) === '1') {
-            return;
-        }
-
-        // Vérifier si le panneau est protégé contre les resets
-        const isProtected = sessionStorage.getItem('reasonPanelForceOpen') === '1';
-        const protectedTicketId = sessionStorage.getItem('reasonPanelProtectedTicketId');
-
-        // Si le panneau est protégé et on est sur le bon ticket, ignorer _reasonPanelDone
-        if (!isProtected && _reasonPanelDone) return;
-
-        // Si on est sur un ticket différent de celui protégé, respecter _reasonPanelDone
-        if (isProtected && protectedTicketId && currentTicketId && protectedTicketId !== currentTicketId && _reasonPanelDone) return;
-
-        _reasonPanelOpen = true;
-
-        let styleEl = null;
-        let overlay = null;
-        try {
-            const { HARDWARE, SOFTWARE } = await fetchReasonLists();
-            const themeKey = 'reasonPanelTheme';
-            const savedTheme = localStorage.getItem(themeKey) || 'dark';
-
-            // Styles du panneau
-            styleEl = document.createElement('style');
-            styleEl.id = 'odoo-reason-style';
-            styleEl.textContent = `
-        #odoo-reason-panel {
-            --bg:#0e1016; --elev:#171a24; --card:#1b1f2b; --text:#eef1f8; --muted:#9aa3b8;
-            --accent:#5b8cff; --accent-soft:rgba(91,140,255,.16); --hw:#5b8cff; --sw:#22c79a;
-            --hw-soft:rgba(91,140,255,.16); --sw-soft:rgba(34,199,154,.16);
-            --danger:#ef5350; --border:#272c3a; --chip:#1f2431;
-        }
-        #odoo-reason-panel.theme-light {
-            --bg:#f4f6fb; --elev:#ffffff; --card:#ffffff; --text:#15203a; --muted:#5c6780;
-            --accent:#2563eb; --accent-soft:rgba(37,99,235,.12); --hw:#2563eb; --sw:#0ea36f;
-            --hw-soft:rgba(37,99,235,.10); --sw-soft:rgba(14,163,111,.12);
-            --danger:#dc2626; --border:#e3e8f2; --chip:#f3f5fa;
-        }
-        #odoo-reason-overlay { backdrop-filter:blur(3px); }
-        #odoo-reason-panel { width:min(880px,94vw); max-height:88vh; border-radius:18px; overflow:hidden;
-            box-shadow:0 24px 70px rgba(0,0,0,.45); display:flex; flex-direction:column;
-            font-family:Inter,system-ui,-apple-system,sans-serif; border:1px solid var(--border); background:var(--bg); }
-
-        /* Header */
-        #odoo-reason-panel .hdr { background:var(--elev); padding:14px 18px; display:flex; align-items:center; gap:12px;
-            color:var(--text); border-bottom:1px solid var(--border); flex-wrap:wrap; }
-        #odoo-reason-panel .title { font-size:15px; font-weight:700; letter-spacing:.2px; display:flex; align-items:center; gap:8px; margin-right:auto; }
-        #odoo-reason-panel .title::before { content:'🏷️'; font-size:16px; }
-        #odoo-reason-panel .search { flex:1 1 220px; min-width:180px; max-width:340px; position:relative; order:3; }
-        #odoo-reason-panel .search input { width:100%; box-sizing:border-box; padding:8px 12px 8px 32px; border-radius:10px;
-            border:1px solid var(--border); background:var(--chip); color:var(--text); font-size:13px; outline:none; }
-        #odoo-reason-panel .search input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
-        #odoo-reason-panel .search::before { content:'🔍'; position:absolute; left:10px; top:50%; transform:translateY(-50%); font-size:12px; opacity:.7; }
-        #odoo-reason-panel .theme-toggle { border:1px solid var(--border); background:var(--chip); color:var(--text);
-            border-radius:10px; padding:7px 12px; cursor:pointer; font-size:12px; font-weight:600; }
-        #odoo-reason-panel .theme-toggle:hover { border-color:var(--accent); }
-        #odoo-reason-panel .close-btn { border:1px solid var(--border); background:transparent; color:var(--danger);
-            border-radius:10px; width:34px; height:34px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-size:18px; }
-        #odoo-reason-panel .close-btn:hover { background:var(--danger); color:#fff; border-color:var(--danger); }
-
-        /* Body */
-        #odoo-reason-panel .body { background:var(--bg); color:var(--text); display:grid; grid-template-columns:1fr 1fr;
-            gap:14px; padding:16px; min-height:0; overflow:auto; }
-        #odoo-reason-panel .col { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:14px 14px 8px; }
-        #odoo-reason-panel .col-title { font-weight:700; margin-bottom:12px; font-size:13px; display:flex; align-items:center; gap:8px; }
-        #odoo-reason-panel .col-title .count { margin-left:auto; font-size:11px; font-weight:700; padding:2px 9px; border-radius:999px;
-            background:var(--hw-soft); color:var(--hw); }
-        #odoo-reason-panel .col--sw .col-title .count { background:var(--sw-soft); color:var(--sw); }
-        #odoo-reason-panel .list { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:7px; }
-
-        /* Chips */
-        #odoo-reason-panel .chip { border:1px solid var(--border); background:var(--chip); color:var(--text);
-            padding:9px 11px; border-radius:11px; display:flex; align-items:center; gap:9px; cursor:pointer; user-select:none;
-            font-size:13px; line-height:1.2; transition:border-color .12s, background .12s, transform .06s; }
-        #odoo-reason-panel .chip:hover { transform:translateY(-1px); border-color:var(--hw); }
-        #odoo-reason-panel .col--sw .chip:hover { border-color:var(--sw); }
-        #odoo-reason-panel .chip input { width:16px; height:16px; flex:0 0 auto; accent-color:var(--hw); cursor:pointer; margin:0; }
-        #odoo-reason-panel .chip--software input { accent-color:var(--sw); }
-        #odoo-reason-panel .chip span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        #odoo-reason-panel .chip.selected { border-color:var(--hw); background:var(--hw-soft); font-weight:600; }
-        #odoo-reason-panel .chip--software.selected { border-color:var(--sw); background:var(--sw-soft); }
-        #odoo-reason-panel .col-empty { color:var(--muted); font-size:12px; padding:8px 2px; font-style:italic; display:none; }
-
-        /* Footer */
-        #odoo-reason-panel .ftr { background:var(--elev); padding:12px 16px; display:flex; align-items:center; gap:10px;
-            border-top:1px solid var(--border); }
-        #odoo-reason-panel .sel-count { font-size:12px; color:var(--muted); margin-right:auto; font-weight:600; }
-        #odoo-reason-panel .sel-count b { color:var(--accent); }
-        #odoo-reason-panel .btn { padding:9px 18px; border-radius:11px; font-weight:700; font-size:13px; border:1px solid transparent; cursor:pointer; }
-        #odoo-reason-panel .btn.primary { background:var(--accent); color:#fff; }
-        #odoo-reason-panel .btn.primary:hover { filter:brightness(1.08); }
-        #odoo-reason-panel .btn.primary:disabled { opacity:.5; cursor:not-allowed; filter:none; }
-        #odoo-reason-panel .btn.ghost { background:transparent; border-color:var(--border); color:var(--muted); }
-        #odoo-reason-panel .btn.ghost:hover { color:var(--text); border-color:var(--accent); }
-
-        /* Scrollbar */
-        #odoo-reason-panel .body::-webkit-scrollbar { width:10px; }
-        #odoo-reason-panel .body::-webkit-scrollbar-thumb { background:var(--border); border-radius:999px; }
-
-        @media(max-width:768px) {
-            #odoo-reason-panel .body { grid-template-columns:1fr; }
-            #odoo-reason-panel .search { max-width:none; order:3; flex-basis:100%; }
-        }
-            `;
-            document.head.appendChild(styleEl);
-
-            overlay = document.createElement('div');
-            overlay.id = 'odoo-reason-overlay';
-            overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);';
-
-            const panel = document.createElement('div');
-            panel.id = 'odoo-reason-panel';
-            if (savedTheme === 'light') panel.classList.add('theme-light');
-
-            // Header
-            const hdr = document.createElement('div'); hdr.className = 'hdr';
-            const title = document.createElement('div'); title.className = 'title'; title.textContent = 'Sélection des raisons';
-            const search = document.createElement('div'); search.className = 'search';
-            const searchInput = document.createElement('input'); searchInput.type = 'text'; searchInput.placeholder = 'Rechercher une raison…'; searchInput.setAttribute('autocomplete', 'off');
-            search.appendChild(searchInput);
-            const themeBtn = document.createElement('button'); themeBtn.className = 'theme-toggle'; themeBtn.textContent = savedTheme === 'dark' ? '☀️ Clair' : '🌙 Sombre';
-            const closeBtn = document.createElement('button'); closeBtn.className = 'close-btn'; closeBtn.textContent = '×';
-            hdr.appendChild(title); hdr.appendChild(search); hdr.appendChild(themeBtn); hdr.appendChild(closeBtn);
-
-            // Body
-            const body = document.createElement('div'); body.className = 'body';
-
-            function buildCol(titleText, items, prefix, type) {
-                const col = document.createElement('div'); col.className = 'col' + (type === 'software' ? ' col--sw' : '');
-                const ttl = document.createElement('div'); ttl.className = 'col-title'; ttl.textContent = titleText;
-                const count = document.createElement('span'); count.className = 'count'; count.textContent = String(items.length);
-                ttl.appendChild(count);
-                const list = document.createElement('div'); list.className = 'list';
-                items.slice().sort((a,b) => a.name.localeCompare(b.name,'fr',{sensitivity:'base',ignorePunctuation:true})).forEach((item, idx) => {
-                    const chip = document.createElement('label');
-                    chip.className = 'chip' + (type === 'software' ? ' chip--software' : '');
-                    chip.dataset.search = normalizeReasonName(item.name);
-                    const cb = document.createElement('input'); cb.type = 'checkbox';
-                    // Stocker l'ID si disponible, sinon le nom (fallback)
-                    cb.value = item.id ? String(item.id) : item.name;
-                    cb.dataset.tagName = item.name;
-                    cb.dataset.tagId = item.id ? String(item.id) : '';
-                    cb.id = `${prefix}-${idx}`;
-                    const span = document.createElement('span'); span.textContent = item.name; span.title = item.name;
-                    chip.appendChild(cb); chip.appendChild(span);
-                    list.appendChild(chip);
-                });
-                const empty = document.createElement('div'); empty.className = 'col-empty'; empty.textContent = 'Aucune raison ne correspond.';
-                col.appendChild(ttl); col.appendChild(list); col.appendChild(empty);
-                return col;
-            }
-
-            body.appendChild(buildCol('🔧 Matériel', HARDWARE, 'hw', 'hardware'));
-            body.appendChild(buildCol('💻 Logiciel', SOFTWARE, 'sw', 'software'));
-
-            // Footer
-            const ftr = document.createElement('div'); ftr.className = 'ftr';
-            const selCount = document.createElement('div'); selCount.className = 'sel-count'; selCount.innerHTML = '<b>0</b> sélectionnée(s)';
-            const skipBtn = document.createElement('button'); skipBtn.type = 'button'; skipBtn.className = 'btn ghost'; skipBtn.textContent = "Pas d'étiquette";
-            const submitBtn = document.createElement('button'); submitBtn.type = 'button'; submitBtn.className = 'btn primary'; submitBtn.textContent = 'Valider'; submitBtn.disabled = true; submitBtn.style.display = 'none';
-            ftr.appendChild(selCount); ftr.appendChild(skipBtn); ftr.appendChild(submitBtn);
-
-            panel.appendChild(hdr); panel.appendChild(body); panel.appendChild(ftr);
-            overlay.appendChild(panel);
-            document.body.appendChild(overlay);
-            _reasonPanelDone = true;
-
-            // Interactions
-            const allChips = panel.querySelectorAll('.chip');
-            const updateSubmit = () => {
-                const n = panel.querySelectorAll('.chip input:checked').length;
-                submitBtn.disabled = n === 0; submitBtn.style.display = n === 0 ? 'none' : 'inline-block';
-                allChips.forEach(c => c.classList.toggle('selected', c.querySelector('input').checked));
-                selCount.innerHTML = '<b>' + n + '</b> sélectionnée(s)';
-            };
-            allChips.forEach(chip => {
-                chip.addEventListener('click', e => {
-                    if (!(e.target instanceof HTMLInputElement)) { e.preventDefault(); const cb = chip.querySelector('input'); cb.checked = !cb.checked; }
-                    updateSubmit();
-                });
-                chip.querySelector('input').addEventListener('change', updateSubmit);
-            });
-            updateSubmit();
-
-            // Recherche live : filtre les chips des deux colonnes + message "aucun résultat"
-            const filterChips = () => {
-                const q = normalizeReasonName(searchInput.value);
-                panel.querySelectorAll('.col').forEach(col => {
-                    let visible = 0;
-                    col.querySelectorAll('.chip').forEach(chip => {
-                        const match = !q || (chip.dataset.search || '').includes(q);
-                        chip.style.display = match ? '' : 'none';
-                        if (match) visible++;
-                    });
-                    const empty = col.querySelector('.col-empty');
-                    if (empty) empty.style.display = visible === 0 ? 'block' : 'none';
-                });
-            };
-            searchInput.addEventListener('input', filterChips);
-
-            themeBtn.addEventListener('click', () => {
-                const isLight = panel.classList.toggle('theme-light');
-                localStorage.setItem(themeKey, isLight ? 'light' : 'dark');
-                themeBtn.textContent = isLight ? '🌙 Sombre' : '☀️ Clair';
-            });
-
-            const closePanel = () => {
-                _reasonPanelOpen = false;
-                sessionStorage.removeItem('pendingReasonPanel');
-                sessionStorage.removeItem('pendingReasonTicketId');
-                // Nettoyer les flags de protection
-                sessionStorage.removeItem('reasonPanelForceOpen');
-                sessionStorage.removeItem('reasonPanelProtectedTicketId');
-                _reasonPanelTicketId = null;
-                overlay.remove();
-                styleEl.remove();
-            };
-            closeBtn.addEventListener('click', () => { closePanel(); });
-            skipBtn.addEventListener('click', () => { closePanel(); });
-
-            let submitLocked = false;
-            submitBtn.addEventListener('click', async () => {
-                if (submitLocked) return;
-                submitLocked = true; submitBtn.disabled = true;
-
-                // Marquer définitivement que le panneau a été traité pour ce ticket
-                const currentTicketId = _reasonPanelTicketId || sessionStorage.getItem('pendingReasonTicketId') || getTicketIdFromPage();
-                if (currentTicketId) {
-                    sessionStorage.setItem(`reasonPanelCompleted_${currentTicketId}`, '1');
-                }
-
-                sessionStorage.removeItem('pendingReasonPanel');
-                // Récupérer les IDs (ou noms si pas d'ID) des cases cochées
-                const cols = Array.from(panel.querySelectorAll('.col'));
-                const hwChecked = Array.from((cols[0] || panel).querySelectorAll('.chip input:checked'));
-                const swChecked = Array.from((cols[1] || panel).querySelectorAll('.chip input:checked'));
-                const hwIds = hwChecked.filter(i => i.dataset.tagId).map(i => Number(i.dataset.tagId));
-                const swIds = swChecked.filter(i => i.dataset.tagId).map(i => Number(i.dataset.tagId));
-                const hwNames = hwChecked.filter(i => !i.dataset.tagId).map(i => i.dataset.tagName);
-                const swNames = swChecked.filter(i => !i.dataset.tagId).map(i => i.dataset.tagName);
-                try {
-                    const targetTicketId = _reasonPanelTicketId || sessionStorage.getItem('pendingReasonTicketId') || getTicketIdFromPage();
-                    const ok = await applyTagsToTicket(hwIds, swIds, hwNames, swNames, targetTicketId);
-                    if (!ok) {
-                        submitLocked = false;
-                        submitBtn.disabled = false;
-                        alert("Aucune étiquette n'a pu être appliquée. Vérifiez vos droits Odoo ou la configuration des raisons.");
-                        return;
-                    }
-                    // Nettoyer les flags de protection après validation réussie
-                    sessionStorage.removeItem('reasonPanelForceOpen');
-                    sessionStorage.removeItem('reasonPanelProtectedTicketId');
-                    // Empêcher définitivement la réouverture pour ce ticket
-                    _reasonPanelDone = true;
-                    closePanel();
-                } catch (e) {
-                    console.warn('[Tags] Erreur:', e);
-                    submitLocked = false;
-                    submitBtn.disabled = false;
-                    alert("Erreur lors de la validation des raisons. Réessayez.");
-                }
-            });
-        } catch (e) {
-            console.warn('[ReasonPanel] Erreur ouverture:', e);
-            _reasonPanelDone = false;
-            if (overlay) overlay.remove();
-            if (styleEl) styleEl.remove();
-        } finally {
-            _reasonPanelOpen = false;
-        }
-    }
-
-    // Applique les étiquettes via API Odoo — utilise les IDs directement (pas de création)
-    async function resolveTagIdsByName(relModel, names = []) {
-        if (!relModel || !Array.isArray(names) || !names.length) return [];
-
-        const wantedRaw = names.map(n => String(n || '').trim()).filter(Boolean);
-        const wanted = new Set(wantedRaw.map(normalizeReasonName));
-        const ids = new Set();
-
-        // Tentative 1: lecture globale (rapide)
-        const all = await odooRpc(relModel, 'search_read', [[], ['id', 'name'], 0, 5000]) || [];
-        all.forEach(r => {
-            if (wanted.has(normalizeReasonName(r.name))) {
-                const n = Number(r.id);
-                if (Number.isFinite(n)) ids.add(n);
-            }
-        });
-        if (ids.size) return Array.from(ids);
-
-        // Tentative 2: name_search unitaire (souvent autorise meme si search_read est limite)
-        for (const name of wantedRaw) {
-            try {
-                const exact = await odooRpc(relModel, 'name_search', [name, [], 'ilike', 20]) || [];
-                const match = exact.find(r => wanted.has(normalizeReasonName(Array.isArray(r) ? r[1] : '')));
-                if (match && Array.isArray(match) && Number.isFinite(Number(match[0]))) {
-                    ids.add(Number(match[0]));
-                    continue;
-                }
-                const first = exact[0];
-                if (first && Array.isArray(first) && Number.isFinite(Number(first[0]))) {
-                    ids.add(Number(first[0]));
-                }
-            } catch (_) {}
-        }
-
-        return Array.from(ids);
-    }
-
-    function uniqNormNames(names = []) {
-        const out = [];
-        const seen = new Set();
-        for (const n of names) {
-            const raw = String(n || '').trim();
-            if (!raw) continue;
-            const key = normalizeReasonName(raw);
-            if (!key || seen.has(key)) continue;
-            seen.add(key);
-            out.push(raw);
-        }
-        return out;
-    }
-
-    async function addMany2ManyTagsViaDom(fieldName, names = []) {
-        console.log('[REASON] addMany2ManyTagsViaDom - Field:', fieldName, 'Names:', names);
-
-        const wanted = uniqNormNames(names);
-        if (!wanted.length) {
-            console.log('[REASON] Aucun nom à ajouter après normalisation');
-            return false;
-        }
-
-        const root = document.querySelector(`.o_field_many2many_tags[name="${fieldName}"], .o_field_widget[name="${fieldName}"]`);
-        console.log('[REASON] Root element trouvé:', !!root);
-
-        if (!root) {
-            console.error('[REASON] Impossible de trouver le champ:', fieldName);
-            return false;
-        }
-
-        const existing = new Set(
-            Array.from(root.querySelectorAll('.o_tag, .badge, .o_tag_badge_text'))
-                .map(el => normalizeReasonName(el.textContent || ''))
-                .filter(Boolean)
-        );
-        console.log('[REASON] Étiquettes existantes:', Array.from(existing));
-
-        const input = root.querySelector('input');
-        console.log('[REASON] Input trouvé:', !!input, input instanceof HTMLInputElement);
-
-        if (!(input instanceof HTMLInputElement)) {
-            console.error('[REASON] Impossible de trouver l\'input pour le champ:', fieldName);
-            return false;
-        }
-
-        let added = false;
-        for (const name of wanted) {
-            console.log('[REASON] Tentative d\'ajout de:', name);
-
-            if (existing.has(normalizeReasonName(name))) {
-                console.log('[REASON] Étiquette déjà présente:', name);
-                continue;
-            }
-
-            console.log('[REASON] Saisie de l\'étiquette:', name);
-            input.focus();
-            input.value = name;
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            await wait(180);
-
-            console.log('[REASON] Envoi de la touche Entrée');
-            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
-            input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
-            await wait(220);
-
-            // Marquer "ajouté" si le tag apparait ou si la saisie a été consommée par le widget.
-            const now = new Set(
-                Array.from(root.querySelectorAll('.o_tag, .badge, .o_tag_badge_text'))
-                    .map(el => normalizeReasonName(el.textContent || ''))
-                    .filter(Boolean)
-            );
-
-            const wasAdded = now.has(normalizeReasonName(name)) || String(input.value || '').trim() === '';
-            console.log('[REASON] Étiquette ajoutée:', name, '- Succès:', wasAdded);
-
-            if (wasAdded) {
-                added = true;
-                existing.add(normalizeReasonName(name));
-            }
-        }
-
-        console.log('[REASON] Résultat final addMany2ManyTagsViaDom:', added);
-        return added;
-    }
-
-    async function applyTagsViaDom(hwNames = [], swNames = []) {
-        console.log('[REASON] applyTagsViaDom - HW Names:', hwNames, 'SW Names:', swNames);
-
-        let hwOk = true;
-        let swOk = true;
-
-        if (hwNames.length > 0) {
-            console.log('[REASON] Application des étiquettes matériel via DOM...');
-            hwOk = await addMany2ManyTagsViaDom('material_reason_tag_ids', hwNames);
-            console.log('[REASON] Résultat étiquettes matériel:', hwOk);
-        }
-
-        if (swNames.length > 0) {
-            console.log('[REASON] Application des étiquettes logiciel via DOM...');
-            swOk = await addMany2ManyTagsViaDom('software_reason_tag_ids', swNames);
-            console.log('[REASON] Résultat étiquettes logiciel:', swOk);
-        }
-
-        if (!hwOk && !swOk) {
-            console.error('[REASON] Échec de l\'application des étiquettes via DOM');
-            return false;
-        }
-
-        console.log('[REASON] Sauvegarde du formulaire...');
-        await wait(150);
-        await saveForm();
-
-        console.log('[REASON] Application des étiquettes via DOM terminée');
-        return true;
-    }
-
-    async function applyTagsToTicket(hwIds = [], swIds = [], hwNamesFallback = [], swNamesFallback = [], targetTicketId = null) {
-        const ticketId = targetTicketId || sessionStorage.getItem('pendingReasonTicketId') || getTicketIdFromPage();
-        console.log('[REASON] applyTagsToTicket - Ticket ID:', ticketId);
-        console.log('[REASON] applyTagsToTicket - HW IDs:', hwIds, 'SW IDs:', swIds);
-        console.log('[REASON] applyTagsToTicket - HW Names:', hwNamesFallback, 'SW Names:', swNamesFallback);
-
-        if (!ticketId) {
-            console.error('[REASON] Aucun ticket ID trouvé');
-            return false;
-        }
-
-        // Si on n'a pas d'IDs (fallback noms), on cherche par nom sans créer
-        if (!hwIds.length && hwNamesFallback.length) {
-            console.log('[REASON] Résolution des IDs matériel par nom...');
-            try {
-                const fields = await odooRpc('helpdesk.ticket', 'fields_get', [['material_reason_tag_ids'], ['relation']]) || {};
-                const rel = fields.material_reason_tag_ids?.relation;
-                console.log('[REASON] Relation matériel:', rel);
-                if (rel) {
-                    hwIds = await resolveTagIdsByName(rel, hwNamesFallback);
-                    console.log('[REASON] IDs matériel résolus:', hwIds);
-                }
-            } catch (error) {
-                console.error('[REASON] Erreur résolution IDs matériel:', error);
-            }
-        }
-
-        if (!swIds.length && swNamesFallback.length) {
-            console.log('[REASON] Résolution des IDs logiciel par nom...');
-            try {
-                const fields = await odooRpc('helpdesk.ticket', 'fields_get', [['software_reason_tag_ids'], ['relation']]) || {};
-                const rel = fields.software_reason_tag_ids?.relation;
-                console.log('[REASON] Relation logiciel:', rel);
-                if (rel) {
-                    swIds = await resolveTagIdsByName(rel, swNamesFallback);
-                    console.log('[REASON] IDs logiciel résolus:', swIds);
-                }
-            } catch (error) {
-                console.error('[REASON] Erreur résolution IDs logiciel:', error);
-            }
-        }
-
-        const vals = {};
-        // [4, id] = lier sans créer (many2many link)
-        if (hwIds.length) vals.material_reason_tag_ids = hwIds.map(id => [4, id]);
-        if (swIds.length) vals.software_reason_tag_ids = swIds.map(id => [4, id]);
-
-        console.log('[REASON] Valeurs à écrire:', vals);
-
-        if (!Object.keys(vals).length) {
-            console.log('[REASON] Aucune valeur à écrire, fallback vers DOM');
-            // Fallback non-admin : tenter via l'UI Odoo (many2many tags)
-            return applyTagsViaDom(hwNamesFallback, swNamesFallback);
-        }
-
-        console.log('[REASON] Tentative d\'écriture via API...');
-        try {
-            const writeOk = await odooWrite('helpdesk.ticket', Number(ticketId), vals);
-            console.log('[REASON] Résultat écriture API:', writeOk);
-
-            if (!writeOk) {
-                console.log('[REASON] Écriture API échouée, fallback vers DOM');
-                // Fallback non-admin : certains profils ne peuvent pas write via API mais peuvent via le widget UI.
-                return applyTagsViaDom(hwNamesFallback, swNamesFallback);
-            }
-
-            console.log('[REASON] Écriture API réussie, sauvegarde...');
-            await wait(300);
-            const saveBtn = document.querySelector('button.o_form_button_save, button[data-hotkey="s"]');
-            if (saveBtn) {
-                console.log('[REASON] Clic sur le bouton sauvegarder');
-                saveBtn.click();
-            }
-
-            // Forcer le rechargement du formulaire pour afficher les tags sans F5
-            await wait(600);
-            try {
-                console.log('[REASON] Rechargement de la vue...');
-                // Méthode 1 : bouton discard puis reload (Odoo SPA)
-                const discardBtn = document.querySelector('button.o_form_button_discard, button[data-hotkey="j"]');
-                if (discardBtn) {
-                    console.log('[REASON] Clic sur discard');
-                    discardBtn.click();
-                    await wait(200);
-                }
-
-                // Méthode 2 : déclencher un reload via l'action manager Odoo
-                if (window.__owl__) {
-                    const env = window.__owl__?.apps?.values?.()?.next?.()?.value?.env;
-                    if (env?.services?.action) {
-                        console.log('[REASON] Restore via action manager');
-                        env.services.action.restore();
-                    }
-                }
-            } catch (reloadError) {
-                console.error('[REASON] Erreur lors du rechargement:', reloadError);
-            }
-
-            // Méthode 3 : reload de la vue courante via hashchange
-            const currentHash = window.location.hash;
-            window.location.hash = currentHash + '&_r=' + Date.now();
-            await wait(100);
-            window.history.replaceState(null, '', window.location.pathname + window.location.search + currentHash);
-
-            console.log('[REASON] Application des étiquettes terminée avec succès');
-            return true;
-
-        } catch (error) {
-            console.error('[REASON] Erreur lors de l\'écriture API:', error);
-            console.log('[REASON] Fallback vers DOM après erreur API');
-            return applyTagsViaDom(hwNamesFallback, swNamesFallback);
-        }
-    }
 
 
     // =========================================================
@@ -4143,11 +2139,13 @@
         if (badge.parentNode === container) {
             return;
         }
-        // Trouver le dernier bouton stat natif Odoo (exclure nos propres badges)
+        // Trouver le dernier bouton stat natif Odoo. Nos boutons Ventes / Doublons portent
+        // aussi la classe oe_stat_button (gabarit Odoo) : on exclut tout ce qui est DANS nos
+        // badges, sinon on insérerait un badge après son propre bouton (HierarchyRequestError).
         const btns = Array.from(container.querySelectorAll('.o_stat_button,.oe_stat_button'))
-            .filter(el => el.id !== 'badge-devis-client' && el.id !== 'badge-tickets-ouverts');
+            .filter(el => !el.closest('#badge-devis-client, #badge-tickets-ouverts'));
         const last = btns.length ? btns[btns.length-1] : null;
-        if (last) {
+        if (last && !badge.contains(last) && !last.contains(badge)) {
             last.insertAdjacentElement('afterend', badge);
         } else {
             container.appendChild(badge);
@@ -4166,6 +2164,24 @@
         // Réordonner : doublons d'abord, ventes ensuite
         container.appendChild(doublons);
         container.appendChild(ventes);
+    }
+
+    // Bouton statistique créé UNE fois puis mis à jour sur place. Le recréer à chaque
+    // rafraîchissement (toutes les 3-5 s et à chaque changement de la page) faisait
+    // perdre le clic si le bouton était remplacé entre l'appui et le relâchement.
+    function tmUpsertStatButton(badge, spec) {
+        let el = badge.querySelector(':scope > button.tm-stat');
+        if (!el) {
+            el = document.createElement('button');
+            el.type = 'button';
+            badge.innerHTML = '';
+            badge.appendChild(el);
+        }
+        if (el.className !== spec.className) el.className = spec.className;
+        if (el.title !== spec.title) el.title = spec.title;
+        if (el.dataset.sig !== spec.innerHTML) { el.innerHTML = spec.innerHTML; el.dataset.sig = spec.innerHTML; }
+        el.onclick = spec.onclick; // remplace le gestionnaire sans recréer l'élément
+        return el;
     }
 
     let devisTimer = null;
@@ -4221,24 +2237,18 @@
         const count = await odooRpc('sale.order', 'search_count', [[['partner_id','in',partnerIds]]]) || 0;
         const n = Number(count);
 
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.title = n > 0 ? `${n} ventes trouvées` : 'Aucune vente';
-        btn.className = 'bd-btn' + (n > 0 ? '' : ' empty');
+        // Description du bouton ; l'élément réel est réutilisé par tmUpsertStatButton
+        const spec = {};
+        spec.type = 'button';
+        spec.title = n > 0 ? `${n} ventes trouvées` : 'Aucune vente';
+        spec.className = 'btn oe_stat_button tm-stat' + (n > 0 ? '' : ' tm-stat-empty');
 
-        btn.onclick = async () => {
+        spec.onclick = async () => {
             if (n <= 0) return;
             document.getElementById('popup-devis-odoobtn')?.remove();
-            const pop = document.createElement('div');
-            pop.id = 'popup-devis-odoobtn'; pop.className = 'popup-devis-odoobtn';
-            const hdr = document.createElement('header');
-            hdr.innerHTML = `<span>Ventes (${n})</span>`;
-            const closeBtn = document.createElement('button'); closeBtn.textContent = 'Fermer'; closeBtn.onclick = () => pop.remove();
-            hdr.appendChild(closeBtn);
-            const ul = document.createElement('ul');
-            ul.innerHTML = '<li style="opacity:.85;padding:12px;">Chargement des ventes...</li>';
-            pop.appendChild(hdr); pop.appendChild(ul);
-            document.body.appendChild(pop);
+            const pop = tmPopup('popup-devis-odoobtn', 'Ventes', String(n));
+            const body = pop.querySelector('.tm-pop-body');
+            body.innerHTML = '<div class="tm-pop-empty">Chargement…</div>';
 
             const titleField = await detectSaleOrderTitleField();
             const baseFields = ['name','state','date_order','amount_total','currency_id'];
@@ -4246,79 +2256,67 @@
             const records = await odooRpc('sale.order', 'search_read', [
                 [['partner_id','in',partnerIds]], baseFields, 0, 20, 'date_order desc'
             ]) || [];
-            ul.innerHTML = '';
-            const stateMap = { draft:'Brouillon', sent:'Envoyé', sale:'Bon de commande', done:'Terminé', cancel:'Annulé' };
+            if (!pop.isConnected) return;
+            const stateMap = {
+                draft: ['Devis', ''], sent: ['Devis envoyé', 'is-info'], sale: ['Bon de commande', 'is-success'],
+                done: ['Verrouillé', 'is-success'], cancel: ['Annulé', 'is-danger']
+            };
+            const money = (v, cur) => {
+                try { return new Intl.NumberFormat('fr-FR', { style: 'currency', currency: cur || 'EUR' }).format(v || 0); }
+                catch (_) { return `${(Math.round((v || 0) * 100) / 100).toLocaleString('fr-FR')} ${cur || ''}`; }
+            };
+            body.innerHTML = '';
+            if (!records.length) { body.innerHTML = '<div class="tm-pop-empty">Aucune vente</div>'; return; }
             records.forEach(r => {
-                const li = document.createElement('li');
-                const st = String(r.state||'').toLowerCase();
-                if (st==='sale')   li.classList.add('state-sale');
-                if (st==='done')   li.classList.add('state-done');
-                if (st==='sent')   li.classList.add('state-sent');
-                if (st==='cancel') li.classList.add('state-cancel');
+                const st = String(r.state || '').toLowerCase();
+                const [stateLabel, stateCls] = stateMap[st] || [r.state || '', ''];
+                const cur = Array.isArray(r.currency_id) ? r.currency_id[1] : 'EUR';
+                const dt = r.date_order ? new Date(String(r.date_order).replace(' ', 'T') + 'Z') : null;
+                const when = dt && !isNaN(dt) ? dt.toLocaleDateString('fr-FR') : '';
+                const title = (titleField && r[titleField]) ? r[titleField] : '';
 
-                // Colonne 1 : référence
-                const ref = document.createElement('span'); ref.className = 'so-ref'; ref.textContent = r.name;
-
-                // Colonne 2 : titre + infos
-                const info = document.createElement('div'); info.style.cssText = 'overflow:hidden;';
-                const dt = r.date_order ? new Date(r.date_order) : null;
-                const fmt = dt ? dt.toLocaleDateString('fr-FR')+' '+dt.toLocaleTimeString('fr-FR').slice(0,5) : '';
-                const cur = Array.isArray(r.currency_id) ? r.currency_id[1] : '';
-                const stateLabel = stateMap[st] || r.state;
-                const amount = Math.round((r.amount_total||0)*100)/100;
-                if (saleOrderTitleField && r[saleOrderTitleField]) {
-                    const t = document.createElement('div'); t.className = 'so-title'; t.textContent = r[saleOrderTitleField];
-                    info.appendChild(t);
-                }
-                const m = document.createElement('div'); m.className = 'muted'; m.style.textAlign = 'left';
-                m.textContent = `${fmt} • ${stateLabel} • ${amount} ${cur}`;
-                info.appendChild(m);
-
-                // Colonne 3 : montant (vide, déjà dans info)
-                const spacer = document.createElement('span');
-
-                // Colonne 4 : bouton Ouvrir
-                const openBtn = document.createElement('button'); openBtn.className = 'so-open-btn';
-                openBtn.textContent = '↗ Ouvrir';
-                openBtn.onclick = (e) => {
+                const item = document.createElement('div');
+                item.className = 'tm-so st-' + (st || 'draft') + (st === 'cancel' ? ' is-cancel' : '');
+                item.innerHTML = `<div class="tm-so-row" role="button" tabindex="0" title="Afficher les lignes">`
+                    + `<span class="tm-so-ref">${tmEsc(r.name)}</span>`
+                    + `<span class="tm-so-main"><span class="tm-so-title">${tmEsc(title || '—')}</span><br><span class="tm-so-date">${tmEsc(when)}</span></span>`
+                    + `<span class="tm-state ${stateCls}">${tmEsc(stateLabel)}</span>`
+                    + `<span class="tm-so-amount">${tmEsc(money(r.amount_total, cur))}</span>`
+                    + `<button type="button" class="tm-icon-btn tm-so-open" title="Ouvrir la vente" aria-label="Ouvrir la vente"><i class="fa fa-external-link" aria-hidden="true"></i></button>`
+                    + `</div>`;
+                const row = item.firstElementChild;
+                row.querySelector('.tm-so-open').addEventListener('click', (e) => {
                     e.stopPropagation();
                     window.open(`/web#id=${r.id}&model=sale.order&view_type=form`, '_blank');
-                };
-
-                li.appendChild(ref); li.appendChild(info); li.appendChild(spacer); li.appendChild(openBtn);
-
-                // Clic sur la ligne = expand lignes de commande
-                li.style.cursor = 'pointer';
-                li.addEventListener('click', async e => {
-                    if (e.target?.classList.contains('so-open-btn')) return;
-                    const existing = li.querySelector('.so-lines');
-                    if (existing) { existing.remove(); li.classList.remove('expanded'); return; }
-                    const lines = await odooRpc('sale.order.line', 'search_read', [
-                        [['order_id','=',r.id]], ['name','product_uom_qty','price_unit','price_subtotal','currency_id'], 0, 100, 'sequence asc'
-                    ]) || [];
-                    const box = document.createElement('div'); box.className = 'so-lines';
-                    const hdrRow = document.createElement('div'); hdrRow.className = 'line header';
-                    hdrRow.innerHTML = '<div>Produit</div><div>Qté</div><div>Prix</div><div>Sous-total</div>';
-                    box.appendChild(hdrRow);
-                    lines.forEach(l => {
-                        const row = document.createElement('div'); row.className = 'line';
-                        const cur2 = Array.isArray(l.currency_id) ? l.currency_id[1] : '';
-                        row.innerHTML = `<div class="pname">${(l.name||'').replace(/\n/g,' ')}</div><div class="qty">${Number(l.product_uom_qty||0)}</div><div class="price">${Math.round((l.price_unit||0)*100)/100} ${cur2}</div><div class="subtotal">${Math.round((l.price_subtotal||0)*100)/100} ${cur2}</div>`;
-                        box.appendChild(row);
-                    });
-                    li.classList.add('expanded'); li.appendChild(box);
                 });
-                ul.appendChild(li);
+                const toggle = async () => {
+                    const existing = item.querySelector('.tm-so-lines');
+                    if (existing) { existing.remove(); item.classList.remove('is-open'); return; }
+                    const lines = await odooRpc('sale.order.line', 'search_read', [
+                        [['order_id','=',r.id]], ['name','product_uom_qty','price_unit','price_subtotal','currency_id','display_type'], 0, 100, 'sequence asc'
+                    ]) || [];
+                    const box = document.createElement('div');
+                    box.className = 'tm-so-lines';
+                    box.innerHTML = '<table><thead><tr><th>Article</th><th class="num">Qté</th><th class="num">Prix unitaire</th><th class="num">Sous-total</th></tr></thead><tbody>'
+                        + (lines.length ? lines.map(l => {
+                            const c2 = Array.isArray(l.currency_id) ? l.currency_id[1] : cur;
+                            if (l.display_type) return `<tr><td colspan="4"><b>${tmEsc((l.name || '').replace(/\n/g, ' '))}</b></td></tr>`;
+                            return `<tr><td>${tmEsc((l.name || '').replace(/\n/g, ' '))}</td><td class="num">${Number(l.product_uom_qty || 0).toLocaleString('fr-FR')}</td>`
+                                + `<td class="num">${tmEsc(money(l.price_unit, c2))}</td><td class="num">${tmEsc(money(l.price_subtotal, c2))}</td></tr>`;
+                        }).join('') : '<tr><td colspan="4">Aucune ligne</td></tr>')
+                        + '</tbody></table>';
+                    item.classList.add('is-open');
+                    item.appendChild(box);
+                };
+                row.addEventListener('click', toggle);
+                row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+                body.appendChild(item);
             });
-            if (!records.length) ul.innerHTML = '<li style="opacity:.8;padding:12px;">Aucune vente à afficher</li>';
         };
 
-        const inner = document.createElement('div'); inner.className = 'bd-inner';
-        const num = document.createElement('div'); num.className = 'bd-num'; num.textContent = n > 0 ? String(Math.min(n, 999)) : '0';
-        const lbl = document.createElement('div'); lbl.className = 'bd-lbl'; lbl.textContent = 'Ventes';
-        inner.appendChild(num); inner.appendChild(lbl);
-        btn.appendChild(inner);
-        badge.innerHTML = ''; badge.style.marginRight = '4px'; badge.appendChild(btn);
+        spec.innerHTML = `<i class="o_button_icon fa fa-fw fa-dollar" aria-hidden="true"></i>`
+            + `<span class="o_stat_info"><span class="o_stat_value">${Math.min(n, 999)}</span><span class="o_stat_text">Ventes</span></span>`;
+        tmUpsertStatButton(badge, spec);
         ensureBadgeOrder(findStatsContainer());
     }
 
@@ -4410,69 +2408,120 @@
         const count = await odooRpc('helpdesk.ticket','search_count',[domain]) || 0;
         const n = Number(count);
 
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'to-btn' + (n > 0 ? ' alert' : '');
-        btn.title = n > 0 ? `${n} ticket(s) ouvert(s)` : 'Aucun doublon';
-        btn.onclick = () => { if (n > 0) showOpenTicketsPopup(code, domain); };
+        // Description du bouton ; l'élément réel est réutilisé par tmUpsertStatButton
+        const spec = {};
+        spec.type = 'button';
+        spec.className = 'btn oe_stat_button tm-stat' + (n > 0 ? ' tm-stat-alert' : ' tm-stat-empty');
+        spec.title = n > 0 ? `${n} ticket(s) ouvert(s)` : 'Aucun doublon';
+        spec.onclick = () => { if (n > 0) showOpenTicketsPopup(code, domain); };
 
-        const inner = document.createElement('div'); inner.className = 'to-inner';
-        const num = document.createElement('div'); num.className = 'to-num'; num.textContent = String(Math.min(n, 999));
-        const lbl = document.createElement('div'); lbl.className = 'to-lbl'; lbl.textContent = 'Doublons';
-        inner.appendChild(num); inner.appendChild(lbl);
-        btn.appendChild(inner);
+        spec.innerHTML = `<i class="o_button_icon fa fa-fw fa-clone" aria-hidden="true"></i>`
+            + `<span class="o_stat_info"><span class="o_stat_value">${Math.min(n, 999)}</span><span class="o_stat_text">Doublons</span></span>`;
 
         if (n > 0) {
             showDoublonToast(code, n);
             if (autoPopupLastCode !== code) { autoPopupLastCode = code; showOpenTicketsPopup(code, domain); }
         }
-        badge.innerHTML = ''; badge.appendChild(btn);
+        tmUpsertStatButton(badge, spec);
         ensureBadgeOrder(stats);
     }
 
     async function showOpenTicketsPopup(codeClient, domain) {
         document.getElementById('popup-tickets-ouverts')?.remove();
-        const pop = document.createElement('div'); pop.id = 'popup-tickets-ouverts'; pop.className = 'popup-tickets-ouverts';
-        const hdr = document.createElement('header');
-        hdr.innerHTML = `<span>⚠️ Risque de doublon — Code client ${codeClient}</span>`;
-        const closeBtn = document.createElement('button'); closeBtn.textContent = 'Fermer'; closeBtn.onclick = () => pop.remove();
-        hdr.appendChild(closeBtn);
-        const content = document.createElement('div'); content.className = 'content';
-        const ul = document.createElement('ul');
-        content.appendChild(ul); pop.appendChild(hdr); pop.appendChild(content);
-        document.body.appendChild(pop);
+        const pop = tmPopup('popup-tickets-ouverts', 'Doublons possibles', `client ${codeClient}`);
+        pop.querySelector('.tm-pop-title').insertAdjacentHTML('afterbegin', '<i class="fa fa-exclamation-triangle" aria-hidden="true"></i>');
+        const body = pop.querySelector('.tm-pop-body');
+        body.innerHTML = '<div class="tm-pop-empty">Chargement…</div>';
 
         const recs = await odooRpc('helpdesk.ticket','search_read',[domain,['name','stage_id','user_id','create_date','team_id'],0,30,'create_date desc']) || [];
+        if (!pop.isConnected) return;
+        body.innerHTML = '';
+        if (!recs.length) { body.innerHTML = '<div class="tm-pop-empty">Aucun ticket ouvert</div>'; return; }
         recs.forEach(r => {
-            const li = document.createElement('li');
-            const a = document.createElement('a');
-            a.href = `/web#id=${r.id}&model=helpdesk.ticket&view_type=form`;
-            a.textContent = r.name || ('Ticket #'+r.id); a.style.color = '#8be9fd';
-            a.onclick = e => { e.preventDefault(); window.location.href = a.href; pop.remove(); };
-            const team = document.createElement('span'); team.className = 'team'; team.textContent = Array.isArray(r.team_id) ? r.team_id[1] : '';
-            const muted = document.createElement('span'); muted.className = 'muted';
-            muted.textContent = `${formatDateFr(r.create_date)}${Array.isArray(r.user_id) ? ' • '+r.user_id[1] : ''}`;
-            li.appendChild(a); li.appendChild(team); li.appendChild(muted);
-            li.addEventListener('click', e => { if (e.target?.tagName==='A') return; window.location.href = a.href; pop.remove(); });
-            ul.appendChild(li);
+            const href = `/web#id=${r.id}&model=helpdesk.ticket&view_type=form`;
+            const team = r.team_id ? getTeamInfo(r.team_id) : null;
+            const meta = [
+                Array.isArray(r.stage_id) ? r.stage_id[1] : '',
+                Array.isArray(r.user_id) ? r.user_id[1] : 'Non assigné'
+            ].filter(Boolean).join(' · ');
+            const row = document.createElement('a');
+            row.className = 'tm-dup';
+            row.href = href;
+            row.style.textDecoration = 'none';
+            row.innerHTML = `<span class="tm-dup-name">${tmEsc(r.name || ('Ticket #' + r.id))}</span>`
+                + `<span class="tm-dup-date">${tmEsc(formatDateFr(r.create_date))}</span>`
+                + `<span class="tm-dup-meta">${team ? `<span class="ticket-team" data-team="${tmEsc(team.name)}">${tmEsc(team.label || team.name)}</span>` : ''}${tmEsc(meta)}</span>`;
+            row.addEventListener('click', (e) => { e.preventDefault(); window.location.href = href; pop.remove(); });
+            body.appendChild(row);
         });
-        if (!recs.length) ul.innerHTML = '<li style="opacity:.8;padding:12px;">Aucun ticket à afficher</li>';
+    }
+
+    // Panneau flottant commun (ventes, doublons) : en-tête titre + compteur + fermer
+    function tmPopup(id, title, count) {
+        const pop = document.createElement('div');
+        pop.id = id;
+        pop.className = 'tm-pop ' + id;
+        pop.setAttribute('role', 'dialog');
+        pop.setAttribute('aria-label', title);
+        pop.innerHTML = `<div class="tm-pop-head"><span class="tm-pop-title">${tmEsc(title)}</span>`
+            + (count ? `<span class="tm-pop-count">${tmEsc(count)}</span>` : '')
+            + `<span class="tm-pop-actions"><button type="button" class="tm-icon-btn" data-close aria-label="Fermer" title="Fermer"><i class="fa fa-times" aria-hidden="true"></i></button></span></div>`
+            + `<div class="tm-pop-body"></div>`;
+        pop.querySelector('[data-close]').addEventListener('click', () => pop.remove());
+        document.body.appendChild(pop);
+        return pop;
     }
 
     function showDoublonToast(code, n) {
         const key = `${code}_${n}`;
         if (lastToastKey === key) return;
         lastToastKey = key;
-        document.getElementById('doublon-toast')?.remove();
-        const el = document.createElement('div'); el.id = 'doublon-toast'; el.className = 'doublon-toast';
-        const inner = document.createElement('div'); inner.className = 'doublon-toast-inner';
-        const icon = document.createElement('span'); icon.className = 'doublon-toast-icon'; icon.textContent = '⚠️';
-        const text = document.createElement('span'); text.className = 'doublon-toast-text';
-        text.textContent = `Attention : risque de doublon (${n} ouvert${n>1?'s':''})`;
-        const close = document.createElement('button'); close.className = 'close'; close.textContent = '✕'; close.onclick = () => el.remove();
-        inner.appendChild(icon); inner.appendChild(text); inner.appendChild(close);
-        el.appendChild(inner); document.body.appendChild(el);
-        setTimeout(() => { try { el.remove(); } catch(_){} }, 9000);
+        tmNotify({
+            key: 'doublon', type: 'warning', title: 'Doublon possible', autoclose: 9000,
+            message: `${n} ticket${n > 1 ? 's' : ''} déjà ouvert${n > 1 ? 's' : ''} pour le client ${code}.`
+        });
+    }
+
+    // Notification Odoo native (service « notification » du client web), avec repli sur
+    // la pile maison si le service est introuvable. Une seule notification par clé.
+    const _tmNotifActive = new Map(); // key -> fonction de fermeture
+    function getOdooNotificationService() {
+        const w = _pageWin();
+        const envs = [];
+        try { if (w.odoo && w.odoo.__WOWL_DEBUG__ && w.odoo.__WOWL_DEBUG__.root) envs.push(w.odoo.__WOWL_DEBUG__.root.env); } catch (_) {}
+        try {
+            [w.__owl__ && w.__owl__.apps, w.__OWL_DEVTOOLS__ && w.__OWL_DEVTOOLS__.apps].forEach(set => {
+                if (set && typeof set.forEach === 'function') set.forEach(app => { if (app && app.env) envs.push(app.env); });
+            });
+        } catch (_) {}
+        try { getOwlRootNodes().forEach(n => { if (n && n.component && n.component.env) envs.push(n.component.env); }); } catch (_) {}
+        for (const env of envs) {
+            const svc = env && env.services && env.services.notification;
+            if (svc && typeof svc.add === 'function') return svc;
+        }
+        return null;
+    }
+
+    function tmNotify({ key, type = 'warning', title = '', message = '', sticky = false, autoclose = 0, buttons = [], onClose } = {}) {
+        if (key && _tmNotifActive.has(key)) return;
+        let closeFn = null;
+        const done = () => { if (key) _tmNotifActive.delete(key); if (typeof onClose === 'function') { try { onClose(); } catch (_) {} } };
+        const svc = getOdooNotificationService();
+        if (svc) {
+            try {
+                const opts = { title, type, sticky: sticky || !autoclose, onClose: done };
+                if (autoclose) opts.autocloseDelay = autoclose;
+                if (buttons.length) opts.buttons = buttons.map(b => ({ name: b.name, primary: !!b.primary, onClick: () => { b.onClick(); if (closeFn) closeFn(); } }));
+                closeFn = svc.add(message, opts);
+                if (key) _tmNotifActive.set(key, closeFn || (() => {}));
+                return;
+            } catch (_) { /* repli ci-dessous */ }
+        }
+        const el = tmToast({
+            key, tone: type === 'danger' ? 'danger' : 'warn', title,
+            lines: [{ text: message }], ttl: sticky ? 0 : (autoclose || 8000), onClose: done
+        });
+        if (el && key) _tmNotifActive.set(key, () => el.remove());
     }
 
     function scheduleOpenTicketsUpdate(delay = 400) {
@@ -4482,70 +2531,14 @@
 
 
     // =========================================================
-    // ANIMATIONS LISTE TICKETS
+    // LISTE TICKETS — MISE EN ÉVIDENCE DES TICKETS BLOQUANTS
     // =========================================================
-    let _alertSoundPlayed = false;
-
+    // Odoo colore en rouge (text-danger) les tickets bloquants : on ajoute un liseré
+    // via la classe .ticket-bloquant (le style est entièrement en CSS).
     function updateTicketListAnimations() {
         if (!isTicketList()) return;
-
-        // v19: Essayer plusieurs sélecteurs pour les lignes
-        const rowSelectors = [
-            '.o_list_view .o_data_row',
-            '.o_list_view tr.o_data_row',
-            '.o_list_renderer .o_data_row',
-            'tr.o_data_row',
-            '.o_data_row'
-        ];
-
-        let rows = [];
-        for (const selector of rowSelectors) {
-            rows = document.querySelectorAll(selector);
-            if (rows.length > 0) {
-                break;
-            }
-        }
-
-        if (rows.length === 0) {
-            return;
-        }
-
-        rows.forEach(row => {
-            // Reconstruire le texte complet en ignorant les spans wave-letter (qui fragmentent le texte)
-            const txt = (row.innerText || row.textContent || '').toLowerCase().replace(/\s+/g, ' ');
-            // Vérifier aussi via localStorage (état stocké par le script)
-            const rowId = row.getAttribute('data-id') || (row.dataset ? row.dataset.id : null);
-            const storedState = rowId ? loadState(rowId) : 'stopped';
-            // En traitement — détecter aussi via le container spécifique
-            const hasEnCours = txt.includes("traitement de l'appel en cours") ||
-                               txt.includes("traitement de l appel en cours") ||
-                               txt.includes("traitement de l\u2019appel en cours") ||
-                               !!row.querySelector('#texte-clignotant-container, [id*="clignotant"]') ||
-                               storedState === 'running';
-            if (hasEnCours) {
-                if (!row.classList.contains('ticket-en-traitement')) {
-                    row.classList.add('ticket-en-traitement');
-                    row.style.border = '2px solid rgba(139,92,246,.7)';
-                    row.style.borderRadius = '4px';
-                }
-            } else {
-                row.classList.remove('ticket-en-traitement');
-                row.removeAttribute('data-animation-applied');
-                row.style.border = '';
-                row.style.borderRadius = '';
-            }
-            // Bloquant (texte rouge)
-            if (row.classList.contains('text-danger')) {
-                if (!row.classList.contains('ticket-bloquant')) {
-                    row.classList.add('ticket-bloquant');
-                    row.style.border = '2px solid rgba(220,53,69,.8)';
-                    row.style.borderRadius = '4px';
-                    // Marquer comme alerté (sans son)
-                    _alertSoundPlayed = true;
-                }
-            } else {
-                row.classList.remove('ticket-bloquant');
-            }
+        document.querySelectorAll('.o_list_view tr.o_data_row, .o_list_renderer tr.o_data_row').forEach(row => {
+            row.classList.toggle('ticket-bloquant', row.classList.contains('text-danger'));
         });
     }
 
@@ -4562,43 +2555,194 @@
     }
 
     // =========================================================
-    // BADGE CLIENT PRIORITAIRE (ASSISTANCE MATERIEL) — via API
+    // BADGES CLIENT « PRIORITAIRE » (ASSISTANCE MATÉRIEL) ET « NEW » — via API
     // =========================================================
+    // Pourquoi l'ancienne version ratait des clients :
+    //  1. le filtre /^new\b/ refusait « NEW2026 » (pas de frontière entre W et 2) et tout
+    //     libellé ne commençant pas par NEW ;
+    //  2. la recherche des étiquettes était limitée à 50 résultats « ilike new » ;
+    //  3. seules les étiquettes du TICKET étaient lues : un client étiqueté après la
+    //     création de ses tickets (ou étiqueté sur la société mère) n'avait pas de badge ;
+    //  4. le rapprochement ligne ↔ ticket se faisait par le NOM du ticket (homonymes) et
+    //     exigeait une colonne « Sujet/Nom » visible.
+    // Désormais : ID réel du ticket lu dans le modèle Owl de la liste, étiquettes du ticket
+    // + du client + de sa société, cache par ID avec durée de vie, une seule requête à la fois.
     function normTagText(t) {
-        return (t || '').trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s+/g, ' ');
+        return (t || '').trim().normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ');
+    }
+    // « NEW », « NEW 2026 », « NEW2026 », « CONTRAT NEW » — mais pas « NEWS » ni « RENEW ».
+    function isNewTagName(name) {
+        return /(^|[^A-Z0-9])NEW(?![A-Z])/.test(normTagText(name));
+    }
+    function isAssistanceTagName(name) {
+        const n = normTagText(name);
+        return n.includes('ASSISTANCE') && n.includes('MAT');
     }
 
-    const _assistanceCache = new Map();
-    let _assistanceTagIds = null;   // tags "ASSISTANCE MATERIEL"
-    let _newTagIds = null;          // tags "NEW", "NEW 2025", "NEW 2026"...
+    const PRIO_TTL_MS = 5 * 60 * 1000;
+    const _prioTicketCache = new Map();   // ticketId -> { mat, new, at }
+    const _prioPartnerCache = new Map();  // partnerId -> { tagIds:Set, commercialId, at }
+    let _prioTagIndex = null;             // { mat:Set, new:Set, at }
+    let _prioFields = null;               // { ticket:[...], partner:[...] } champs vers winpharma.tags
+    let _prioBusy = false;
 
-    async function getAssistanceTagIds() {
-        if (_assistanceTagIds !== null) return _assistanceTagIds;
-        try {
-            const recs = await odooRpc('winpharma.tags', 'search_read',
-                [[['name', 'ilike', 'assistance mat']], ['id', 'name'], 0, 50]) || [];
-            _assistanceTagIds = recs.map(r => r.id);
-        } catch (e) {
-            console.warn('[PrioritaireBadge] Erreur getAssistanceTagIds:', e);
-            _assistanceTagIds = [];
-        }
-        return _assistanceTagIds;
+    function clearPrioritaireCaches() {
+        _prioTicketCache.clear();
+        _prioPartnerCache.clear();
+        _prioTagIndex = null;
     }
 
-    async function getNewTagIds() {
-        if (_newTagIds !== null) return _newTagIds;
+    // Champs many2many pointant vers winpharma.tags, sur le ticket et sur le client.
+    async function getPrioTagFields() {
+        if (_prioFields) return _prioFields;
+        const pick = (defs) => Object.entries(defs || {})
+            .filter(([, d]) => d && d.relation === 'winpharma.tags' && /many2many|one2many/.test(d.type || ''))
+            .map(([f]) => f);
+        const [tf, pf] = await Promise.all([
+            odooRpc('helpdesk.ticket', 'fields_get', [[], ['relation', 'type']]),
+            odooRpc('res.partner', 'fields_get', [[], ['relation', 'type']])
+        ]);
+        const ticket = pick(tf);
+        if (!ticket.length && tf && tf.etiquette_winpharma) ticket.push('etiquette_winpharma');
+        _prioFields = { ticket, partner: pick(pf) };
+        return _prioFields;
+    }
+
+    async function getPrioTagIndex() {
+        if (_prioTagIndex && Date.now() - _prioTagIndex.at < PRIO_TTL_MS) return _prioTagIndex;
+        const recs = await odooRpc('winpharma.tags', 'search_read', [
+            ['|', ['name', 'ilike', 'new'], ['name', 'ilike', 'assistance']], ['id', 'name'], 0, 0
+        ]) || [];
+        const idx = { mat: new Set(), new: new Set(), at: Date.now() };
+        recs.forEach(r => {
+            if (isAssistanceTagName(r.name)) idx.mat.add(r.id);
+            if (isNewTagName(r.name)) idx.new.add(r.id);
+        });
+        _prioTagIndex = idx;
+        return idx;
+    }
+
+    // Valeurs many2one / many2many : formats [id, nom], {id, display_name} ou id selon la version
+    const m2oId = (v) => Array.isArray(v) ? v[0] : (v && typeof v === 'object' ? v.id : (typeof v === 'number' ? v : null));
+    const m2mIds = (v) => Array.isArray(v) ? v.map(x => Array.isArray(x) ? x[0] : (x && typeof x === 'object' ? x.id : x)).filter(Boolean) : [];
+
+    // data-id de la ligne (datapoint Owl) -> { resId, partnerId } depuis le modèle de la liste.
+    function getListRowRecordMap() {
+        const map = new Map();
+        const model = findTicketListModel();
+        if (!model || !model.root) return map;
+        const visit = (list, depth) => {
+            if (!list || depth > 6) return;
+            (list.records || []).forEach(rec => {
+                if (rec && rec.id != null && rec.resId) {
+                    map.set(String(rec.id), { resId: Number(rec.resId), partnerId: m2oId(rec.data && rec.data.partner_id) });
+                }
+            });
+            (list.groups || []).forEach(g => visit(g.list || g, depth + 1));
+        };
+        try { visit(model.root, 0); } catch (_) {}
+        return map;
+    }
+
+    async function loadPartnerTags(partnerIds, fields, depth = 0) {
+        const now = Date.now();
+        const todo = [...new Set(partnerIds.filter(id => id && !(_prioPartnerCache.has(id) && now - _prioPartnerCache.get(id).at < PRIO_TTL_MS)))];
+        if (!todo.length) return;
+        const recs = await odooRpc('res.partner', 'read', [todo, fields.partner.concat(['commercial_partner_id'])]) || [];
+        recs.forEach(r => {
+            const tagIds = new Set();
+            fields.partner.forEach(f => m2mIds(r[f]).forEach(id => tagIds.add(id)));
+            _prioPartnerCache.set(r.id, { tagIds, commercialId: m2oId(r.commercial_partner_id), at: now });
+        });
+        // Société mère : ses étiquettes valent pour tous ses contacts
+        const parents = recs.map(r => m2oId(r.commercial_partner_id)).filter(id => id && !_prioPartnerCache.has(id));
+        if (parents.length && depth < 1) await loadPartnerTags(parents, fields, depth + 1);
+    }
+
+    async function applyPrioritaireBadges() {
+        if (!isTicketList() || _prioBusy) return;
+        const table = document.querySelector('.o_list_view table, table.o_list_table, .o_list_renderer table');
+        if (!table) return;
+        const rows = Array.from(table.querySelectorAll('tbody tr.o_data_row'));
+        if (!rows.length) return;
+
+        _prioBusy = true;
         try {
-            // Couvre "NEW", "NEW 2025", "NEW 2026", etc. On filtre ensuite sur un nom commençant par "NEW".
-            const recs = await odooRpc('winpharma.tags', 'search_read',
-                [[['name', 'ilike', 'new']], ['id', 'name'], 0, 50]) || [];
-            _newTagIds = recs
-                .filter(r => /^new\b/i.test(String(r.name || '').trim()))
-                .map(r => r.id);
+            // Cellule où afficher le badge : colonne Client/Pharmacie, sinon 1re cellule de données
+            const ths = Array.from(table.querySelectorAll('thead th'));
+            const idxClient = ths.findIndex(th => /client|pharmacie/i.test(th.textContent || ''));
+            const recMap = getListRowRecordMap();
+
+            // Repli si le modèle Owl est inaccessible : rapprochement par nom de ticket,
+            // uniquement quand ce nom est unique (sinon on ne devine pas).
+            let byName = null;
+            if (!recMap.size) {
+                const idxName = ths.findIndex(th => /^(nom|sujet|titre)$|sujet/i.test((th.textContent || '').trim()));
+                if (idxName >= 0) {
+                    rows.forEach(r => { r.__tmName = ((r.querySelectorAll('td')[idxName] || {}).textContent || '').trim(); });
+                    const names = [...new Set(rows.map(r => r.__tmName).filter(Boolean))];
+                    const found = names.length ? (await odooRpc('helpdesk.ticket', 'search_read', [[['name', 'in', names]], ['id', 'name', 'partner_id'], 0, 2000]) || []) : [];
+                    const count = new Map();
+                    found.forEach(t => count.set(t.name, (count.get(t.name) || 0) + 1));
+                    byName = new Map(found.filter(t => count.get(t.name) === 1).map(t => [t.name, { resId: t.id, partnerId: m2oId(t.partner_id) }]));
+                }
+            }
+
+            const rowInfos = rows.map(row => {
+                const rec = byName ? byName.get(row.__tmName) : recMap.get(String(row.getAttribute('data-id') || ''));
+                const cells = row.querySelectorAll('td');
+                const cell = (idxClient >= 0 && cells[idxClient]) || row.querySelector('td.o_data_cell') || null;
+                return rec && cell ? { row, cell, ticketId: rec.resId, partnerId: rec.partnerId } : null;
+            }).filter(Boolean);
+            if (!rowInfos.length) return;
+
+            const now = Date.now();
+            const stale = rowInfos.filter(r => {
+                const c = _prioTicketCache.get(r.ticketId);
+                return !c || now - c.at > PRIO_TTL_MS;
+            });
+
+            if (stale.length) {
+                const [fields, tagIdx] = await Promise.all([getPrioTagFields(), getPrioTagIndex()]);
+                const ids = [...new Set(stale.map(r => r.ticketId))];
+                const tickets = fields.ticket.length
+                    ? (await odooRpc('helpdesk.ticket', 'read', [ids, fields.ticket.concat(['partner_id'])]) || [])
+                    : ids.map(id => ({ id, partner_id: (stale.find(r => r.ticketId === id) || {}).partnerId }));
+                const partnerOf = new Map(tickets.map(t => [t.id, m2oId(t.partner_id)]));
+                if (fields.partner.length) await loadPartnerTags([...partnerOf.values()].filter(Boolean), fields);
+
+                tickets.forEach(t => {
+                    const tagIds = new Set();
+                    fields.ticket.forEach(f => m2mIds(t[f]).forEach(id => tagIds.add(id)));
+                    const p = _prioPartnerCache.get(partnerOf.get(t.id));
+                    if (p) {
+                        p.tagIds.forEach(id => tagIds.add(id));
+                        const parent = p.commercialId && _prioPartnerCache.get(p.commercialId);
+                        if (parent) parent.tagIds.forEach(id => tagIds.add(id));
+                    }
+                    const has = (set) => [...tagIds].some(id => set.has(id));
+                    _prioTicketCache.set(t.id, { mat: has(tagIdx.mat), new: has(tagIdx.new), at: now });
+                });
+                // Tickets non relus (droits / erreur) : « aucun badge » mémorisé pour ne pas boucler
+                ids.forEach(id => { if (!_prioTicketCache.has(id)) _prioTicketCache.set(id, { mat: false, new: false, at: now }); });
+            }
+
+            rowInfos.forEach(({ cell, ticketId }) => {
+                const info = _prioTicketCache.get(ticketId) || {};
+                let holder = cell.querySelector('.tm-client-badges');
+                if (!info.mat && !info.new) { if (holder) holder.remove(); return; }
+                const sig = (info.mat ? 'm' : '') + (info.new ? 'n' : '');
+                if (holder && holder.dataset.sig === sig) return;
+                if (!holder) { holder = document.createElement('div'); holder.className = 'tm-client-badges'; cell.appendChild(holder); }
+                holder.dataset.sig = sig;
+                holder.innerHTML = (info.mat ? '<span class="tm-tag tm-tag-prio" title="Client sous contrat d&#39;assistance matériel">Prioritaire · matériel</span>' : '')
+                    + (info.new ? '<span class="tm-tag tm-tag-new" title="Nouveau client">NEW</span>' : '');
+            });
         } catch (e) {
-            console.warn('[NewBadge] Erreur getNewTagIds:', e);
-            _newTagIds = [];
+            console.warn('[Badges client] Erreur:', e);
+        } finally {
+            _prioBusy = false;
         }
-        return _newTagIds;
     }
 
     // Extraction robuste de l'ID partenaire depuis un href (v16-v18: ?id=123 ; v19: /odoo/.../123)
@@ -4612,99 +2756,57 @@
         return null;
     }
 
-    async function applyPrioritaireBadges() {
-            if (!isTicketList()) return;
-            const table = document.querySelector('.o_list_view table, table.o_list_table, .o_list_renderer table');
-            if (!table) return;
-
-            // Repérer les colonnes via les en-têtes (robuste aux changements d'attributs v19)
-            const ths = Array.from(table.querySelectorAll('thead th'));
-            let idxClient = -1, idxName = -1;
-            ths.forEach((th, i) => {
-                const t = th.textContent.trim().toLowerCase();
-                if (idxClient === -1 && (t.includes('client') || t.includes('pharmacie'))) idxClient = i;
-                if (idxName === -1 && (t === 'nom' || t === 'sujet' || t.includes('sujet'))) idxName = i;
-            });
-            if (idxClient === -1) return;
-
-            const [matIds, newIds] = await Promise.all([getAssistanceTagIds(), getNewTagIds()]);
-            if (!matIds.length && !newIds.length) return;
-
-            const rows = Array.from(table.querySelectorAll('tbody tr.o_data_row'));
-            if (!rows.length) return;
-
-            const rowInfos = rows.map(row => {
-                const cells = row.querySelectorAll('td');
-                const partnerCell = cells[idxClient] || null;
-                const nameCell = (idxName >= 0 ? cells[idxName] : null);
-                const ticketName = nameCell ? nameCell.textContent.trim() : '';
-                return { row, partnerCell, ticketName };
-            }).filter(r => r.partnerCell && r.ticketName);
-
-            if (!rowInfos.length) return;
-
-            // Clé de cache = nom du ticket
-            const toFetch = rowInfos.filter(r => !_assistanceCache.has(r.ticketName));
-            const names = [...new Set(toFetch.map(r => r.ticketName))];
-
-            if (names.length) {
-                try {
-                    const recs = await odooRpc('helpdesk.ticket', 'search_read', [
-                        [['name', 'in', names]],
-                        ['id', 'name', 'partner_id', 'etiquette_winpharma'], 0, 2000
-                    ]) || [];
-
-                    if (window.__tmBadgeDebug !== false) {
-                        console.log('[Badge] tags matériel:', matIds, '| tags NEW:', newIds,
-                                    '| tickets interrogés:', names.length, '| reçus:', recs.length,
-                                    '| ex. etiquette:', recs[0] && recs[0].etiquette_winpharma);
-                    }
-
-                    recs.forEach(rec => {
-                        const tags = rec.etiquette_winpharma || [];
-                        const tagIdList = tags.map(t => Array.isArray(t) ? t[0] : t);
-                        const hasMat = matIds.some(id => tagIdList.includes(id));
-                        const hasNew = newIds.some(id => tagIdList.includes(id));
-                        const key = (rec.name || '').trim();
-                        const prev = _assistanceCache.get(key) || { mat: false, new: false };
-                        _assistanceCache.set(key, { mat: prev.mat || hasMat, new: prev.new || hasNew });
-                    });
-
-                    toFetch.forEach(r => {
-                        if (!_assistanceCache.has(r.ticketName)) _assistanceCache.set(r.ticketName, { mat: false, new: false });
-                    });
-                } catch (e) {
-                    console.warn('[Badge] Erreur API (vérifier le champ etiquette_winpharma):', e);
-                    toFetch.forEach(r => _assistanceCache.set(r.ticketName, { mat: false, new: false }));
-                }
-            }
-
-            rowInfos.forEach(({ partnerCell, ticketName }) => {
-                const info = _assistanceCache.get(ticketName) || { mat: false, new: false };
-
-                // Badge "contrat matériel" (rouge)
-                const exMat = partnerCell.querySelector('.badge-client-prioritaire');
-                if (info.mat && !exMat) {
-                    const badge = document.createElement('div');
-                    badge.className = 'badge-client-prioritaire';
-                    badge.textContent = '⚠ Client prioritaire — contrat matériel';
-                    partnerCell.appendChild(badge);
-                } else if (!info.mat && exMat) {
-                    exMat.remove();
-                }
-
-                // Badge "contrat NEW" (vert)
-                const exNew = partnerCell.querySelector('.badge-client-new');
-                if (info.new && !exNew) {
-                    const badge = document.createElement('div');
-                    badge.className = 'badge-client-new';
-                    badge.textContent = '🆕 NEW';
-                    partnerCell.appendChild(badge);
-                } else if (!info.new && exNew) {
-                    exNew.remove();
-                }
-            });
+    // =========================================================
+    // NOTIFICATIONS — pile commune en bas à droite (RDV, doublons)
+    // =========================================================
+    // Avant, la notif RDV et le toast doublon s'affichaient au même endroit et se
+    // recouvraient. Ils sont maintenant empilés (4 au maximum, la plus ancienne part).
+    function tmToastStack() {
+        let stack = document.getElementById('tm-toast-stack');
+        if (!stack) {
+            stack = document.createElement('div');
+            stack.id = 'tm-toast-stack';
+            stack.setAttribute('role', 'status');
+            stack.setAttribute('aria-live', 'polite');
+            document.body.appendChild(stack);
         }
+        return stack;
+    }
+
+    // tone : 'warn' | 'urgent' | 'danger' ; lines : [{ text, cls }] ; ttl en ms (0 = reste affichée)
+    function tmToast({ key, tone = 'warn', icon = '', title = '', lines = [], ttl = 0, onClose } = {}) {
+        const stack = tmToastStack();
+        if (key && Array.from(stack.children).some(el => el.dataset.key === key)) return null;
+        while (stack.children.length >= 4) stack.firstElementChild.remove();
+
+        const el = document.createElement('div');
+        el.className = 'tm-toast tone-' + tone;
+        if (key) el.dataset.key = key;
+        const ic = document.createElement('div'); ic.className = 'tm-toast-icon'; ic.textContent = icon;
+        const tt = document.createElement('div'); tt.className = 'tm-toast-title'; tt.textContent = title;
+        const close = document.createElement('button');
+        close.type = 'button'; close.className = 'tm-toast-close'; close.title = 'Fermer'; close.setAttribute('aria-label', 'Fermer'); close.innerHTML = '<i class="fa fa-times" aria-hidden="true"></i>';
+        const body = document.createElement('div'); body.className = 'tm-toast-body';
+        lines.filter(l => l && l.text).forEach(l => {
+            const d = document.createElement('div');
+            d.className = 'tm-toast-line' + (l.cls ? ' ' + l.cls : '');
+            d.textContent = l.text;
+            body.appendChild(d);
+        });
+        el.appendChild(ic); el.appendChild(tt); el.appendChild(close);
+        if (body.children.length) el.appendChild(body);
+
+        let done = false;
+        const finish = (reason) => {
+            if (done) return; done = true;
+            el.remove();
+            if (typeof onClose === 'function') { try { onClose(reason); } catch (_) {} }
+        };
+        close.addEventListener('click', () => finish('user'));
+        if (ttl > 0) setTimeout(() => { if (el.isConnected) finish('timeout'); }, ttl);
+        stack.appendChild(el);
+        return el;
+    }
 
     // =========================================================
     // RAPPELS RDV
@@ -4818,45 +2920,27 @@
         });
     }
 
+    // Notif fermée (auto ou croix) : elle revient après 3 min. « Ne plus afficher » = définitif.
+    const _rdvSnooze = new Map();
     function showRdvNotif({ type, pharma, assigne, heure, diff }, key) {
-        if (localStorage.getItem('notifFermee_'+key)) return;
-        if (document.getElementById('rdv-notif-odoo')) return;
-
-        const notif = document.createElement('div');
-        notif.id = 'rdv-notif-odoo';
-        notif.className = 'rdv-notif-odoo' + (type === 'depasse' ? ' depasse' : type === 'rouge' ? ' rouge' : '');
-
-        const inner = document.createElement('div'); inner.className = 'rdv-notif-inner';
-
-        // Header
-        const hdr = document.createElement('div'); hdr.className = 'rdv-notif-header';
-        const icon = document.createElement('span'); icon.className = 'rdv-notif-icon';
-        icon.textContent = type === 'depasse' ? '🔴' : '🟠';
-        const title = document.createElement('span'); title.className = 'rdv-notif-title';
-        title.textContent = type === 'depasse' ? 'RDV dépassé' : `RDV dans ${diff} min`;
-        const closeBtn = document.createElement('button'); closeBtn.className = 'rdv-notif-close'; closeBtn.textContent = '✕';
-        closeBtn.onclick = () => { notif.remove(); if (key) localStorage.setItem('notifFermee_'+key,'1'); };
-        hdr.appendChild(icon); hdr.appendChild(title); hdr.appendChild(closeBtn);
-
-        // Body
-        const body = document.createElement('div'); body.className = 'rdv-notif-body';
-        if (pharma) {
-            const p = document.createElement('div'); p.className = 'rdv-notif-pharma'; p.textContent = pharma;
-            body.appendChild(p);
-        }
-        const t = document.createElement('div'); t.className = 'rdv-notif-time'; t.textContent = `🕐 ${heure}`;
-        body.appendChild(t);
-        if (assigne) {
-            const w = document.createElement('div'); w.className = 'rdv-notif-who'; w.textContent = `Posé par : ${assigne}`;
-            body.appendChild(w);
-        }
-
-        inner.appendChild(hdr); inner.appendChild(body);
-        notif.appendChild(inner);
-        document.body.appendChild(notif);
-
-        // Auto-fermeture après 30s pour les non-dépassés
-        if (type !== 'depasse') setTimeout(() => { try { notif.remove(); } catch(_){} }, 30000);
+        if (localStorage.getItem('notifFermee_' + key)) return;
+        if ((_rdvSnooze.get(key) || 0) > Date.now()) return;
+        const late = type === 'depasse';
+        let dismissed = false;
+        tmNotify({
+            key: 'rdv:' + key,
+            type: late ? 'danger' : 'warning',
+            title: late ? 'Rendez-vous dépassé' : `Rendez-vous dans ${diff} min`,
+            message: [pharma, heure, assigne ? `posé par ${assigne}` : ''].filter(Boolean).join(' · '),
+            sticky: late,
+            autoclose: late ? 0 : 30000,
+            buttons: [{ name: 'Ne plus afficher', onClick: () => {
+                dismissed = true;
+                try { localStorage.setItem('notifFermee_' + key, '1'); } catch (_) {}
+            } }],
+            // Fermeture sans « Ne plus afficher » : la notif revient dans 3 min
+            onClose: () => { if (!dismissed) _rdvSnooze.set(key, Date.now() + 3 * 60 * 1000); }
+        });
     }
 
     // =========================================================
@@ -5076,8 +3160,401 @@
         return { text: stageName, class: 'autre' };
     }
 
+    // =========================================================
+    // APPELS WINLINK DANS L'HISTORIQUE DES TICKETS
+    // =========================================================
+    // Le portail (api/ticket_calls.php) rattache les appels au ticket par le numéro du
+    // client et la période du ticket, et renvoie durée + présence d'un enregistrement.
+    //  - UNE seule requête par client, lancée à l'affichage de l'historique (mise en cache 2 min) ;
+    //  - l'audio n'est JAMAIS préchargé : il est téléchargé au clic sur « Écouter », lu
+    //    depuis une URL blob locale, et libéré à la fermeture de l'historique.
+    const PORTAL_TICKET_CALLS_URL = 'https://hotline.sippharma.fr/odoospeek/portal/api/ticket_calls.php';
+    const PORTAL_RECORDING_URL = 'https://hotline.sippharma.fr/odoospeek/portal/api/call_recording_stream.php';
+    const WL_CACHE_MS = 2 * 60 * 1000;
+    const WL_MAX_AUDIO = 6;                 // blobs audio gardés en mémoire au maximum
+    const WL_AUDIO_BUDGET = 96 * 1024 * 1024; // un fichier plus volumineux reste seul, jusqu’à sa fin
+    const _wlCallsCache = new Map();        // client + tickets/périodes -> { at, data }
+    const _wlCallsRequests = new Map();     // mutualise les requêtes de métadonnées
+    const _wlAudio = new Map();             // recId -> object URL (LRU, six fichiers maximum)
+    const _wlAudioBytes = new Map();        // recId -> taille du blob
+    const _wlAudioRequests = new Map();     // un téléchargement par enregistrement
+    let _wlAudioGeneration = 0;
+    let _wlPlaySequence = 0;
+    let _wlListeningContext = null;
+    let _wlCenteredMix = null;
+    const _wlCenteredSources = new WeakMap();
+    let _wlPhoneFields = null;
+
+    function tmEsc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function wlFmtDuration(sec) {
+        sec = Math.max(0, Math.round(Number(sec) || 0));
+        const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+        const p = n => String(n).padStart(2, '0');
+        if (h) return `${h} h ${p(m)}`;
+        if (m) return `${m} min ${p(s)}`;
+        return `${s} s`;
+    }
+
+    function wlFmtWhen(s) {
+        const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+        return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}h${m[5]}` : String(s || '');
+    }
+
+    function wlPostJson(url, payload) {
+        return new Promise((resolve) => {
+            if (typeof GM_xmlhttpRequest !== 'function') { resolve(null); return; }
+            try {
+                GM_xmlhttpRequest({
+                    method: 'POST', url, timeout: 20000, anonymous: false,
+                    headers: { 'Content-Type': 'application/json', 'X-Api-Key': PORTAL_API_KEY },
+                    data: JSON.stringify(payload),
+                    onload: (resp) => {
+                        try { if (resp && resp.status === 200) { resolve(JSON.parse(resp.responseText)); return; } } catch (_) {}
+                        resolve(null);
+                    },
+                    onerror: () => resolve(null),
+                    ontimeout: () => resolve(null)
+                });
+            } catch (_) { resolve(null); }
+        });
+    }
+
+    // Numéros du client : le contact, sa société et tous les contacts de la société.
+    async function wlPartnerPhones(partnerId) {
+        if (!_wlPhoneFields) {
+            const defs = await odooRpc('res.partner', 'fields_get', [['phone', 'mobile'], ['type']]) || {};
+            _wlPhoneFields = ['phone', 'mobile'].filter(f => defs[f]);
+            if (!_wlPhoneFields.length) _wlPhoneFields = ['phone'];
+        }
+        const pid = Number(partnerId);
+        const p = await odooRead('res.partner', pid, ['commercial_partner_id']);
+        const cid = m2oId(p && p.commercial_partner_id) || pid;
+        const recs = await odooRpc('res.partner', 'search_read', [
+            ['|', '|', ['id', '=', pid], ['id', '=', cid], ['commercial_partner_id', '=', cid]], _wlPhoneFields, 0, 60
+        ]) || [];
+        const out = new Set();
+        recs.forEach(r => _wlPhoneFields.forEach(f => {
+            const d = String(r[f] || '').replace(/\D/g, '');
+            if (d.length >= 9) out.add(d);
+        }));
+        return [...out].slice(0, 20);
+    }
+
+    async function wlFetchCalls(records, partnerId) {
+        const tickets = records.slice(0, 300).map(t => ({
+            id: t.id,
+            create: t.create_date || null,
+            close: t.close_date || null,
+            user: Array.isArray(t.user_id) ? t.user_id[1] : ''
+        }));
+        const key = JSON.stringify([String(partnerId), tickets]);
+        const hit = _wlCallsCache.get(key);
+        if (hit && Date.now() - hit.at < WL_CACHE_MS) return hit.data;
+        if (_wlCallsRequests.has(key)) return _wlCallsRequests.get(key);
+        const pending = (async () => {
+            const phones = await wlPartnerPhones(partnerId);
+            if (!phones.length) return { ok: true, tickets: {}, noPhone: true };
+            const data = await wlPostJson(PORTAL_TICKET_CALLS_URL, { phones, tickets });
+            if (data && data.ok) {
+                _wlCallsCache.delete(key);
+                _wlCallsCache.set(key, { at: Date.now(), data });
+                while (_wlCallsCache.size > 50) _wlCallsCache.delete(_wlCallsCache.keys().next().value);
+            }
+            return data;
+        })();
+        _wlCallsRequests.set(key, pending);
+        try { return await pending; }
+        finally { _wlCallsRequests.delete(key); }
+    }
+
+    function wlCallRowHtml(c) {
+        const out = c.dir === 'outgoing';
+        const incoming = c.dir === 'incoming';
+        const directionLabel = out ? 'Appel sortant' : incoming ? 'Appel entrant' : 'Direction non précisée';
+        const dirIcon = out
+            ? '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+            : incoming ? '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M17 7 7 17M15 17H7V9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+                : '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+        const action = c.rec
+            ? `<button type="button" class="tk-play" data-rec="${Number(c.rec)}" title="Télécharger et écouter l'enregistrement">Écouter</button>`
+            : '<span class="tk-norec">Pas d\'enregistrement</span>';
+        return `<div class="tk-call">`
+            + `<span class="tk-call-dir ${out ? 'out' : incoming ? 'in' : 'unknown'}" title="${directionLabel}">${dirIcon}</span>`
+            + `<span class="tk-call-when">${tmEsc(wlFmtWhen(c.at))}</span>`
+            + `<span class="tk-call-who">${tmEsc(c.user || '—')}</span>`
+            + `<span class="tk-call-dur">${tmEsc(wlFmtDuration(c.duration))}</span>`
+            + action
+            + `<div class="tk-audio-slot"></div>`
+            + `</div>`;
+    }
+
+    async function loadWinlinkCalls(records, partnerId, root) {
+        if (!root || !records || !records.length || !partnerId) return;
+        const slots = root.querySelectorAll('.tk-talk[data-talk-for]');
+        slots.forEach(s => { s.className = 'tk-talk is-loading'; s.textContent = 'Appels…'; });
+
+        let data = null;
+        try { data = await wlFetchCalls(records, partnerId); } catch (_) { data = null; }
+        if (!root.isConnected) return;
+
+        const byTicket = (data && data.ok && data.tickets) || {};
+        root.querySelectorAll('.tk-talk[data-talk-for]').forEach(slot => {
+            const id = slot.getAttribute('data-talk-for');
+            const info = byTicket[id];
+            const box = root.querySelector(`.tk-calls[data-calls-for="${id}"]`);
+            if (!info || !Array.isArray(info.calls) || !info.calls.length) {
+                slot.className = 'tk-talk is-empty';
+                slot.textContent = '';
+                if (box) box.innerHTML = '';
+                return;
+            }
+            const n = info.calls.length;
+            slot.className = 'tk-talk';
+            slot.setAttribute('role', 'button');
+            slot.setAttribute('tabindex', '0');
+            slot.title = (info.truncated ? `${n} derniers appels du client sur cette période. ` : '')
+                + 'Rapprochement par numéro et dates, sans lien certain avec ce ticket.';
+            const label = info.truncated ? `${n} derniers appels du client` : `${n} appel${n > 1 ? 's' : ''} du client`;
+            slot.innerHTML = `${label} · <b>${tmEsc(wlFmtDuration(info.talk_sec))}</b>`;
+            if (box) box.innerHTML = info.calls.map(wlCallRowHtml).join('');
+        });
+        if (!data || !data.ok) {
+            const first = root.querySelector('.tk-talk.is-empty');
+            if (first) { first.className = 'tk-talk is-error'; first.textContent = 'Winlink indisponible'; }
+        }
+    }
+
+    function wlResetAudioRow(row) {
+        if (!row || !row.isConnected || row.querySelector('.tk-play')) return;
+        const slot = row.querySelector('.tk-audio-slot');
+        if (!slot || !slot.dataset.rec) return;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'tk-play';
+        btn.dataset.rec = slot.dataset.rec;
+        btn.textContent = 'Écouter';
+        btn.title = "Télécharger et écouter l'enregistrement";
+        row.insertBefore(btn, slot);
+    }
+
+    function wlRemoveAudio(audio) {
+        const row = audio.closest('.tk-call');
+        try { audio.pause(); } catch (_) {}
+        try { _wlCenteredSources.get(audio)?.disconnect(); } catch (_) {}
+        _wlCenteredSources.delete(audio);
+        audio.removeAttribute('src');
+        try { audio.load(); } catch (_) {}
+        audio.remove();
+        wlResetAudioRow(row);
+    }
+
+    function wlDropAudio(key) {
+        const url = _wlAudio.get(key);
+        if (!url) return;
+        document.querySelectorAll('audio.tk-audio').forEach(a => { if (a.src === url) wlRemoveAudio(a); });
+        try { URL.revokeObjectURL(url); } catch (_) {}
+        _wlAudio.delete(key);
+        _wlAudioBytes.delete(key);
+    }
+
+    function wlGetAudioUrl(recId) {
+        const key = String(recId);
+        if (!/^[1-9]\d*$/.test(key)) return Promise.resolve(null);
+        if (_wlAudio.has(key)) {
+            const u = _wlAudio.get(key);
+            _wlAudio.delete(key); _wlAudio.set(key, u);
+            return Promise.resolve(u);
+        }
+        if (_wlAudioRequests.has(key)) return _wlAudioRequests.get(key).promise;
+        // Deux téléchargements au maximum, sans file d'attente cachée après fermeture.
+        if (typeof GM_xmlhttpRequest !== 'function' || _wlAudioRequests.size >= 2) return Promise.resolve(null);
+        const generation = _wlAudioGeneration;
+        const request = { settled: false, handle: null, finish: null, promise: null };
+        request.promise = new Promise(resolve => {
+            request.finish = value => {
+                if (request.settled) return;
+                request.settled = true;
+                if (_wlAudioRequests.get(key) === request) _wlAudioRequests.delete(key);
+                resolve(value);
+            };
+        });
+        _wlAudioRequests.set(key, request);
+        try {
+            request.handle = GM_xmlhttpRequest({
+                method: 'GET', url: PORTAL_RECORDING_URL + '?call_id=' + encodeURIComponent(key),
+                responseType: 'blob', timeout: 90000, anonymous: false,
+                headers: { 'X-Api-Key': PORTAL_API_KEY },
+                onload: resp => {
+                    if (request.settled || generation !== _wlAudioGeneration) { request.finish(null); return; }
+                    try {
+                        if (!resp || resp.status !== 200 || !resp.response) { request.finish(null); return; }
+                        const ct = ((resp.responseHeaders || '').match(/content-type:\s*([^\r\n;]+)/i) || [])[1] || 'audio/wav';
+                        if (!/^audio\//i.test(ct) && !/^application\/octet-stream$/i.test(ct)) { request.finish(null); return; }
+                        const blob = resp.response instanceof Blob ? resp.response : new Blob([resp.response], { type: ct });
+                        if (!blob.size) { request.finish(null); return; }
+                        // Éviction avant de créer une septième URL, même si un ancien lecteur est affiché.
+                        wlTrimAudioCache(WL_MAX_AUDIO - 1);
+                        while (_wlAudio.size && wlAudioBytes() + blob.size > WL_AUDIO_BUDGET) {
+                            wlDropAudio(_wlAudio.keys().next().value);
+                        }
+                        const url = URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: ct }));
+                        _wlAudio.set(key, url);
+                        _wlAudioBytes.set(key, blob.size);
+                        request.finish(url);
+                    } catch (_) { request.finish(null); }
+                },
+                onerror: () => request.finish(null),
+                ontimeout: () => request.finish(null),
+                onabort: () => request.finish(null)
+            });
+        } catch (_) { request.finish(null); }
+        return request.promise;
+    }
+
+    function wlAudioBytes() {
+        let total = 0;
+        for (const bytes of _wlAudioBytes.values()) total += bytes;
+        return total;
+    }
+
+    function wlTrimAudioCache(max = WL_MAX_AUDIO) {
+        while (_wlAudio.size > max || (_wlAudio.size > 1 && wlAudioBytes() > WL_AUDIO_BUDGET)) {
+            wlDropAudio(_wlAudio.keys().next().value);
+        }
+    }
+
+    // Le mélange mono est limité à l'écoute : les archives stéréo restent intactes.
+    function wlEnsureListeningContext() {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) throw new Error('Écoute centrée indisponible');
+        if (!_wlListeningContext || _wlListeningContext.state === 'closed') {
+            _wlListeningContext = new AudioContext();
+            _wlCenteredMix = _wlListeningContext.createGain();
+            _wlCenteredMix.channelCount = 1;
+            _wlCenteredMix.channelCountMode = 'explicit';
+            _wlCenteredMix.channelInterpretation = 'speakers';
+            _wlCenteredMix.gain.value = 1;
+            _wlCenteredMix.connect(_wlListeningContext.destination);
+        }
+        return _wlListeningContext.state === 'running' ? Promise.resolve() : _wlListeningContext.resume();
+    }
+
+    function wlCenterAudio(audio) {
+        if (!_wlCenteredSources.has(audio)) {
+            const source = _wlListeningContext.createMediaElementSource(audio);
+            source.connect(_wlCenteredMix);
+            _wlCenteredSources.set(audio, source);
+        }
+    }
+
+    // Fermer ou masquer arrête aussi les téléchargements et ne laisse aucun blob tardif.
+    function wlReleaseAudio() {
+        ++_wlAudioGeneration;
+        ++_wlPlaySequence;
+        for (const request of _wlAudioRequests.values()) {
+            request.finish(null);
+            try { request.handle?.abort(); } catch (_) {}
+        }
+        _wlAudioRequests.clear();
+        document.querySelectorAll('audio.tk-audio').forEach(wlRemoveAudio);
+        for (const key of [..._wlAudio.keys()]) wlDropAudio(key);
+        document.querySelectorAll('.tk-play').forEach(btn => {
+            btn.disabled = false;
+            btn.textContent = 'Écouter';
+            btn.classList.remove('is-error');
+        });
+        const context = _wlListeningContext;
+        _wlListeningContext = null;
+        _wlCenteredMix = null;
+        if (context) { try { Promise.resolve(context.close()).catch(() => {}); } catch (_) {} }
+    }
+
+    async function wlPlay(btn) {
+        const row = btn.closest('.tk-call');
+        const slot = row && row.querySelector('.tk-audio-slot');
+        if (!slot) return;
+        const generation = _wlAudioGeneration;
+        const sequence = ++_wlPlaySequence;
+        slot.dataset.rec = btn.dataset.rec;
+        btn.disabled = true;
+        btn.classList.remove('is-error');
+        btn.textContent = 'Chargement…';
+        document.querySelectorAll('audio.tk-audio').forEach(a => { try { a.pause(); } catch (_) {} });
+        try {
+            // Initialisé dans le geste utilisateur, avant toute requête réseau.
+            await wlEnsureListeningContext();
+            if (generation !== _wlAudioGeneration || !btn.isConnected) return;
+            const url = await wlGetAudioUrl(btn.dataset.rec);
+            if (generation !== _wlAudioGeneration || !btn.isConnected || !slot.isConnected) return;
+            if (!url) throw new Error('Enregistrement indisponible');
+            // Un enregistrement ne garde qu'un lecteur, même s'il apparaît dans plusieurs périodes.
+            document.querySelectorAll('audio.tk-audio').forEach(a => {
+                if (a.dataset.rec === btn.dataset.rec) wlRemoveAudio(a);
+            });
+            const audio = document.createElement('audio');
+            audio.className = 'tk-audio';
+            audio.dataset.rec = btn.dataset.rec;
+            audio.controls = true;
+            audio.preload = 'none';
+            audio.src = url;
+            wlCenterAudio(audio);
+            audio.addEventListener('play', () => {
+                document.querySelectorAll('audio.tk-audio').forEach(a => { if (a !== audio) a.pause(); });
+                if (_wlListeningContext?.state === 'suspended') _wlListeningContext.resume().catch(() => {});
+            });
+            audio.addEventListener('error', () => {
+                if (audio.isConnected) { wlDropAudio(audio.dataset.rec); }
+            });
+            audio.addEventListener('ended', () => {
+                // Ne pas conserver un long appel dépassant le budget après son écoute.
+                if ((_wlAudioBytes.get(audio.dataset.rec) || 0) > WL_AUDIO_BUDGET) wlDropAudio(audio.dataset.rec);
+            });
+            slot.innerHTML = '';
+            slot.appendChild(audio);
+            btn.remove();
+            if (sequence === _wlPlaySequence) audio.play().catch(() => {});
+        } catch (_) {
+            if (generation !== _wlAudioGeneration || !btn.isConnected) return;
+            btn.disabled = false;
+            btn.textContent = 'Réessayer l’écoute';
+            btn.classList.add('is-error');
+            btn.title = 'Lecture indisponible. Cliquez pour réessayer.';
+        }
+    }
+
+    // Délégation d'événements, posée une seule fois par liste
+    function wlBindHistoryEvents(root) {
+        if (!root || root.dataset.wlBound === '1') return;
+        root.dataset.wlBound = '1';
+        const toggle = (chip) => {
+            const id = chip.getAttribute('data-talk-for');
+            const box = root.querySelector(`.tk-calls[data-calls-for="${id}"]`);
+            if (!box || !box.children.length) return;
+            box.hidden = !box.hidden;
+            chip.classList.toggle('is-open', !box.hidden);
+        };
+        root.addEventListener('click', (e) => {
+            const t = e.target instanceof Element ? e.target : null;
+            if (!t) return;
+            const play = t.closest('.tk-play');
+            if (play) { e.stopPropagation(); if (!play.disabled) wlPlay(play); return; }
+            const chip = t.closest('.tk-talk[role="button"]');
+            if (chip) { e.stopPropagation(); toggle(chip); return; }
+            if (t.closest('.tk-calls')) e.stopPropagation();
+        });
+        root.addEventListener('keydown', (e) => {
+            const chip = e.target instanceof Element && e.target.closest('.tk-talk[role="button"]');
+            if (chip && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(chip); }
+        });
+    }
+
     // Fonction pour mettre à jour la liste des tickets
-    function updateTicketsList(tickets) {
+    function updateTicketsList(tickets, partnerId) {
         const ticketsList = document.getElementById('ticketsList');
         if (!ticketsList) {
             console.log('[HISTORY] Element ticketsList non trouvé');
@@ -5111,7 +3588,7 @@
             return `
                 <div class="ticket-item" data-team="${teamInfo.name}" data-ticket-id="${ticket.id}">
                     <div class="ticket-header">
-                        <span class="ticket-title">${ticket.name || 'Sans titre'}</span>
+                        <span class="ticket-title">${tmEsc(ticket.name || 'Sans titre')}</span>
                         <span class="ticket-date">
                             <i class="fa fa-calendar"></i> ${formatDate(ticket.create_date)}
                             ${ticket.close_date ? `
@@ -5127,9 +3604,10 @@
                         </div>
                         <div class="ticket-assignee">
                             <i class="fa fa-user"></i>
-                            ${userName}
+                            ${tmEsc(userName)}
                         </div>
-                        <span class="ticket-status ${stageInfo.class}">${stageInfo.text}</span>
+                        <span class="ticket-status ${stageInfo.class}">${tmEsc(stageInfo.text)}</span>
+                        <span class="tk-talk is-empty" data-talk-for="${Number(ticket.id)}"></span>
                     </div>
                     ${ticket.description ? `
                         <div class="ticket-description">
@@ -5148,15 +3626,19 @@
                             </div>
                         </div>
                     ` : ''}
+                    <div class="tk-calls" data-calls-for="${Number(ticket.id)}" hidden></div>
                 </div>
             `;
         }).join('');
 
         ticketsList.innerHTML = html;
+        wlBindHistoryEvents(ticketsList);
 
         // Ajouter les événements de clic pour ouvrir les tickets
         ticketsList.querySelectorAll('.ticket-item').forEach(item => {
-            item.addEventListener('click', () => {
+            item.addEventListener('click', (e) => {
+                // Clics sur les appels / le lecteur audio : ne pas ouvrir le ticket
+                if (e.target instanceof Element && e.target.closest('.tk-talk, .tk-calls')) return;
                 const ticketId = item.dataset.ticketId;
                 if (ticketId) {
                     console.log('[HISTORY] Ouverture du ticket:', ticketId);
@@ -5170,6 +3652,9 @@
         if (headerElement) {
             headerElement.textContent = `Historique des tickets (${records.length})`;
         }
+
+        // Appels Winlink (durée + enregistrements) : une requête groupée, en arrière-plan
+        if (partnerId) loadWinlinkCalls(records, partnerId, ticketsList);
 
         console.log('[HISTORY] Liste des tickets mise à jour avec', records.length, 'tickets');
     }
@@ -5351,16 +3836,11 @@
             <div class="historique-header">
                 <div class="historique-header-left">
                     <span>Historique des tickets</span>
-                    <div class="theme-toggle-container">
-                        <button class="theme-toggle-btn" id="theme-toggle" title="Basculer le thème sombre">
-                            <i class="fa fa-moon-o"></i>
-                        </button>
-                    </div>
                 </div>
                 <div class="historique-header-right">
                     <div class="ticket-filters">
-                        <input type="text" class="filter-input" placeholder="Rechercher (titre, description, notes, utilisateur)..." id="ticketSearch">
-                        <select class="filter-input" id="teamFilter">
+                        <input type="search" class="form-control form-control-sm" placeholder="Rechercher dans les tickets…" id="ticketSearch">
+                        <select class="form-select form-select-sm" id="teamFilter">
                             <option value="">Toutes les équipes</option>
                             <option value="Hotline">Hotline</option>
                             <option value="LogicielN2">Logiciel N2</option>
@@ -5429,6 +3909,7 @@
     }
 
     async function openPartnerHistoryModal(partnerId, partnerName) {
+        wlReleaseAudio();
         document.getElementById('partner-history-modal')?.remove();
 
         const overlay = document.createElement('div');
@@ -5440,14 +3921,16 @@
 
         const title = document.createElement('div');
         title.className = 'partner-history-modal-toolbar';
-        title.innerHTML = `<span>${partnerName || ('Client #' + partnerId)} — Historique des tickets</span>`;
+        title.innerHTML = `<span>${tmEsc(partnerName || ('Client #' + partnerId))}</span>`;
 
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button';
-        closeBtn.className = 'partner-history-modal-close';
+        closeBtn.className = 'tm-icon-btn';
+        closeBtn.setAttribute('aria-label', 'Fermer');
         closeBtn.title = 'Fermer';
         closeBtn.innerHTML = '<i class="fa fa-times"></i>';
-        closeBtn.addEventListener('click', () => overlay.remove());
+        const closeModal = () => { wlReleaseAudio(); overlay.remove(); };
+        closeBtn.addEventListener('click', closeModal);
         title.appendChild(closeBtn);
 
         const historyContainer = document.createElement('div');
@@ -5461,14 +3944,14 @@
         document.body.appendChild(overlay);
 
         overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) overlay.remove();
+            if (e.target === overlay) closeModal();
         });
 
         setupHistoryThemeToggle(historyContainer);
 
         const tickets = await fetchClientTickets(partnerId);
         if (tickets) {
-            updateTicketsList(tickets);
+            updateTicketsList(tickets, partnerId);
         } else {
             const ticketsList = historyContainer.querySelector('#ticketsList');
             if (ticketsList) ticketsList.innerHTML = '<div class="no-tickets">Aucun ticket trouvé</div>';
@@ -5527,9 +4010,10 @@
         setupHistoryThemeToggle(historyContainer);
 
         // Charger les tickets
-        const tickets = await fetchClientTickets();
+        const partnerId = await getIdToProcess();
+        const tickets = partnerId ? await fetchClientTickets(partnerId) : null;
         if (tickets) {
-            updateTicketsList(tickets);
+            updateTicketsList(tickets, partnerId);
         }
 
         // Ajouter les gestionnaires d'événements pour les filtres
@@ -5541,7 +4025,7 @@
             historyContainer.classList.add('visible');
             const button = document.getElementById('showHistoryButton');
             if (button) {
-                button.innerHTML = '<i class="fa fa-times"></i> Masquer l\'historique';
+                button.innerHTML = '<i class="fa fa-times"></i> Masquer l\'historique'; button.classList.add('is-active');
             }
         }
 
@@ -5571,8 +4055,8 @@
                 </div>
                 <div class="produits-header-right">
                     <div class="product-filters">
-                        <input type="text" class="filter-input" placeholder="Rechercher (nom, description, référence, SN)..." id="productSearch">
-                        <select class="filter-input" id="typeFilter">
+                        <input type="search" class="form-control form-control-sm" placeholder="Rechercher un produit, une référence, un n° de série…" id="productSearch">
+                        <select class="form-select form-select-sm" id="typeFilter">
                             <option value="">Tous les types</option>
                             <option value="normal">Normal</option>
                             <option value="express">Express</option>
@@ -5602,7 +4086,7 @@
             productsContainer.classList.add('visible');
             const button = document.getElementById('showProductsButton');
             if (button) {
-                button.innerHTML = '<i class="fa fa-times"></i> Masquer les produits';
+                button.innerHTML = '<i class="fa fa-times"></i> Masquer les produits'; button.classList.add('is-active');
             }
         }
 
@@ -5662,7 +4146,9 @@
         if (!historyButtonAdded && !document.getElementById('showHistoryButton')) {
             const historyButton = document.createElement('button');
             historyButton.id = 'showHistoryButton';
-            historyButton.innerHTML = '<i class="fa fa-history"></i> Historique des tickets';
+            historyButton.type = 'button';
+            historyButton.className = 'tm-btn';
+            historyButton.innerHTML = '<i class="fa fa-history"></i> Historique des tickets'; historyButton.classList.remove('is-active');
             historyButton.title = 'Afficher/masquer l\'historique des tickets';
 
             historyButton.addEventListener('click', function() {
@@ -5674,16 +4160,17 @@
                     saveHistoryState(isVisible);
 
                     if (isVisible) {
-                        historyButton.innerHTML = '<i class="fa fa-times"></i> Masquer l\'historique';
+                        historyButton.innerHTML = '<i class="fa fa-times"></i> Masquer l\'historique'; historyButton.classList.add('is-active');
                     } else {
-                        historyButton.innerHTML = '<i class="fa fa-history"></i> Historique des tickets';
+                        wlReleaseAudio();
+                        historyButton.innerHTML = '<i class="fa fa-history"></i> Historique des tickets'; historyButton.classList.remove('is-active');
                     }
                 } else {
                     addTicketHistory().then((newContainer) => {
                         if (newContainer) {
                             newContainer.classList.add('visible');
                             saveHistoryState(true);
-                            historyButton.innerHTML = '<i class="fa fa-times"></i> Masquer l\'historique';
+                            historyButton.innerHTML = '<i class="fa fa-times"></i> Masquer l\'historique'; historyButton.classList.add('is-active');
                         }
                     });
                 }
@@ -5698,7 +4185,9 @@
             console.log('[addHistoryAndProductsButtons] Création du bouton Produits...');
             const productsButton = document.createElement('button');
             productsButton.id = 'showProductsButton';
-            productsButton.innerHTML = '<i class="fa fa-cubes"></i> Produits du client';
+            productsButton.type = 'button';
+            productsButton.className = 'tm-btn';
+            productsButton.innerHTML = '<i class="fa fa-cubes"></i> Produits du client'; productsButton.classList.remove('is-active');
             productsButton.title = 'Afficher/masquer les produits du client';
 
             productsButton.addEventListener('click', function() {
@@ -5709,11 +4198,11 @@
 
                     if (wasVisible) {
                         productsContainer.classList.remove('visible');
-                        productsButton.innerHTML = '<i class="fa fa-cubes"></i> Produits du client';
+                        productsButton.innerHTML = '<i class="fa fa-cubes"></i> Produits du client'; productsButton.classList.remove('is-active');
                         saveProductsState(false);
                     } else {
                         productsContainer.classList.add('visible');
-                        productsButton.innerHTML = '<i class="fa fa-times"></i> Masquer les produits';
+                        productsButton.innerHTML = '<i class="fa fa-times"></i> Masquer les produits'; productsButton.classList.add('is-active');
                         saveProductsState(true);
                     }
                 } else {
@@ -5721,7 +4210,7 @@
                         if (newContainer) {
                             newContainer.classList.add('visible');
                             saveProductsState(true);
-                            productsButton.innerHTML = '<i class="fa fa-times"></i> Masquer les produits';
+                            productsButton.innerHTML = '<i class="fa fa-times"></i> Masquer les produits'; productsButton.classList.add('is-active');
                         }
                     });
                 }
@@ -5771,6 +4260,7 @@
             }
 
             document.getElementById('partner-history-modal')?.remove();
+            wlReleaseAudio();
 
             // Ajouter les boutons immédiatement
             setTimeout(() => {
@@ -5812,19 +4302,14 @@
         const st = document.createElement('style');
         st.textContent = `
         #tm-tel-wrap { display:flex; align-items:center; gap:6px; margin-top:6px; position:relative; flex-wrap:wrap; }
-        #tm-tel-wrap .tm-tel-input { box-sizing:border-box; border-radius:7px; padding:5px 9px; min-width:170px; height:30px;
-            background:rgba(128,128,128,.10); border:1px solid rgba(128,128,128,.35); color:inherit; font-size:12px; outline:none; }
-        #tm-tel-wrap .tm-tel-input:focus { border-color:#0d9488; box-shadow:0 0 0 2px rgba(13,148,136,.25); }
-        #tm-tel-wrap .tm-tel-btn { border:none; border-radius:7px; padding:5px 12px; height:30px; cursor:pointer;
-            background:#0d9488; color:#fff; font-size:12px; font-weight:600; white-space:nowrap; display:inline-flex; align-items:center; gap:6px; }
-        #tm-tel-wrap .tm-tel-btn:hover { filter:brightness(1.08); }
-        #tm-tel-suggest { position:absolute; left:0; top:calc(100% + 4px); z-index:2147483646; min-width:260px; max-height:280px; overflow:auto;
-            background:#1e2330; color:#e8eaf0; border:1px solid rgba(255,255,255,.12); border-radius:8px; box-shadow:0 8px 28px rgba(0,0,0,.45); display:none; }
-        #tm-tel-suggest .tm-it { padding:8px 10px; cursor:pointer; display:flex; flex-direction:column; gap:2px; border-bottom:1px solid rgba(255,255,255,.06); }
-        #tm-tel-suggest .tm-it:last-child { border-bottom:none; }
-        #tm-tel-suggest .tm-it:hover { background:rgba(13,148,136,.20); }
-        #tm-tel-suggest .tm-it .tm-nm { font-weight:600; font-size:13px; color:#fff; }
-        #tm-tel-suggest .tm-it .tm-ph { opacity:.8; font-size:11px; }
+        #tm-tel-wrap .tm-tel-input { width:180px; }
+        #tm-tel-suggest { position:absolute; left:0; top:calc(100% + 4px); z-index:2147483646; min-width:280px; max-height:300px; overflow:auto;
+            display:none; padding:4px 0; background:var(--tm-bg-elevated); color:var(--tm-text);
+            border:1px solid var(--tm-border); border-radius:var(--tm-radius); box-shadow:var(--tm-shadow); }
+        #tm-tel-suggest .tm-it { padding:7px 14px; cursor:pointer; display:flex; flex-direction:column; gap:1px; }
+        #tm-tel-suggest .tm-it:hover { background:var(--tm-bg-hover); }
+        #tm-tel-suggest .tm-it .tm-nm { font-weight:500; color:var(--tm-strong); }
+        #tm-tel-suggest .tm-it .tm-ph { font-size:12px; color:var(--tm-muted); }
         `;
         document.head.appendChild(st);
     }
@@ -6042,14 +4527,14 @@
 
         const wrap = document.createElement('div'); wrap.id = 'tm-tel-wrap';
         const telInput = document.createElement('input');
-        telInput.type = 'text'; telInput.className = 'tm-tel-input';
-        telInput.placeholder = 'n° téléphone…';
+        telInput.type = 'text'; telInput.className = 'tm-tel-input form-control form-control-sm';
+        telInput.placeholder = 'Numéro de téléphone';
         telInput.title = 'Rechercher le client par téléphone (+33, espaces et points acceptés)';
         telInput.autocomplete = 'off';
 
         const btn = document.createElement('button');
-        btn.type = 'button'; btn.className = 'tm-tel-btn';
-        btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6.62 10.79a15.15 15.15 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.24.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2z"/></svg>Rech. tél';
+        btn.type = 'button'; btn.className = 'tm-tel-btn tm-btn tm-btn-icon'; btn.title = 'Rechercher le client'; btn.setAttribute('aria-label', 'Rechercher le client');
+        btn.innerHTML = '<i class="fa fa-search" aria-hidden="true"></i>';
 
         const doSearch = async () => {
             const q = (telInput.value || '').trim();
@@ -6121,59 +4606,33 @@
         const st = document.createElement('style');
         st.textContent = `
         #tm-missed-fab {
-            position: relative;
-            display: inline-flex; align-items: center; justify-content: center;
-            flex: 0 0 auto; align-self: center;
-            width: 28px; height: 28px; padding: 0; margin: 0 8px;
-            border: none; border-radius: 50%;
-            background: linear-gradient(135deg,#e11d48,#9f1239); color: #fff;
-            cursor: pointer; vertical-align: middle; box-sizing: border-box;
-            box-shadow: 0 1px 4px rgba(225,29,72,.4);
-            transition: filter .12s ease, box-shadow .15s ease;
+            position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; align-self: center;
+            margin: 0 8px; padding: 0 10px;
         }
-        #tm-missed-fab:hover { filter: brightness(1.08); box-shadow: 0 2px 8px rgba(225,29,72,.55); }
-        #tm-missed-fab svg { width: 14px; height: 14px; flex: 0 0 auto; }
-        .tm-missed-count {
-            position: absolute; top: -6px; right: -6px;
-            min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
-            background: #fff; color: #9f1239; font-weight: 800; font-size: 10px; line-height: 16px;
-            display: inline-flex; align-items: center; justify-content: center;
-            box-shadow: 0 0 0 1.5px #9f1239;
+        #tm-missed-fab .tm-missed-count {
+            min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; box-sizing: border-box;
+            background: var(--tm-danger); color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center;
+            font-variant-numeric: tabular-nums;
         }
-        .tm-missed-count.tm-missed-zero { background: #94a3b8; color: #fff; box-shadow: none; }
-        #tm-missed-panel {
-            position: fixed; top: 52px; right: 16px; z-index: 99999;
-            width: 360px; max-height: 70vh; display: flex; flex-direction: column;
-            background: #0f172a; color: #e2e8f0; border: 1px solid #1e293b;
-            border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.45); overflow: hidden;
-        }
-        .tm-missed-head {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 10px 12px; font-weight: 700; font-size: 13px;
-            background: linear-gradient(135deg,#e11d48,#9f1239); color: #fff;
-        }
-        .tm-missed-head button {
-            background: rgba(255,255,255,.15); border: none; color: #fff; cursor: pointer;
-            width: 24px; height: 24px; border-radius: 6px; font-size: 13px; margin-left: 6px;
-        }
-        .tm-missed-head button:hover { background: rgba(255,255,255,.3); }
-        .tm-missed-body { overflow-y: auto; padding: 6px; }
-        .tm-missed-empty { padding: 22px 12px; text-align: center; color: #94a3b8; font-size: 13px; }
+        #tm-missed-fab .tm-missed-count.tm-missed-zero { background: var(--tm-bg-subtle); color: var(--tm-muted); }
+        #tm-missed-fab .tm-missed-ico { color: var(--tm-muted); flex: 0 0 auto; }
+        #tm-missed-fab.has-missed .tm-missed-ico { color: var(--tm-danger); }
+        #tm-missed-fab.has-missed { border-color: var(--tm-danger) !important; }
+        #tm-missed-fab .tm-missed-label { font-weight: 500; }
+        #tm-missed-panel { top: 52px; width: 360px; max-height: 70vh; z-index: 99999; }
         .tm-missed-row {
-            display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
-            padding: 8px 10px; border-radius: 8px; margin-bottom: 4px; background: #1e293b;
+            display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 1px 12px;
+            padding: 9px 16px; border-bottom: 1px solid var(--tm-border);
         }
+        .tm-missed-row:last-child { border-bottom: 0; }
         .tm-missed-row-main { display: flex; align-items: center; gap: 8px; }
-        .tm-missed-phone { font-weight: 700; font-size: 14px; color: #fff; }
-        .tm-missed-badge { background: #e11d48; color: #fff; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 10px; }
-        .tm-missed-time { grid-column: 2; grid-row: 1 / span 2; align-self: center; font-size: 12px; color: #94a3b8; white-space: nowrap; }
-        .tm-missed-name { grid-column: 1; font-size: 12.5px; color: #38bdf8; }
-        .tm-missed-resolving { color: #64748b; font-style: italic; }
-        .tm-missed-unknown { color: #64748b; }
-        .tm-missed-section { padding: 8px 6px 4px; font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .4px; }
-        .tm-missed-row.tm-missed-done { opacity: .55; }
-        .tm-missed-row.tm-missed-done .tm-missed-phone { text-decoration: line-through; }
-        .tm-missed-ok { background: #16a34a; color: #fff; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 10px; }
+        .tm-missed-phone { font-weight: 500; color: var(--tm-strong); font-variant-numeric: tabular-nums; }
+        .tm-missed-badge { font-size: 12px; color: var(--tm-danger); }
+        .tm-missed-ok { font-size: 12px; color: var(--tm-success); }
+        .tm-missed-time { grid-column: 2; grid-row: 1; font-size: 12px; color: var(--tm-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .tm-missed-name { grid-column: 1 / -1; font-size: 12.5px; color: var(--tm-link); }
+        .tm-missed-resolving, .tm-missed-unknown { color: var(--tm-muted); }
+        .tm-missed-row.tm-missed-done .tm-missed-phone { color: var(--tm-muted); font-weight: 400; }
         `;
         document.head.appendChild(st);
     }
@@ -6207,6 +4666,8 @@
         const c = _tmMissedData ? Number(_tmMissedData.count || 0) : 0;
         el.textContent = String(c);
         el.classList.toggle('tm-missed-zero', c === 0);
+        const fab = document.getElementById('tm-missed-fab');
+        if (fab) fab.classList.toggle('has-missed', c > 0);
     }
 
     async function tmMissedRefresh(force) {
@@ -6221,24 +4682,82 @@
         if (document.getElementById('tm-missed-panel')) tmMissedRenderPanel();
     }
 
+    // Noms des numéros inconnus du portail. Avant : jusqu'à ~15 requêtes Odoo PAR numéro
+    // (une par variante d'écriture), numéro après numéro, oubliées au rechargement.
+    // Maintenant : cache navigateur (7 jours, 1 jour si introuvable), puis UNE requête
+    // groupée pour tous les numéros restants, et un repli individuel limité à 5 numéros.
+    const TM_MISSED_NAMES_KEY = 'tm_missed_names_v1';
+    function tmMissedNameStore() {
+        try { const v = JSON.parse(localStorage.getItem(TM_MISSED_NAMES_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; }
+        catch (_) { return {}; }
+    }
+    function tmMissedNameStoreSave(store) {
+        const now = Date.now();
+        Object.keys(store).forEach(k => { if (!store[k] || now - store[k].t > 7 * 864e5) delete store[k]; });
+        try { localStorage.setItem(TM_MISSED_NAMES_KEY, JSON.stringify(store)); } catch (_) {}
+    }
+
+    async function tmMissedBatchLookup(suffixes) {
+        const found = new Map();
+        if (!suffixes.length) return found;
+        if (!_wlPhoneFields) {
+            const defs = await odooRpc('res.partner', 'fields_get', [['phone', 'mobile'], ['type']]) || {};
+            _wlPhoneFields = ['phone', 'mobile'].filter(f => defs[f]);
+            if (!_wlPhoneFields.length) _wlPhoneFields = ['phone'];
+        }
+        const conds = suffixes.map(x => ['phone_mobile_search', 'ilike', x]);
+        const domain = Array(conds.length - 1).fill('|').concat(conds);
+        const recs = await odooRpc('res.partner', 'search_read', [domain, ['display_name'].concat(_wlPhoneFields), 0, 300]) || [];
+        const wanted = new Set(suffixes);
+        recs.forEach(r => _wlPhoneFields.forEach(f => {
+            const sfx = String(r[f] || '').replace(/\D/g, '').slice(-9);
+            if (wanted.has(sfx) && !found.has(sfx)) found.set(sfx, r.display_name || '');
+        }));
+        return found;
+    }
+
     async function tmMissedResolveNames(panel, entries) {
+        const store = tmMissedNameStore();
+        const now = Date.now();
+        const sfxOf = (phone) => String(phone || '').replace(/\D/g, '').slice(-9);
+        const paint = (sfx, name) => {
+            if (!panel.isConnected) return;
+            panel.querySelectorAll('.tm-missed-row[data-digits]').forEach(row => {
+                if (!row.dataset.digits.endsWith(sfx)) return;
+                const cell = row.querySelector('[data-name]');
+                if (cell) cell.innerHTML = name ? tmMissedEsc(name) : '<span class="tm-missed-unknown">Numéro inconnu</span>';
+            });
+        };
+
+        const todo = new Map(); // sfx -> numéro d'origine
         for (const g of entries) {
             if (g.partner_name) continue;
-            const digits = (g.phone || '').replace(/\D/g, '');
-            if (!digits) continue;
-            let name = _tmMissedNameCache[digits];
-            if (name === undefined) {
-                try {
-                    const recs = await tmTelSearchPartner(g.phone, 1);
-                    name = recs && recs.length ? (recs[0].display_name || '') : '';
-                } catch (_) { name = ''; }
-                _tmMissedNameCache[digits] = name;
-            }
-            if (!panel.isConnected) return;
-            panel.querySelectorAll(`.tm-missed-row[data-digits="${digits}"] [data-name]`).forEach(cell => {
-                cell.innerHTML = name ? tmMissedEsc(name) : '<span class="tm-missed-unknown">Numéro inconnu</span>';
-            });
+            const sfx = sfxOf(g.phone);
+            if (sfx.length < 9) continue;
+            const hit = _tmMissedNameCache[sfx] !== undefined ? { n: _tmMissedNameCache[sfx] } : store[sfx];
+            const fresh = hit && (hit.t === undefined || now - hit.t < (hit.n ? 7 * 864e5 : 864e5));
+            if (fresh) paint(sfx, hit.n); else todo.set(sfx, g.phone);
         }
+        if (!todo.size) return;
+
+        let found = new Map();
+        try { found = await tmMissedBatchLookup([...todo.keys()]); } catch (_) {}
+        const rest = [...todo.keys()].filter(x => !found.has(x)).slice(0, 5);
+        await Promise.all(rest.map(async sfx => {
+            try {
+                const recs = await tmTelSearchPartner(todo.get(sfx), 1);
+                if (recs && recs.length) found.set(sfx, recs[0].display_name || '');
+            } catch (_) {}
+        }));
+
+        for (const sfx of todo.keys()) {
+            if (!found.has(sfx) && !rest.includes(sfx)) continue; // au-delà des 5 : retenté au prochain affichage
+            const name = found.get(sfx) || '';
+            _tmMissedNameCache[sfx] = name;
+            store[sfx] = { n: name, t: now };
+            paint(sfx, name);
+        }
+        tmMissedNameStoreSave(store);
     }
 
     function tmMissedRowHtml(g, resolved) {
@@ -6250,7 +4769,7 @@
         return `<div class="tm-missed-row${resolved ? ' tm-missed-done' : ''}" data-digits="${digits}">`
             + `<div class="tm-missed-row-main"><span class="tm-missed-phone">${tmMissedEsc(g.phone || '')}</span>`
             + (att > 1 ? `<span class="tm-missed-badge">${att} manqués</span>` : '')
-            + (resolved ? '<span class="tm-missed-ok">✓ rappelé</span>' : '') + `</div>`
+            + (resolved ? '<span class="tm-missed-ok">Rappelé</span>' : '') + `</div>`
             + `<div class="tm-missed-name" data-name>${nameHtml}</div>`
             + `<div class="tm-missed-time">${tmMissedFmtTime(g.last_time)}</div>`
             + `</div>`;
@@ -6258,30 +4777,31 @@
 
     function tmMissedRenderPanel() {
         let panel = document.getElementById('tm-missed-panel');
-        if (!panel) { panel = document.createElement('div'); panel.id = 'tm-missed-panel'; document.body.appendChild(panel); }
+        if (!panel) { panel = document.createElement('div'); panel.id = 'tm-missed-panel'; panel.className = 'tm-pop'; document.body.appendChild(panel); }
 
         const data = _tmMissedData;
         const pending = data && Array.isArray(data.pending) ? data.pending : [];
         const resolved = data && Array.isArray(data.resolved) ? data.resolved : [];
-        const head = `<div class="tm-missed-head"><span>📞 À rappeler aujourd'hui</span>`
-            + `<div><button id="tm-missed-reload" title="Rafraîchir">⟳</button>`
-            + `<button id="tm-missed-close" title="Fermer">✕</button></div></div>`;
+        const head = `<div class="tm-pop-head"><span class="tm-pop-title">À rappeler aujourd'hui</span>`
+            + (data ? `<span class="tm-pop-count">${pending.length}</span>` : '')
+            + `<span class="tm-pop-actions"><button type="button" class="tm-icon-btn" id="tm-missed-reload" title="Actualiser" aria-label="Actualiser"><i class="fa fa-refresh" aria-hidden="true"></i></button>`
+            + `<button type="button" class="tm-icon-btn" id="tm-missed-close" title="Fermer" aria-label="Fermer"><i class="fa fa-times" aria-hidden="true"></i></button></span></div>`;
 
         let body;
-        if (!data) body = `<div class="tm-missed-empty">Chargement…</div>`;
-        else if (!pending.length && !resolved.length) body = `<div class="tm-missed-empty">Aucun appel manqué aujourd'hui 🎉</div>`;
-        else if (!pending.length) body = `<div class="tm-missed-empty">Tous les appels manqués ont été rappelés 👍</div>`
-            + `<div class="tm-missed-section">Déjà rappelés (${resolved.length})</div>`
+        if (!data) body = `<div class="tm-pop-empty">Chargement…</div>`;
+        else if (!pending.length && !resolved.length) body = `<div class="tm-pop-empty">Aucun appel manqué aujourd'hui</div>`;
+        else if (!pending.length) body = `<div class="tm-pop-empty">Tous les appels manqués ont été rappelés</div>`
+            + `<div class="tm-pop-section">Déjà rappelés · ${resolved.length}</div>`
             + resolved.map(g => tmMissedRowHtml(g, true)).join('');
         else {
             body = pending.map(g => tmMissedRowHtml(g, false)).join('');
             if (resolved.length) {
-                body += `<div class="tm-missed-section">Déjà rappelés (${resolved.length})</div>`
+                body += `<div class="tm-pop-section">Déjà rappelés · ${resolved.length}</div>`
                     + resolved.map(g => tmMissedRowHtml(g, true)).join('');
             }
         }
 
-        panel.innerHTML = head + `<div class="tm-missed-body">${body}</div>`;
+        panel.innerHTML = head + `<div class="tm-pop-body">${body}</div>`;
         panel.querySelector('#tm-missed-close')?.addEventListener('click', () => panel.remove());
         panel.querySelector('#tm-missed-reload')?.addEventListener('click', () => tmMissedRefresh(true));
         const toResolve = pending.concat(resolved);
@@ -6291,8 +4811,8 @@
     function tmMissedTogglePanel() {
         const existing = document.getElementById('tm-missed-panel');
         if (existing) { existing.remove(); return; }
-        tmMissedRenderPanel();
-        tmMissedRefresh(true);
+        tmMissedRenderPanel();                                   // affichage immédiat des données en cache
+        tmMissedRefresh(Date.now() - _tmMissedLastFetch > 30000); // rafraîchi seulement si > 30 s
     }
 
     function tmMissedFindAnchor() {
@@ -6320,15 +4840,15 @@
         fab.id = 'tm-missed-fab';
         fab.type = 'button';
         fab.title = "Appels manqués non rappelés (aujourd'hui)";
-        fab.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">'
-            + '<path d="M6.62 10.79a15.15 15.15 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.24.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2z"/>'
-            + '<path d="M16 2l6 6M22 2l-6 6" stroke="currentColor" stroke-width="2" fill="none"/></svg>'
-            + '<span class="tm-missed-count" id="tm-missed-count">…</span>';
+        fab.className = 'tm-btn';
+        // Icône « appel manqué » (Material Icons, licence Apache 2.0)
+        fab.innerHTML = '<svg class="tm-missed-ico" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6.5 5.5L12 11l7-7-1-1-6 6-4.5-4.5H11V3H5v6h1.5V5.5zm17.21 11.17C20.66 13.78 16.54 12 12 12 7.46 12 3.34 13.78.29 16.67c-.18.18-.29.43-.29.71s.11.53.29.71l2.48 2.48c.18.18.43.29.71.29.27 0 .52-.1.7-.28.79-.73 1.68-1.36 2.66-1.85.33-.16.56-.5.56-.9v-3.1c1.45-.48 3-.73 4.6-.73 1.6 0 3.15.25 4.6.72v3.1c0 .39.23.74.56.9.98.49 1.88 1.11 2.67 1.85.18.18.43.28.7.28.28 0 .53-.11.71-.29l2.48-2.48c.18-.18.29-.43.29-.71s-.12-.52-.3-.7z"/></svg>'
+            + '<span class="tm-missed-label">Manqués</span><span class="tm-missed-count" id="tm-missed-count">…</span>';
         fab.addEventListener('click', tmMissedTogglePanel);
 
         if (anchor.mode === 'prepend') anchor.el.insertBefore(fab, anchor.el.firstChild);
         else anchor.el.parentNode.insertBefore(fab, anchor.el);
-        tmMissedRefresh(true);
+        tmMissedRefresh(false); // réutilise les données de moins de 60 s (retour sur la liste)
     }
 
     // =========================================================
@@ -6340,7 +4860,7 @@
     // les deux chiffres que le hotliner a le droit de voir. Les objectifs ne
     // transitent jamais jusqu'ici — ce fichier est lisible depuis l'éditeur
     // Tampermonkey, n'y remettez aucun seuil.
-    const HS_FLAME = '\uD83D\uDD25';   // emoji flamme via escape (encodage sûr)
+    const HS_FLAME = '<i class="fa fa-fire" aria-hidden="true"></i>';   // icône de série (Font Awesome d'Odoo)
     const HS_REFRESH_MS = 300000;      // 5 min entre deux relevés
     const HS_MIN_GAP_MS = 10000;       // plancher anti-rafale, même sur demande explicite
     let _hsData = null;
@@ -6365,65 +4885,36 @@
         const st = document.createElement('style');
         st.textContent = `
         #tm-hs-gauge {
-            position: fixed; top: 6px; left: 50%; transform: translateX(-50%);
-            z-index: 99998;
-            display: inline-flex; align-items: center; gap: 9px;
-            height: 26px; padding: 0 11px; box-sizing: border-box;
-            border-radius: 13px; cursor: pointer;
-            -webkit-user-select: none; user-select: none;
-            background: rgba(15,23,42,.86);
-            border: 1px solid rgba(148,163,184,.3);
-            box-shadow: 0 2px 10px rgba(0,0,0,.35);
-            transition: box-shadow .15s ease, border-color .25s ease;
+            position: fixed; top: 7px; left: 50%; transform: translateX(-50%); z-index: 99998;
+            display: inline-flex; align-items: center; gap: 8px; height: 24px; padding: 0 10px; box-sizing: border-box;
+            border-radius: 12px; cursor: pointer; user-select: none;
+            background: var(--tm-bg-elevated); border: 1px solid var(--tm-border); box-shadow: 0 1px 3px rgba(0,0,0,.12);
         }
-        #tm-hs-gauge:hover { box-shadow: 0 4px 16px rgba(0,0,0,.45); }
-        #tm-hs-gauge:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
-        .tm-hs-bars { display: inline-flex; align-items: center; gap: 3px; }
-        .tm-hs-seg {
-            display: block; width: 7px; height: 13px; border-radius: 2px;
-            background: rgba(148,163,184,.25); transition: background .25s ease;
-        }
-        #tm-hs-gauge[data-level="red"]   .tm-hs-seg.on { background: #ef4444; }
-        #tm-hs-gauge[data-level="amber"] .tm-hs-seg.on { background: #f59e0b; }
-        #tm-hs-gauge[data-level="green"] .tm-hs-seg.on { background: #22c55e; }
-        #tm-hs-gauge[data-level="amber"] { border-color: rgba(245,158,11,.5); }
-        #tm-hs-gauge[data-level="green"] {
-            border-color: rgba(34,197,94,.6); box-shadow: 0 2px 14px rgba(34,197,94,.3);
-        }
-        .tm-hs-flame { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; line-height: 1; }
-        .tm-hs-flame b { font-size: 11px; font-weight: 800; color: #fed7aa; }
-
+        #tm-hs-gauge:hover { border-color: var(--tm-muted); }
+        #tm-hs-gauge:focus-visible { outline: 2px solid var(--tm-link); outline-offset: 2px; }
+        .tm-hs-bars { display: inline-flex; align-items: center; gap: 2px; }
+        .tm-hs-seg { display: block; width: 6px; height: 10px; border-radius: 1px; background: var(--tm-border); }
+        #tm-hs-gauge[data-level="red"]   .tm-hs-seg.on { background: var(--tm-danger); }
+        #tm-hs-gauge[data-level="amber"] .tm-hs-seg.on { background: var(--tm-warning); }
+        #tm-hs-gauge[data-level="green"] .tm-hs-seg.on { background: var(--tm-success); }
+        .tm-hs-flame { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--tm-warning); }
+        .tm-hs-flame b { font-size: 11.5px; font-weight: 600; color: var(--tm-text); }
         #tm-hs-panel {
-            position: fixed; top: 40px; left: 50%; transform: translateX(-50%);
-            z-index: 99999; width: 268px;
-            background: #0f172a; color: #e2e8f0;
-            border: 1px solid #1e293b; border-radius: 12px;
-            box-shadow: 0 10px 30px rgba(0,0,0,.45); overflow: hidden;
+            position: fixed; top: 38px; left: 50%; transform: translateX(-50%); z-index: 99999; width: 260px; overflow: hidden;
+            background: var(--tm-bg-elevated); color: var(--tm-text); font-size: 13px;
+            border: 1px solid var(--tm-border); border-radius: var(--tm-radius); box-shadow: var(--tm-shadow);
         }
-        .tm-hs-head {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 9px 12px; font-weight: 700; font-size: 13px;
-            background: linear-gradient(135deg,#334155,#1e293b); color: #fff;
-        }
-        #tm-hs-panel[data-level="red"]   .tm-hs-head { background: linear-gradient(135deg,#dc2626,#991b1b); }
-        #tm-hs-panel[data-level="amber"] .tm-hs-head { background: linear-gradient(135deg,#d97706,#b45309); }
-        #tm-hs-panel[data-level="green"] .tm-hs-head { background: linear-gradient(135deg,#16a34a,#15803d); }
-        .tm-hs-head button {
-            background: rgba(255,255,255,.18); border: none; color: #fff; cursor: pointer;
-            width: 22px; height: 22px; border-radius: 6px; font-size: 12px; line-height: 1;
-        }
-        .tm-hs-head button:hover { background: rgba(255,255,255,.32); }
-        .tm-hs-body { padding: 10px 12px 12px; }
-        .tm-hs-row {
-            display: flex; align-items: baseline; justify-content: space-between;
-            gap: 10px; padding: 5px 0; font-size: 12.5px; color: #94a3b8;
-        }
-        .tm-hs-row b { font-size: 15px; font-weight: 800; color: #fff; white-space: nowrap; }
-        .tm-hs-msg {
-            margin-top: 8px; padding-top: 9px; border-top: 1px solid #1e293b;
-            font-size: 12px; color: #cbd5e1; text-align: center;
-        }
-        .tm-hs-warn { margin-top: 6px; font-size: 11px; color: #fbbf24; text-align: center; }
+        .tm-hs-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--tm-border); font-weight: 600; color: var(--tm-strong); }
+        .tm-hs-head span::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; background: var(--tm-border); vertical-align: middle; }
+        #tm-hs-panel[data-level="red"]   .tm-hs-head span::before { background: var(--tm-danger); }
+        #tm-hs-panel[data-level="amber"] .tm-hs-head span::before { background: var(--tm-warning); }
+        #tm-hs-panel[data-level="green"] .tm-hs-head span::before { background: var(--tm-success); }
+        .tm-hs-body { padding: 6px 16px 12px; }
+        .tm-hs-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 5px 0; color: var(--tm-muted); }
+        .tm-hs-row b { font-weight: 600; color: var(--tm-strong); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .tm-hs-row b .fa { color: var(--tm-warning); }
+        .tm-hs-msg { margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--tm-border); color: var(--tm-text); }
+        .tm-hs-warn { margin-top: 6px; font-size: 12px; color: var(--tm-warning); }
         `;
         document.head.appendChild(st);
     }
@@ -6472,7 +4963,7 @@
         p.dataset.level = level;
 
         const head = `<div class="tm-hs-head"><span>Ma journée</span>`
-            + `<button type="button" id="tm-hs-close" title="Fermer" aria-label="Fermer">✕</button></div>`;
+            + `<button type="button" class="tm-icon-btn" id="tm-hs-close" title="Fermer" aria-label="Fermer"><i class="fa fa-times" aria-hidden="true"></i></button></div>`;
 
         if (!d) {
             p.innerHTML = head + `<div class="tm-hs-body"><div class="tm-hs-msg">Chargement…</div></div>`;
@@ -6601,13 +5092,355 @@
     }
 
     // =========================================================
+    // OPÉRATEUR EN LIGNE AVEC LE CLIENT (liste des tickets)
+    // =========================================================
+    // Le portail (api/live_calls.php) connaît les appels en cours, signalés par le poste
+    // de chaque opérateur. Sur la liste des tickets, chaque ligne dont le client est
+    // actuellement au téléphone reçoit :
+    //  - un liseré vert à gauche de la ligne,
+    //  - si l'opérateur au téléphone est l'assigné : anneau vert fixe autour de sa photo et
+    //    « ● En appel · 03:12 » sous son nom,
+    //  - sinon : ses initiales avec un point vert et « En appel avec Marie · 00:41 » sous le client.
+    //  Le chrono avance chaque seconde.
+    // Coût : une requête portail toutes les 6 s (liste affichée et onglet visible
+    // uniquement) ; la résolution numéro → client Odoo est mise en cache 10 min.
+    const PORTAL_LIVE_CALLS_URL = 'https://hotline.sippharma.fr/odoospeek/portal/api/live_calls.php';
+    const LIVE_POLL_MS = 6000;
+    const LIVE_PHONE_TTL_MS = 10 * 60 * 1000;
+    let _liveCalls = [];                    // [{ user, phone, started_at, direction, commercialIds:Set }]
+    let _liveClockOffset = 0;               // secondes : heure portail - heure locale
+    let _liveBusy = false;
+    let _liveLastPoll = 0;
+    let _liveLastSuccess = 0;
+    const LIVE_STALE_MS = 45000;
+    const _livePhoneRequests = new Map();
+    let _livePhoneFieldsPromise = null;
+    let _liveRendering = false;
+    let _liveRenderAgain = false;
+    const _livePhoneCache = new Map();      // 9 derniers chiffres -> { ids:Set(commercial), at }
+    const _liveCommercialOf = new Map();    // partnerId -> commercialPartnerId
+
+    function liveFetch() {
+        return new Promise((resolve) => {
+            if (typeof GM_xmlhttpRequest !== 'function') { resolve(null); return; }
+            try {
+                GM_xmlhttpRequest({
+                    method: 'GET', url: PORTAL_LIVE_CALLS_URL, timeout: 8000, anonymous: false,
+                    headers: { 'X-Api-Key': PORTAL_API_KEY },
+                    onload: (resp) => {
+                        try { if (resp && resp.status === 200) { resolve(JSON.parse(resp.responseText)); return; } } catch (_) {}
+                        resolve(null);
+                    },
+                    onerror: () => resolve(null),
+                    ontimeout: () => resolve(null)
+                });
+            } catch (_) { resolve(null); }
+        });
+    }
+
+    // Nom normalisé pour comparer « SAIR ALEXIS » (Odoo) et « Alexis Sair » (téléphonie)
+    function liveNormName(n) {
+        return String(n || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+            .replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean).sort().join(' ');
+    }
+
+    // Prénom affiché : le nom est au format « NOM PRÉNOM » côté Odoo
+    function liveFirstName(n) {
+        const parts = String(n || '').trim().split(/\s+/);
+        const p = parts.length > 1 ? parts.slice(1).join(' ') : parts[0] || '';
+        return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+    }
+
+    function liveFmtElapsed(sec) {
+        sec = Math.max(0, Math.floor(sec));
+        const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+        const p = n => String(n).padStart(2, '0');
+        return h ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
+    }
+
+    function livePhoneKey(phone) {
+        let digits = String(phone || '').replace(/\D/g, '');
+        if (digits.startsWith('00')) digits = digits.slice(2);
+        if (/^330[1-9]\d{8}$/.test(digits)) digits = digits.slice(2);
+        else if (/^33[1-9]\d{8}$/.test(digits)) digits = '0' + digits.slice(2);
+        return digits;
+    }
+
+    async function liveReadRpc(method, args) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        try {
+            const value = await odooRpc('res.partner', method, args, {}, { signal: controller.signal });
+            if (value == null) throw new Error('Lecture Odoo temporairement indisponible');
+            return value;
+        } finally { clearTimeout(timeout); }
+    }
+
+    async function livePhoneFields() {
+        if (!_livePhoneFieldsPromise) {
+            _livePhoneFieldsPromise = liveReadRpc('fields_get', [
+                ['phone', 'mobile', 'phone_mobile_search'], ['type']
+            ]).then(defs => {
+                const fields = ['phone', 'mobile'].filter(f => defs && defs[f]);
+                return { fields: fields.length ? fields : ['phone'], search: !!(defs && defs.phone_mobile_search) };
+            }).catch(() => {
+                _livePhoneFieldsPromise = null;
+                return { fields: ['phone'], search: false };
+            });
+        }
+        return _livePhoneFieldsPromise;
+    }
+
+    async function liveCommercialIdsForPhone(phone) {
+        const key = livePhoneKey(phone);
+        if (key.length < 9) return new Set();
+        const hit = _livePhoneCache.get(key);
+        if (hit && Date.now() - hit.at < (hit.ids.size ? LIVE_PHONE_TTL_MS : 60000)) return hit.ids;
+        if (_livePhoneRequests.has(key)) return _livePhoneRequests.get(key);
+        const pending = (async () => {
+            const ids = new Set();
+            try {
+                const defs = await livePhoneFields();
+                // Une seule recherche par numéro : jamais la boucle des variantes name_search.
+                const variants = new Set([String(phone).trim(), key]);
+                const group = (n, sep) => n.replace(/(\d{2})(?=\d)/g, '$1' + sep);
+                [' ', '.', '-'].forEach(sep => variants.add(group(key, sep)));
+                if (/^0[1-9]\d{8}$/.test(key)) {
+                    variants.add('+33' + key.slice(1));
+                    variants.add('33' + key.slice(1));
+                    variants.add('0033' + key.slice(1));
+                }
+                const clauses = defs.search
+                    ? [['phone_mobile_search', 'ilike', /^0[1-9]\d{8}$/.test(key) ? key.slice(1) : key]]
+                    : defs.fields.flatMap(f => [...variants].map(v => [f, 'ilike', v]));
+                const domain = Array(Math.max(0, clauses.length - 1)).fill('|').concat(clauses);
+                const fields = ['id', 'commercial_partner_id'].concat(defs.fields);
+                const rows = await liveReadRpc('search_read', [domain, fields, 0, 30]);
+                if (!Array.isArray(rows)) throw new Error('Réponse Odoo inattendue');
+                rows.forEach(r => {
+                    // Un même suffixe peut exister dans deux pays : validation canonique complète.
+                    const exact = defs.fields.some(f => livePhoneKey(r[f]) === key);
+                    if (!exact) return;
+                    const cid = m2oId(r.commercial_partner_id) || r.id;
+                    _liveCommercialOf.set(r.id, cid);
+                    ids.add(cid);
+                });
+            } catch (_) { return ids; } // Une erreur n'est pas mémorisée comme « client absent ».
+            _livePhoneCache.delete(key);
+            _livePhoneCache.set(key, { ids, at: Date.now() });
+            while (_livePhoneCache.size > 200) _livePhoneCache.delete(_livePhoneCache.keys().next().value);
+            return ids;
+        })();
+        _livePhoneRequests.set(key, pending);
+        try { return await pending; }
+        finally { _livePhoneRequests.delete(key); }
+    }
+
+    function liveExpireCalls() {
+        if (!_liveCalls.length) return;
+        const serverNow = Date.now() / 1000 + _liveClockOffset;
+        const fresh = Date.now() - _liveLastSuccess <= LIVE_STALE_MS;
+        const remaining = fresh ? _liveCalls.filter(c => {
+            const expires = Number(c.expires_at);
+            return !Number.isFinite(expires) || expires <= 0 || expires > serverNow;
+        }) : [];
+        if (remaining.length !== _liveCalls.length) {
+            _liveCalls = remaining;
+            document.querySelectorAll('.tm-live-row').forEach(liveClearRow);
+            if (remaining.length && isTicketList()) renderLiveCalls().catch(() => {});
+        }
+    }
+
+    async function liveEnsureCommercialOf(partnerIds) {
+        const todo = [...new Set(partnerIds.filter(id => id && !_liveCommercialOf.has(id)))];
+        if (!todo.length) return;
+        // Le verrou de renderLiveCalls mutualise les rendus Owl/rafraîchissements.
+        for (let i = 0; i < todo.length; i += 100) {
+            const batch = todo.slice(i, i + 100);
+            const rows = await liveReadRpc('read', [batch, ['commercial_partner_id']]);
+            if (!Array.isArray(rows)) throw new Error('Réponse Odoo inattendue');
+            rows.forEach(r => _liveCommercialOf.set(r.id, m2oId(r.commercial_partner_id) || r.id));
+            batch.forEach(id => { if (!_liveCommercialOf.has(id)) _liveCommercialOf.set(id, id); });
+        }
+    }
+
+    async function refreshLiveCalls(force) {
+        liveExpireCalls();
+        if (!isTicketList() || document.hidden || _liveBusy) return;
+        if (!force && Date.now() - _liveLastPoll < LIVE_POLL_MS - 500) return;
+        _liveBusy = true;
+        _liveLastPoll = Date.now();
+        try {
+            const data = await liveFetch();
+            if (!data || !data.ok) return;
+            const receivedAt = Date.now();
+            const serverNow = Number(data.now);
+            if (Number.isFinite(serverNow) && serverNow > 0) _liveClockOffset = serverNow - Date.now() / 1000;
+            const calls = (Array.isArray(data.calls) ? data.calls : []).filter(c =>
+                c && typeof c.phone === 'string' && Number.isFinite(Number(c.started_at)) && Number(c.started_at) > 0
+            ).slice(0, 100);
+            // Concurrence bornée à deux lectures Odoo, y compris pour une grande équipe.
+            for (let i = 0; i < calls.length; i += 2) {
+                await Promise.all(calls.slice(i, i + 2).map(async c => { c.commercialIds = await liveCommercialIdsForPhone(c.phone); }));
+            }
+            _liveLastSuccess = receivedAt;
+            _liveCalls = calls.filter(c => c.commercialIds && c.commercialIds.size);
+            await renderLiveCalls();
+        } catch (e) {
+            console.warn('[Live] Erreur:', e);
+        } finally {
+            _liveBusy = false;
+        }
+    }
+
+    function liveClearRow(row) {
+        row.classList.remove('tm-live-row');
+        row.querySelectorAll('.tm-live-chip').forEach(el => el.remove());
+        row.querySelectorAll('.tm-live-cell').forEach(el => el.classList.remove('tm-live-cell'));
+        row.querySelectorAll('.tm-live-ring').forEach(el => el.classList.remove('tm-live-ring'));
+    }
+
+    function liveInitials(n) {
+        const w = String(n || '').trim().split(/\s+/).filter(Boolean);
+        if (!w.length) return '?';
+        // « NOM PRÉNOM » -> initiale du prénom puis du nom (« SAIR ALEXIS » -> « AS »)
+        return ((w[1] || '').charAt(0) + w[0].charAt(0)).toUpperCase() || w[0].charAt(0).toUpperCase();
+    }
+
+    // Construit (ou reconstruit si le cas a changé) le contenu de l'indicateur :
+    //  - assigné au téléphone : « ● En appel · 03:12 » sous son nom
+    //  - autre opérateur      : [AS●] « En appel avec Marie · 00:41 » sous le client
+    function liveBuildChip(chip, isAssignee, user) {
+        const kind = isAssignee ? 'self' : 'other:' + user;
+        if (chip.dataset.kind === kind) return;
+        chip.dataset.kind = kind;
+        chip.innerHTML = '';
+        if (isAssignee) {
+            const dot = document.createElement('span');
+            dot.className = 'tm-live-dot';
+            chip.appendChild(dot);
+            chip.dataset.label = 'En appel';
+        } else {
+            const op = document.createElement('span');
+            op.className = 'tm-live-op';
+            op.textContent = liveInitials(user);
+            const dot = document.createElement('span');
+            dot.className = 'tm-live-dot';
+            op.appendChild(dot);
+            chip.appendChild(op);
+            chip.dataset.label = `En appel avec ${user || 'un opérateur'}`;
+        }
+        const txt = document.createElement('span');
+        txt.className = 'tm-live-txt';
+        txt.appendChild(document.createTextNode(''));
+        chip.appendChild(txt);
+    }
+
+    async function renderLiveCalls() {
+        liveExpireCalls();
+        if (!isTicketList()) return;
+        if (_liveRendering) { _liveRenderAgain = true; return; }
+        _liveRendering = true;
+        try { await renderLiveCallsNow(); }
+        finally {
+            _liveRendering = false;
+            if (_liveRenderAgain) { _liveRenderAgain = false; renderLiveCalls().catch(() => {}); }
+        }
+    }
+
+    async function renderLiveCallsNow() {
+        const table = document.querySelector('.o_list_view table, table.o_list_table, .o_list_renderer table');
+        if (!table) return;
+        const rows = Array.from(table.querySelectorAll('tbody tr.o_data_row'));
+        if (!_liveCalls.length) { rows.forEach(liveClearRow); return; }
+
+        const ths = Array.from(table.querySelectorAll('thead th'));
+        const idxClient = ths.findIndex(th => /client|pharmacie/i.test(th.textContent || ''));
+        const idxUser = ths.findIndex(th => /assign|responsable|utilisateur|technicien/i.test(th.textContent || ''));
+        const recMap = getListRowRecordMap();
+        await liveEnsureCommercialOf([...recMap.values()].map(r => r.partnerId).filter(Boolean));
+
+        rows.forEach(row => {
+            const rec = recMap.get(String(row.getAttribute('data-id') || ''));
+            const commercial = rec && rec.partnerId ? _liveCommercialOf.get(rec.partnerId) : null;
+            const call = commercial ? _liveCalls.find(c => c.commercialIds.has(commercial)) : null;
+            if (!call) { liveClearRow(row); return; }
+
+            const cells = row.querySelectorAll('td');
+            const userCell = idxUser >= 0 ? cells[idxUser] : null;
+            const assignee = userCell ? (userCell.textContent || '').replace(/En appel.*$/, '').trim() : '';
+            const isAssignee = !!assignee && liveNormName(assignee) === liveNormName(call.user);
+            const host = isAssignee ? userCell : ((idxClient >= 0 && cells[idxClient]) || row.querySelector('td.o_data_cell'));
+            if (!host) return;
+
+            row.querySelectorAll('.tm-live-cell').forEach(el => { if (el !== host) el.classList.remove('tm-live-cell'); });
+            if (!host.classList.contains('tm-live-cell')) host.classList.add('tm-live-cell');
+            row.classList.add('tm-live-row'); // liseré vert à gauche de la ligne
+            // Anneau vert fixe autour de la photo de l'assigné (simple classe : rien n'est
+            // inséré dans le widget Odoo, que Owl redessine à sa guise)
+            const avatar = isAssignee
+                ? userCell.querySelector('img.o_avatar, .o_m2o_avatar img, .o_avatar img, img.rounded-circle, img.rounded, img')
+                : null;
+            row.querySelectorAll('.tm-live-ring').forEach(el => { if (el !== avatar) el.classList.remove('tm-live-ring'); });
+            if (avatar && !avatar.classList.contains('tm-live-ring')) avatar.classList.add('tm-live-ring');
+
+            let chip = row.querySelector('.tm-live-chip');
+            if (chip && chip.parentElement !== host) { chip.remove(); chip = null; }
+            if (!chip) {
+                chip = document.createElement('div');
+                chip.className = 'tm-live-chip';
+                host.appendChild(chip);
+            }
+            liveBuildChip(chip, isAssignee, call.user || '');
+            chip.dataset.start = String(call.started_at);
+            chip.title = `${call.user || 'Un opérateur'} est au téléphone avec ce client`
+                + (call.direction === 'outgoing' ? ' (appel sortant)' : call.direction === 'incoming' ? ' (appel entrant)' : '');
+            liveTickChip(chip);
+        });
+    }
+
+    function liveTickChip(chip) {
+        const txt = chip.querySelector('.tm-live-txt');
+        if (!txt) return;
+        const elapsed = Date.now() / 1000 + _liveClockOffset - (Number(chip.dataset.start) || 0);
+        const value = `${chip.dataset.label} · ${liveFmtElapsed(elapsed)}`;
+        // Mise à jour du nœud texte (mutation characterData) : n'éveille pas l'observer principal
+        if (!txt.firstChild) txt.appendChild(document.createTextNode(value));
+        else if (txt.firstChild.nodeValue !== value) txt.firstChild.nodeValue = value;
+    }
+
+    // Chrono : ne touche que les pastilles affichées (souvent 0 ou 1)
+    setInterval(() => {
+        liveExpireCalls();
+        if (!document.hidden) document.querySelectorAll('.tm-live-chip').forEach(liveTickChip);
+    }, 1000);
+    window.addEventListener('pagehide', wlReleaseAudio);
+
+    // =========================================================
+    // NETTOYAGE DES DONNÉES LOCALES DES FONCTIONS SUPPRIMÉES
+    // =========================================================
+    // Le bouton « Traiter l'appel » et le panneau des raisons de clôture ont été retirés
+    // en v4.4.0. Leurs clés locales ne servent plus : on les efface (navigateur seulement,
+    // aucune écriture dans Odoo).
+    function cleanupLegacyStorage() {
+        try {
+            Object.keys(localStorage)
+                .filter(k => k.startsWith('etatTraitement_') || k === 'reasonPanelTheme')
+                .forEach(k => localStorage.removeItem(k));
+        } catch (_) {}
+        try {
+            Object.keys(sessionStorage)
+                .filter(k => /^(pendingReason|reasonPanel|pendingTimerStopAfterClosure)/.test(k))
+                .forEach(k => sessionStorage.removeItem(k));
+        } catch (_) {}
+    }
+
+    // =========================================================
     // OBSERVER PRINCIPAL + INITIALISATION
     // =========================================================
     let lastUrl = window.location.href;
 
     function runAll() {
-        addTraiterButton();
-        styleCloseButton();
         addInitialesButton();
         addClearAssignButton();
         ensurePhoneSearchUI(); // Recherche client par téléphone (champ Client)
@@ -6624,8 +5457,6 @@
         applyInternetBlink();
         scanCategoryStyles();
         initializeTheme(); // Initialiser le thème
-        // Précharger les listes raisons dès qu'on est sur un ticket
-        if (isTicketPage() && !_reasonListsCache) fetchReasonLists().catch(() => {});
     }
 
     // =========================================================
@@ -6885,15 +5716,21 @@
 
     // Observer spécifique liste tickets
     let _listBadgeDebounce = null;
-    const listObserver = new MutationObserver(() => {
+    // Mutations venant uniquement des chronos « en ligne » : à ignorer (sinon recalcul chaque seconde)
+    const isLiveChipMutation = (m) => {
+        const t = m.target && (m.target.nodeType === 1 ? m.target : m.target.parentElement);
+        return !!(t && t.closest && t.closest('.tm-live-chip'));
+    };
+    const listObserver = new MutationObserver((muts) => {
         if (!isTicketList()) return;
+        if (muts.every(isLiveChipMutation)) return;
         setTimeout(() => { updateTicketListAnimations(); }, 500);
         // Relancer les badges immédiatement si des lignes ont été recréées
         clearTimeout(_listBadgeDebounce);
         _listBadgeDebounce = setTimeout(() => {
-            // Vider le cache pour forcer un re-fetch sur les lignes visibles
-            _assistanceCache.clear();
+            // Le cache (par ID de ticket, 5 min) évite de réinterroger Odoo à chaque re-render
             applyPrioritaireBadges();
+            if (_liveCalls.length) renderLiveCalls().catch(() => {});
         }, 150);
     });
     listObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
@@ -6903,25 +5740,7 @@
         const cur = window.location.href;
         if (cur !== lastUrl) {
             lastUrl = cur;
-            _reasonPanelDone = false;
-            _reasonPanelOpen = false;
-            _reasonPanelTicketId = null;
-            // Nettoyer tous les flags de session liés au panneau des raisons
-            sessionStorage.removeItem('pendingReasonPanel');
-            sessionStorage.removeItem('pendingReasonTicketId');
-            sessionStorage.removeItem('reasonPanelForceOpen');
-            sessionStorage.removeItem('reasonPanelProtectedTicketId');
-
-            // Nettoyer les anciens flags de completion (garder seulement les 10 plus récents)
-            const completionKeys = Object.keys(sessionStorage).filter(key => key.startsWith('reasonPanelCompleted_'));
-            if (completionKeys.length > 10) {
-                completionKeys.slice(0, completionKeys.length - 10).forEach(key => {
-                    sessionStorage.removeItem(key);
-                });
-            }
-            _assistanceCache.clear();
-            _assistanceTagIds = null;
-            _newTagIds = null;
+            clearPrioritaireCaches();
 
             // Gérer la navigation pour l'historique et les produits
             handleHistoryNavigation();
@@ -6941,25 +5760,25 @@
     setInterval(() => { applyPrioritaireBadges(); }, 2000);
     setInterval(scanCategoryStyles, 4000);
     setInterval(addClearAssignButton, 5000);
-    setInterval(styleCloseButton, 3000);
     setInterval(scanRdvRappels, 2000);
     setInterval(scheduleDevisUpdate, 5000);
     setInterval(scheduleOpenTicketsUpdate, 3000);
-    setInterval(watchStageChanges, 500); // Surveiller les changements de stage
+    setInterval(() => refreshLiveCalls(false), LIVE_POLL_MS); // Opérateurs en ligne avec le client
     setInterval(autoRefreshTick, 15000); // Auto-refresh invisible de la liste des tickets (nouveaux tickets)
 
     // Rafraîchir aussi dès que l'utilisateur revient sur l'onglet (retour rapide sans attendre 15s)
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) return;
         setTimeout(autoRefreshTick, 300);
+        setTimeout(() => refreshLiveCalls(true), 400);
         // La jauge a pu vieillir pendant l'absence : on la remet à jour au retour.
         if (isTicketList()) setTimeout(() => hsRefresh(true), 600);
     });
 
     // Démarrage
-    sessionStorage.removeItem('pendingReasonPanel'); // éviter ouverture fantôme au reload
     injectStyles();
-    startClosureWatcher();
+    tmSyncTheme();
+    cleanupLegacyStorage();
     // Rafraîchir le compteur d'appels manqués toutes les 60s (uniquement sur la liste tickets)
     setInterval(() => { if (isTicketList() && document.getElementById('tm-missed-fab')) tmMissedRefresh(); }, 60000);
     // Rafraîchir la jauge toutes les 5 min (uniquement sur la liste tickets).
